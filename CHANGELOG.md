@@ -138,6 +138,40 @@ Bugs found and fixed during Phase 1 verification. All are documented in
 - **The `Playing` state is an engine verification scene**, not the real player
   controller, which arrives in Phase 2.
 
+### Changed
+
+Interface and typography rework, driven by inspecting captured frames rather
+than by eye.
+
+- **Resolution-independent UI.** Every size is now expressed against a
+  1280x720 reference and multiplied by `UiScale`, which fits the smaller viewport
+  axis and is clamped to `[0.70, 2.20]`. Previously all sizes were hard-coded
+  pixels, so the HUD either swamped a small window or vanished on a 4K one.
+  Styles are rebuilt when the viewport scale changes, so resizing a window
+  relayouts the interface instead of leaving stale metrics behind.
+- **Rebalanced type hierarchy.** Menu entries dropped from 26px to 21px and
+  their captions rose from 15px to 16px, so the two read as a pair. Hierarchy
+  now comes from weight and colour rather than a large size jump.
+- **The menu sits on a panel.** Previously the animated horizon ran straight
+  through the entries, which read as a rendering artefact. The horizon was moved
+  to 78% of the viewport height and the list got a panel with a border.
+- **Entries are centred** to match the title, tagline and hints; short labels
+  pinned to the left of a wide panel looked stranded.
+- **A row separator and selection chevrons** replace the left accent bar, which
+  became disconnected once the text was centred. The chevrons bracket the label
+  at a distance derived from the measured text, so they never overlap it, and
+  keep the selection readable without relying on colour alone.
+- **Menu captions moved below the list**, shown once for the selected entry
+  instead of as a right-aligned column with a 200px gap beside each label.
+
+### Added
+
+- `UiScale` — resolution-independent scaling for the whole interface, with
+  tests covering clamping, degenerate viewports, rounding and monotonicity.
+- `MenuList` unit tests covering wrap-around, skipping disabled entries, the
+  all-disabled list, row geometry and hit testing.
+- `.vscode/` launch profile for debugging a crash.
+
 ---
 
 [Unreleased]: https://example.invalid/erashift/compare/v0.1.0...HEAD

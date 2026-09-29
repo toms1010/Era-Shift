@@ -20,6 +20,7 @@ using Graphics::Color;
 using Graphics::TextAlign;
 using Graphics::TextStyle;
 using Graphics::TextVAlign;
+using Graphics::UiScale;
 namespace Palette = Graphics::Palette;
 using Graphics::Rect;
 using Graphics::Renderer2D;
@@ -47,6 +48,35 @@ std::string percent(int value)
 
 } // namespace
 
+UiScale uiScaleFor(const StateContext& ctx)
+{
+    if (ctx.renderer == nullptr) {
+        return UiScale{1.0f};
+    }
+    return UiScale::forViewport(static_cast<float>(ctx.renderer->camera().viewportWidth()),
+                                static_cast<float>(ctx.renderer->camera().viewportHeight()));
+}
+
+void PausedState::syncScale(StateContext& ctx)
+{
+    const UiScale latest = uiScaleFor(ctx);
+    if (latest.factor != m_viewportScale.factor) {
+        m_viewportScale = latest;
+        m_styles        = MenuStyles::make(latest);
+        m_menu.setMetrics(m_styles.rowHeight, m_styles.rowSpacing);
+    }
+}
+
+void SettingsState::syncScale(StateContext& ctx)
+{
+    const UiScale latest = uiScaleFor(ctx);
+    if (latest.factor != m_viewportScale.factor) {
+        m_viewportScale = latest;
+        m_styles        = MenuStyles::make(latest);
+        m_menu.setMetrics(m_styles.rowHeight, m_styles.rowSpacing);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PausedState
 // ---------------------------------------------------------------------------
@@ -58,8 +88,9 @@ PausedState::PausedState(GameState id)
 void PausedState::onEnter(StateContext& ctx)
 {
     m_time = 0.0f;
-    m_styles = MenuStyles::make();
-    m_menu.setMetrics(46.0f, 8.0f);
+    m_viewportScale = uiScaleFor(ctx);
+    m_styles = MenuStyles::make(m_viewportScale);
+    m_menu.setMetrics(m_styles.rowHeight, m_styles.rowSpacing);
     m_menu.setItems({
         {"RESUME",       "return to the timeline", true},
         {"SETTINGS",     "options",                 true},
@@ -76,6 +107,7 @@ void PausedState::update(StateContext& ctx, double fixedDelta)
     if (ctx.input == nullptr) {
         return;
     }
+    syncScale(ctx);
 
     // Escape both resumes and confirms, so the player never gets trapped.
     if (ctx.input->wasPressed(Action::Pause)) {
@@ -158,7 +190,9 @@ SettingsState::SettingsState(GameState id)
 void SettingsState::onEnter(StateContext& ctx)
 {
     m_time = 0.0f;
-    m_styles = MenuStyles::make();
+    m_viewportScale = uiScaleFor(ctx);
+    m_styles = MenuStyles::make(m_viewportScale);
+    m_menu.setMetrics(m_styles.rowHeight, m_styles.rowSpacing);
 
     // Read current values out of the config store so the screen reflects what
     // the game is actually using.
@@ -285,6 +319,7 @@ void SettingsState::update(StateContext& ctx, double fixedDelta)
     if (ctx.input == nullptr) {
         return;
     }
+    syncScale(ctx);
 
     if (ctx.input->wasPressed(Action::Pause)) {
         ctx.states->pop();

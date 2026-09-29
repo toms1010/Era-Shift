@@ -14,6 +14,10 @@ namespace EraShift::Game {
 
 /// Pause menu. Pushed on top of the active gameplay state, which stops
 /// simulating without any special-casing in the state below.
+/// UI scale derived from the current viewport. Shared by every state so they
+/// agree on what "one UI pixel" means.
+[[nodiscard]] Graphics::UiScale uiScaleFor(const StateContext& ctx);
+
 class PausedState final : public Core::IGameState {
 public:
     explicit PausedState(Core::GameState id = Core::GameState::Paused);
@@ -26,6 +30,10 @@ private:
     MenuList   m_menu;
     MenuStyles m_styles;
     float      m_time = 0.0f;
+    Graphics::UiScale m_viewportScale{1.0f};
+
+    /// Rebuilds the styles when the viewport scale changes.
+    void syncScale(StateContext& ctx);
 };
 
 /// Settings screen with live-adjustable options. Applies immediately so the
@@ -51,6 +59,9 @@ private:
     MenuStyles m_styles;
     Page       m_page = Page::General;
     float      m_time = 0.0f;
+    Graphics::UiScale m_viewportScale{1.0f};
+
+    void syncScale(StateContext& ctx);
 
     // Cached option values, written back into the config store on change.
     int   m_fullscreen  = 0;

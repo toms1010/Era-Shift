@@ -43,6 +43,46 @@ enum class TextVAlign {
     Bottom,
 };
 
+/// Resolution-independent UI scaling.
+///
+/// Every size in the interface is expressed against a 1280x720 reference and
+/// multiplied by this factor, so the HUD stays legible and correctly proportioned
+/// from a 1024x600 laptop panel to a 4K display. Without it, hard-coded pixel
+/// sizes either swamp a small window or disappear on a large one.
+struct UiScale {
+    /// Reference resolution the interface was designed against.
+    static constexpr float kReferenceWidth  = 1280.0f;
+    static constexpr float kReferenceHeight = 720.0f;
+
+    /// Smallest and largest factor applied, so text never becomes unreadable or
+    /// absurd on an extreme aspect ratio.
+    static constexpr float kMin = 0.70f;
+    static constexpr float kMax = 2.20f;
+
+    float factor = 1.0f;
+
+    [[nodiscard]] static UiScale forViewport(float width, float height) noexcept
+    {
+        // Fit the smaller axis: a short, wide window must not blow the type up.
+        const float byWidth  = width / kReferenceWidth;
+        const float byHeight = height / kReferenceHeight;
+        const float fit      = (byWidth < byHeight) ? byWidth : byHeight;
+        return UiScale{clampValue(fit, kMin, kMax)};
+    }
+
+    /// Converts a reference-resolution size into pixels.
+    [[nodiscard]] float px(float referencePixels) const noexcept
+    {
+        return referencePixels * factor;
+    }
+
+    /// Converts to an integral pixel size, for TTF.
+    [[nodiscard]] int font(float referencePixels) const noexcept
+    {
+        return std::max(1, static_cast<int>(px(referencePixels) + 0.5f));
+    }
+};
+
 /// How a block of text is laid out inside a rectangle.
 struct TextStyle {
     int       pixelSize = 20;

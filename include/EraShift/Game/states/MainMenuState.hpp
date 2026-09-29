@@ -19,6 +19,7 @@ using Graphics::Vec2;
 /// title, the entries and the hints cannot drift apart.
 struct MenuStyles {
     Graphics::TextStyle title;
+    Graphics::TextStyle tagline;
     Graphics::TextStyle heading;
     Graphics::TextStyle entry;
     Graphics::TextStyle entrySelected;
@@ -26,8 +27,15 @@ struct MenuStyles {
     Graphics::TextStyle detail;
     Graphics::TextStyle hint;
 
-    /// The default Era Shift menu look.
-    [[nodiscard]] static MenuStyles make();
+    /// Base panel geometry, in reference-resolution pixels, before `scale`.
+    float rowHeight  = 46.0f;
+    float rowSpacing = 4.0f;
+    float listWidth  = 360.0f;
+
+    Graphics::UiScale scale;
+
+    /// The default Era Shift menu look at the given UI scale.
+    [[nodiscard]] static MenuStyles make(Graphics::UiScale scale);
 };
 
 /// A selectable entry in a menu list.
@@ -95,10 +103,18 @@ public:
 private:
     void drawBackdrop(Graphics::Renderer2D& renderer, const Rect& area, double time) const;
     void activateSelection(StateContext& ctx);
+    /// Where the menu panel sits, given the current viewport and scale.
+    [[nodiscard]] Rect menuPanel(const Rect& area) const;
+    /// Where the title block sits.
+    [[nodiscard]] Rect titleBlock(const Rect& area) const;
 
     MenuList    m_menu;
     MenuStyles  m_styles;
     float       m_time      = 0.0f;
+    Graphics::UiScale m_viewportScale{1.0f};
+
+    /// UI scale derived from the current viewport.
+    [[nodiscard]] Graphics::UiScale currentUiScale(const StateContext& ctx) const;
 };
 
 } // namespace EraShift::Game

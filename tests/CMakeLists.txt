@@ -67,6 +67,8 @@ erashift_add_test(erashift_tests_unit
         unit/TestGameLoop.cpp
         unit/TestGameState.cpp
         unit/TestBitmapFont.cpp
+        unit/TestUiScale.cpp
+        unit/TestMenuList.cpp
     LIBS
         erashift_engine
 )

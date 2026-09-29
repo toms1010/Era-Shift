@@ -23,6 +23,7 @@ using Graphics::Renderer2D;
 using Graphics::TextAlign;
 using Graphics::TextStyle;
 using Graphics::TextVAlign;
+using Graphics::UiScale;
 using Graphics::Vec2;
 using Input::Action;
 
@@ -31,6 +32,16 @@ namespace Palette = Graphics::Palette;
 namespace {
 
 constexpr float kBackgroundScroll = 12.0f;
+
+/// Small triangular marker used to bracket the selected menu entry.
+void drawChevron(Renderer2D& renderer, float centerX, float centerY, float size, float direction,
+                 Color color)
+{
+    renderer.drawTriangle(Vec2{centerX - direction * size * 0.5f, centerY - size},
+                          Vec2{centerX - direction * size * 0.5f, centerY + size},
+                          Vec2{centerX + direction * size * 0.5f, centerY},
+                          color);
+}
 
 Rect fullArea(Renderer2D& renderer)
 {
@@ -44,48 +55,64 @@ Rect fullArea(Renderer2D& renderer)
 // ---------------------------------------------------------------------------
 // MenuStyles
 // ---------------------------------------------------------------------------
-MenuStyles MenuStyles::make()
+MenuStyles MenuStyles::make(UiScale scale)
 {
     MenuStyles s;
+    s.scale = scale;
 
-    // A large, bold title reads at a distance; the shadow separates it from the
-    // animated backdrop behind it.
-    s.title.pixelSize = 78;
+    // --- title: the one place a large size is justified ----------------------
+    // Bold plus a dark shadow keeps it legible over the moving backdrop.
+    s.title.pixelSize = scale.font(78.0f);
     s.title.color     = Palette::TextPrimary;
-    s.title.shadow    = Palette::FutureSky.scaled(0.45f);
+    s.title.shadow    = Palette::FutureSky.scaled(0.35f);
     s.title.bold      = true;
     s.title.align     = TextAlign::Center;
     s.title.valign    = TextVAlign::Middle;
 
-    s.heading.pixelSize = 24;
+    s.tagline.pixelSize = scale.font(15.0f);
+    s.tagline.color     = Palette::TextDim;
+    s.tagline.align     = TextAlign::Center;
+    s.tagline.valign    = TextVAlign::Middle;
+
+    s.heading.pixelSize = scale.font(30.0f);
     s.heading.color     = Palette::TextPrimary;
     s.heading.align     = TextAlign::Center;
     s.heading.valign    = TextVAlign::Middle;
-    s.heading.shadow    = Color{0, 0, 0, 0x90};
+    s.heading.shadow    = Color{0, 0, 0, 0xC0};
 
-    s.entry.pixelSize       = 26;
-    s.entry.color           = Palette::TextPrimary;
-    s.entry.valign          = TextVAlign::Middle;
-    s.entry.shadow          = Color{0, 0, 0, 0xB0};
+    // --- entries -------------------------------------------------------------
+    // Entries and their detail text are close in size on purpose. A 26px
+    // label against 15px detail reads as a caption dropped onto a headline;
+    // the hierarchy comes from weight and colour instead, which is both calmer
+    // and more legible.
+    s.entry.pixelSize = scale.font(21.0f);
+    s.entry.color     = Palette::TextPrimary;
+    s.entry.valign    = TextVAlign::Middle;
+    s.entry.shadow    = Color{0, 0, 0, 0xD0};
 
-    s.entrySelected         = s.entry;
-    s.entrySelected.color   = Palette::Accent;
-    s.entrySelected.bold    = true;
+    s.entrySelected       = s.entry;
+    s.entrySelected.color = Palette::Accent;
+    s.entrySelected.bold  = true;
 
-    s.entryDisabled         = s.entry;
-    s.entryDisabled.color   = Palette::TextDim;
-    s.entryDisabled.shadow  = Palette::Transparent;
+    s.entryDisabled       = s.entry;
+    s.entryDisabled.color = Palette::TextDim;
+    s.entryDisabled.shadow = Palette::Transparent;
 
-    s.detail.pixelSize = 15;
+    s.detail.pixelSize = scale.font(16.0f);
     s.detail.color     = Palette::TextDim;
-    s.detail.align     = TextAlign::Right;
+    s.detail.align     = TextAlign::Center;
     s.detail.valign    = TextVAlign::Middle;
+    s.detail.shadow    = Color{0, 0, 0, 0xD0};
 
-    s.hint.pixelSize = 16;
+    s.hint.pixelSize = scale.font(15.0f);
     s.hint.color     = Palette::TextDim;
     s.hint.align     = TextAlign::Center;
     s.hint.valign    = TextVAlign::Middle;
+    s.hint.shadow    = Color{0, 0, 0, 0xC0};
 
+    s.rowHeight  = scale.px(46.0f);
+    s.rowSpacing = scale.px(4.0f);
+    s.listWidth  = scale.px(360.0f);
     return s;
 }
 
@@ -137,9 +164,9 @@ bool MenuList::isSelectedEnabled() const noexcept
 
 float MenuList::rowHeight(const MenuStyles& styles) const
 {
-    // At least tall enough for the text plus breathing room, and never smaller
-    // than the configured minimum.
-    const float textHeight = styles.entry.pixelSize * 1.35f;
+    // Always at least tall enough for the text plus breathing room, so a
+    // custom font size can never clip its own row.
+    const float textHeight = static_cast<float>(styles.entry.pixelSize) * 1.6f;
     return std::max(m_rowHeight, textHeight);
 }
 
@@ -179,30 +206,88 @@ void MenuList::render(Renderer2D& renderer, Graphics::TextRenderer& text, const 
         const bool selected = (i == m_selected);
         const bool hovered  = row.contains(mouse) && item.enabled;
 
-        Color fill = Palette::PanelFill;
+        // Unselected rows stay flat so the selection is unmistakable. Hover is a
+        // subtle lift, not a second competing highlight.
+        Color fill = Palette::Transparent;
         if (selected) {
-            fill = Palette::PanelBorder.withAlpha(0x55);
+            fill = Palette::PanelBorder.withAlpha(0x66);
         } else if (hovered) {
-            fill = Palette::PanelBorder.withAlpha(0x28);
+            fill = Palette::PanelBorder.withAlpha(0x22);
         }
-        renderer.drawRect(row, fill);
+        if (fill.a > 0) {
+            renderer.drawRect(row, fill);
+        }
 
+        // A hairline between rows turns the panel into a list instead of a
+        // slab of colour. Skipped on the last row so the panel has a clean base.
+        if (i + 1 < m_items.size()) {
+            renderer.drawRect(
+                Rect{row.x + styles.scale.px(16.0f), row.bottom(), row.w - styles.scale.px(32.0f),
+                     1.0f},
+                Palette::PanelBorder.withAlpha(selected ? 0x50 : 0x28));
+        }
+
+        TextStyle style = !item.enabled ? styles.entryDisabled
+                             : selected ? styles.entrySelected
+                                        : styles.entry;
+        // Centred to match the title, tagline and hints, and because short
+        // labels pinned to the left of a wide panel look stranded.
+        style.align = TextAlign::Center;
+
+        // The selection is a full-width fill, accent-coloured bold text, and a
+        // pair of chevrons bracketing the label. The chevrons keep the selection
+        // readable without relying on colour alone, and are placed from the
+        // measured label so they never sit on top of the text.
         if (selected) {
-            // The accent bar is a shape cue, not just a colour cue.
-            renderer.drawRect(Rect{row.x, row.y, 4.0f, row.h}, Palette::Accent);
+            const float labelWidth = text.measure(item.label, style).x;
+            const float gap       = styles.scale.px(14.0f);
+            const float size      = styles.scale.px(4.0f);
+            const float offset    = labelWidth * 0.5f + gap + size * 0.5f;
+            for (const float dir : {-1.0f, 1.0f}) {
+                drawChevron(renderer, row.center().x + dir * offset, row.center().y, size, dir,
+                            Palette::Accent);
+            }
         }
 
-        const TextStyle& style = !item.enabled  ? styles.entryDisabled
-                                  : selected    ? styles.entrySelected
-                                                : styles.entry;
-        text.drawInRect(renderer, Rect{row.x + 18.0f, row.y, row.w - 36.0f, row.h}, item.label,
-                        style);
+        const float pad = styles.scale.px(20.0f);
+        text.drawInRect(renderer, Rect{row.x + pad, row.y, row.w - pad * 2.0f, row.h},
+                        item.label, style);
 
-        if (!item.detail.empty()) {
-            text.drawInRect(renderer, Rect{row.x, row.y, row.w - 18.0f, row.h}, item.detail,
-                            styles.detail);
-        }
+        // The detail is deliberately not drawn here. Right-aligning a caption
+        // next to a short label leaves a wide, ragged gap; it is shown once,
+        // centred, under the list for the selected entry instead.
     }
+}
+
+UiScale MainMenuState::currentUiScale(const StateContext& ctx) const
+{
+    if (ctx.renderer == nullptr) {
+        return m_viewportScale;
+    }
+    return UiScale::forViewport(static_cast<float>(ctx.renderer->camera().viewportWidth()),
+                                static_cast<float>(ctx.renderer->camera().viewportHeight()));
+}
+
+Rect MainMenuState::titleBlock(const Rect& area) const
+{
+    // Title, tagline and build label form one block, anchored a little above
+    // centre so the menu below it feels like the main event.
+    const float height = m_styles.scale.px(132.0f);
+    return Rect{area.x, area.y + area.h * 0.15f, area.w, height};
+}
+
+Rect MainMenuState::menuPanel(const Rect& area) const
+{
+    // The panel is sized from the list itself, then centred in the space below
+    // the title, so it stays put whatever the number of entries.
+    const float padding   = m_styles.scale.px(14.0f);
+    const float width     = m_styles.listWidth + padding * 2.0f;
+    const float rowStride = m_menu.rowHeight(m_styles) + m_styles.scale.px(4.0f);
+    const float listHeight = static_cast<float>(m_menu.items().size()) * rowStride;
+    const float height     = listHeight + padding * 2.0f;
+
+    const float top = titleBlock(area).bottom() + m_styles.scale.px(34.0f);
+    return Rect{area.center().x - width * 0.5f, top, width, height};
 }
 
 // ---------------------------------------------------------------------------
@@ -217,8 +302,11 @@ void MainMenuState::onEnter(StateContext& ctx)
 {
     m_time = 0.0f;
 
-    m_styles = MenuStyles::make();
-    m_menu.setMetrics(46.0f, 8.0f);
+    // Styles depend on the viewport, so they are rebuilt on entry and whenever
+    // the window is resized. Row metrics come from the style too, so the two
+    // can never disagree.
+    m_styles = MenuStyles::make(currentUiScale(ctx));
+    m_menu.setMetrics(m_styles.rowHeight, m_styles.rowSpacing);
     m_menu.setItems({
         {"NEW GAME", "begin a new timeline", true},
         {"CONTINUE", "load the last save",   false},
@@ -243,6 +331,16 @@ void MainMenuState::update(StateContext& ctx, double fixedDelta)
         return;
     }
 
+    // Resizing changes the UI scale, so the styles and the list metrics are
+    // rebuilt when it moves. Doing this here rather than in render() keeps
+    // layout and drawing in agreement.
+    const UiScale latest = currentUiScale(ctx);
+    if (latest.factor != m_viewportScale.factor) {
+        m_viewportScale = latest;
+        m_styles        = MenuStyles::make(latest);
+        m_menu.setMetrics(m_styles.rowHeight, m_styles.rowSpacing);
+    }
+
     if (ctx.input->wasPressed(Action::MoveUp)) {
         m_menu.move(-1);
     }
@@ -250,8 +348,9 @@ void MainMenuState::update(StateContext& ctx, double fixedDelta)
         m_menu.move(1);
     }
 
-    const Rect area    = fullArea(*ctx.renderer);
-    const Rect bounds{area.center().x - 220.0f, area.h * 0.50f, 440.0f, 260.0f};
+    const Rect area   = fullArea(*ctx.renderer);
+    const Rect panel  = menuPanel(area);
+    const Rect bounds{panel.x, panel.y, panel.w, panel.h};
 
     const auto hovered = m_menu.hitTest(bounds, ctx.input->mousePosition());
     if (hovered != static_cast<std::size_t>(-1)) {
@@ -296,7 +395,8 @@ void MainMenuState::drawBackdrop(Renderer2D& renderer, const Rect& area, double 
     renderer.drawRect(area, Palette::FutureSky);
 
     const float t = static_cast<float>(time);
-    const float horizon = area.y + area.h * 0.55f;
+    // Kept below the menu panel so the horizon never runs through the text.
+    const float horizon = area.y + area.h * 0.78f;
 
     for (int band = 0; band < 3; ++band) {
         const float speed     = (1.0f + static_cast<float>(band) * 0.8f) * kBackgroundScroll;
@@ -342,40 +442,70 @@ void MainMenuState::render(StateContext& ctx, double alpha)
     drawBackdrop(renderer, area, static_cast<double>(m_time) + alpha);
 
     Graphics::TextRenderer& text = *ctx.text;
+    const UiScale  scale  = currentUiScale(ctx);
+    const float    titleY = area.h * 0.15f;
+    const float    glow   = 0.5f + 0.5f * std::sin(static_cast<float>(m_time) * 1.6f);
 
     // --- title ---------------------------------------------------------------
-    const float titleY = area.h * 0.20f;
-    const float glow   = 0.5f + 0.5f * std::sin(static_cast<float>(m_time) * 1.6f);
-
-    // A pulsing bloom behind the title, then the title itself.
+    // A pulsing bloom behind the title, then the title itself. The bloom is
+    // drawn in the same glyphs, so it reads as a glow rather than a shadow.
     {
         TextStyle bloom = m_styles.title;
-        bloom.color = Palette::FutureAccent.withAlpha(
+        bloom.color   = Palette::FutureAccent.withAlpha(
             static_cast<std::uint8_t>(40.0f + 60.0f * glow));
-        bloom.shadow = Palette::Transparent;
-        text.drawInRect(renderer, Rect{0.0f, titleY - 60.0f, area.w, 120.0f}, "ERA SHIFT", bloom);
+        bloom.shadow  = Palette::Transparent;
+        text.drawInRect(renderer, Rect{area.x, titleY, area.w, scale.px(104.0f)}, "ERA SHIFT", bloom);
     }
-    text.drawInRect(renderer, Rect{0.0f, titleY - 60.0f, area.w, 120.0f}, "ERA SHIFT",
+    text.drawInRect(renderer, Rect{area.x, titleY, area.w, scale.px(104.0f)}, "ERA SHIFT",
                     m_styles.title);
 
-    text.drawInRect(renderer, Rect{0.0f, titleY + 34.0f, area.w, 26.0f},
-                    "ONE WORLD - THREE ERAS - YOUR CHOICES PERSIST", m_styles.hint);
-    text.drawInRect(renderer, Rect{0.0f, titleY + 58.0f, area.w, 26.0f}, "DEVELOPMENT BUILD",
-                    [&] {
-                        TextStyle s = m_styles.hint;
-                        s.color = Palette::AccentWarm;
-                        return s;
-                    }());
+    // Tagline and build label, stacked tightly under the title so they read as
+    // one block rather than three floating lines.
+    const float taglineY = titleY + scale.px(56.0f);
+    text.drawInRect(renderer, Rect{area.x, taglineY, area.w, scale.px(20.0f)},
+                    "ONE WORLD - THREE ERAS - YOUR CHOICES PERSIST", m_styles.tagline);
 
-    // --- menu ----------------------------------------------------------------
-    const Rect bounds{area.center().x - 220.0f, area.h * 0.50f, 440.0f, 260.0f};
-    m_menu.render(renderer, text, bounds,
+    {
+        TextStyle build = m_styles.tagline;
+        build.color = Palette::AccentWarm;
+        build.pixelSize = scale.font(13.0f);
+        text.drawInRect(renderer, Rect{area.x, taglineY + scale.px(24.0f), area.w, scale.px(18.0f)},
+                        "DEVELOPMENT BUILD", build);
+    }
+
+    // --- menu panel ----------------------------------------------------------
+    // The list sits on a panel. Without it the animated horizon runs straight
+    // through the entries, which reads as a rendering artefact rather than a
+    // deliberate horizon.
+    const Rect panel = menuPanel(area);
+    renderer.setBlendMode(BlendMode::Alpha);
+    renderer.drawRect(panel, Palette::PanelFill);
+    renderer.drawRect(panel, Palette::PanelBorder.withAlpha(0x90));
+
+    const float panelPad = scale.px(14.0f);
+    const Rect list{panel.x + panelPad, panel.y + panelPad, panel.w - panelPad * 2.0f,
+                    panel.h - panelPad * 2.0f};
+    m_menu.render(renderer, text, list,
                   ctx.input != nullptr ? ctx.input->mousePosition() : Vec2{}, m_styles);
 
+    // --- description of the highlighted entry --------------------------------
+    if (const MenuItem* selected = m_menu.currentItem()) {
+        if (!selected->detail.empty()) {
+            TextStyle detail = m_styles.detail;
+            detail.align  = TextAlign::Center;
+            detail.valign = TextVAlign::Middle;
+            detail.color  = Palette::TextDim;
+            text.drawInRect(renderer,
+                            Rect{panel.x, panel.bottom() + scale.px(8.0f), panel.w, scale.px(22.0f)},
+                            selected->detail, detail);
+        }
+    }
+
     // --- hints ---------------------------------------------------------------
-    text.drawInRect(renderer, Rect{0.0f, area.bottom() - 52.0f, area.w, 22.0f},
-                    "W/S or arrow keys to select    E to confirm", m_styles.hint);
-    text.drawInRect(renderer, Rect{0.0f, area.bottom() - 30.0f, area.w, 22.0f},
+    const float hintY = area.bottom() - scale.px(44.0f);
+    text.drawInRect(renderer, Rect{area.x, hintY, area.w, scale.px(18.0f)},
+                    "W/S or arrow keys to select      E to confirm", m_styles.hint);
+    text.drawInRect(renderer, Rect{area.x, hintY + scale.px(20.0f), area.w, scale.px(18.0f)},
                     "F3 debug overlay", m_styles.hint);
 
     // The debug overlay works in every state, including this one, because it is
@@ -391,7 +521,7 @@ void MainMenuState::render(StateContext& ctx, double alpha)
     if (!text.ready()) {
         FontStyle fallback;
         fallback.scale = 6;
-        BitmapFont::drawCentered(renderer, area.center().x, titleY, "ERA SHIFT",
+        BitmapFont::drawCentered(renderer, area.center().x, titleY + scale.px(45.0f), "ERA SHIFT",
                                  Palette::TextPrimary, fallback);
     }
 }
