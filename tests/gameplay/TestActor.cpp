@@ -172,6 +172,7 @@ TEST_CASE("geometry changes under a resting body are resolved, not fatal")
 {
     TileMap map = room(16, 8, 4);
     Body body = standingOn(4);
+    moveBody(map, body, Era::Present, 1.0f / 60.0f);
     CHECK(body.onGround);
 
     // The era shifts and the tile the body was standing on stops existing, so
@@ -220,7 +221,7 @@ TEST_CASE("the era decides what counts as a wall")
 
     Body body;
     body.size     = Vec2{32.0f, 32.0f};
-    body.position = Vec2{4.0f * TileMap::kTileSize, 4.0f * TileMap::kTileSize};
+    body.position = Vec2{5.0f * TileMap::kTileSize, 4.0f * TileMap::kTileSize};
     body.velocity = Vec2{600.0f, 0.0f};
 
     CHECK(moveBody(map, body, Era::Past, 1.0f / 60.0f).wallRight);

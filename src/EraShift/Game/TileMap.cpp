@@ -89,7 +89,7 @@ bool TileMap::rectBlocked(const Rect& rect, Era era) const
     for (int y = y0; y <= y1; ++y) {
         for (int x = x0; x <= x1; ++x) {
             const Tile tile = at(x, y);
-            if (tile.blocksIn(era) && !tile.oneWay) {
+            if (tile.blocksIn(era) && !tile.isOneWayIn(era)) {
                 return true;
             }
         }
@@ -122,7 +122,7 @@ float TileMap::oneWayLandingSurface(const Rect& rect, float previousBottom, Era 
         }
         for (int x = x0; x <= x1; ++x) {
             const Tile tile = at(x, y);
-            if (!tile.oneWay || !tile.blocksIn(era)) {
+            if (!tile.isOneWayIn(era) || !tile.blocksIn(era)) {
                 continue;
             }
             // Landing on the topmost platform in the overlap, not whichever the
@@ -140,7 +140,7 @@ bool TileMap::oneWayLanding(const Rect& rect, float previousBottom, Era era) con
     return !std::isnan(oneWayLandingSurface(rect, previousBottom, era));
 }
 
-bool TileMap::rectOverHazard(const Rect& rect) const
+bool TileMap::rectOverHazard(const Rect& rect, Era era) const
 {
     if (rect.isEmpty()) {
         return false;
@@ -154,7 +154,7 @@ bool TileMap::rectOverHazard(const Rect& rect) const
 
     for (int y = y0; y <= y1; ++y) {
         for (int x = x0; x <= x1; ++x) {
-            if (at(x, y).hazard) {
+            if (at(x, y).isHazardIn(era)) {
                 return true;
             }
         }

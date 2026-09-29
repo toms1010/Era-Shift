@@ -422,7 +422,7 @@ void World::updateCombat(float dt)
 
     // Hazards. The cooldown lives on the world rather than the player so a
     // player standing in one takes a hit per interval rather than every frame.
-    if (m_map.rectOverHazard(playerRect)) {
+    if (m_map.rectOverHazard(playerRect, m_player.era())) {
         m_hazardCooldown -= dt;
         if (m_hazardCooldown <= 0.0f) {
             m_hazardCooldown = kHazardCooldown;

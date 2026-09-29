@@ -119,8 +119,8 @@ TileMap Level::buildMap() const
                 if (one.blocksIn(era)) {
                     combined.solidIn |= eraBit(era);
                 }
-                combined.hazard  = combined.hazard || one.hazard;
-                combined.oneWay  = combined.oneWay || one.oneWay;
+                combined.hazardIn |= one.hazardIn;
+                combined.oneWayIn |= one.oneWayIn;
 
                 // The displayed kind is the most structural of the three, so a
                 // cell that is solid everywhere is not drawn as if it were only

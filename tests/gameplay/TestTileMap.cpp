@@ -55,15 +55,38 @@ TEST_CASE("markers and hazards are never solid")
     CHECK_FALSE(Tile::of(TileKind::Empty).blocksIn(Era::Future));
     // A hazard must let the player into it, or it cannot hurt them.
     CHECK_FALSE(Tile::of(TileKind::Hazard).blocksIn(Era::Past));
-    CHECK(Tile::of(TileKind::Hazard).hazard);
+    CHECK(Tile::of(TileKind::Hazard).isHazardIn(Era::Past));
+    CHECK(Tile::of(TileKind::Hazard).isHazardIn(Era::Future));
+    CHECK(Tile::of(TileKind::Hazard).isHazardIn(Era::Future));
 }
 
 TEST_CASE("one-way platforms are flagged and solid in every era")
 {
     const Tile platform = Tile::of(TileKind::Platform);
-    CHECK(platform.oneWay);
+    CHECK(platform.isOneWayIn(Era::Past));
+    CHECK(platform.isOneWayIn(Era::Future));
     CHECK(platform.blocksIn(Era::Past));
     CHECK(platform.blocksIn(Era::Future));
+    CHECK_FALSE(platform.isHazardIn(Era::Past));
+}
+
+TEST_CASE("a cell can be solid in one era and a hazard in another")
+{
+    // This is the shape the whole level format depends on: the same tile is
+    // walkable stone in the Past and a pit in the Present. A single boolean per
+    // property could not express it.
+    Tile tile;
+    tile.solidIn   = kEraBitPast;
+    tile.hazardIn  = kEraBitPresent | kEraBitFuture;
+
+    CHECK(tile.blocksIn(Era::Past));
+    CHECK_FALSE(tile.isHazardIn(Era::Past));
+
+    CHECK_FALSE(tile.blocksIn(Era::Present));
+    CHECK(tile.isHazardIn(Era::Present));
+
+    CHECK_FALSE(tile.blocksIn(Era::Future));
+    CHECK(tile.isHazardIn(Era::Future));
 }
 
 TEST_CASE("reads outside the grid are empty rather than fatal")
@@ -143,7 +166,7 @@ TEST_CASE("a rect touching a wall only from the far side is not blocked")
     CHECK_FALSE(map.rectBlocked(before, Era::Present));
 
     // Overlaps by a hair: blocked.
-    const Rect touching{64.1f, 64.0f, 63.9f, 32.0f};
+    const Rect touching{64.1f, 64.0f, 64.1f, 32.0f};
     CHECK(map.rectBlocked(touching, Era::Present));
 }
 
@@ -177,8 +200,8 @@ TEST_CASE("hazards and goals are found by overlap")
     map.set(3, 1, Tile::of(TileKind::Hazard));
     map.set(6, 2, Tile::of(TileKind::Goal));
 
-    CHECK(map.rectOverHazard(Rect{96.0f, 32.0f, 8.0f, 8.0f}));
-    CHECK_FALSE(map.rectOverHazard(Rect{0.0f, 0.0f, 16.0f, 8.0f}));
+    CHECK(map.rectOverHazard(Rect{96.0f, 32.0f, 8.0f, 8.0f}, Era::Present));
+    CHECK_FALSE(map.rectOverHazard(Rect{0.0f, 0.0f, 16.0f, 8.0f}, Era::Present));
 
     CHECK(map.rectOverGoal(Rect{192.0f, 64.0f, 32.0f, 32.0f}));
     CHECK_FALSE(map.rectOverGoal(Rect{0.0f, 0.0f, 32.0f, 32.0f}));

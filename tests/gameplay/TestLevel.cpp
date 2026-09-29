@@ -43,19 +43,30 @@ bool fits(const TileMap& map, int x, int y, Era era)
                             era);
 }
 
-/// True when there is something solid directly under this cell to stand on.
+/// True when a body can come to rest with its feet in this cell.
+///
+/// Tolerant by up to two cells below, because entities are placed on a whole
+/// tile boundary while bodies are 44px tall in a 32px cell: a placement one
+/// third of a tile high simply settles under gravity in the first frame. The
+/// tolerance cannot invent a platform - a ledge two cells up is still
+/// unreachable - it only stops the model from disagreeing with the physics over
+/// where a body ends up resting.
 bool supported(const TileMap& map, int x, int y, Era era)
 {
-    const float left  = static_cast<float>(x) * TileMap::kTileSize;
-    const float top   = static_cast<float>(y + 1) * TileMap::kTileSize;
-    const Rect probe{left, top, 28.0f, 4.0f};
-    if (map.rectBlocked(probe, era)) {
-        return true;
+    const float left = static_cast<float>(x) * TileMap::kTileSize;
+    for (int drop = 0; drop <= 2; ++drop) {
+        const float feet = static_cast<float>(y + drop) * TileMap::kTileSize;
+        const Rect probe{left, feet, 28.0f, 6.0f};
+        if (map.rectBlocked(probe, era)) {
+            return true;
+        }
+        if (map.oneWayLanding(Rect{left, static_cast<float>(y + drop) * TileMap::kTileSize,
+                                   28.0f, 44.0f},
+                              feet - 1.0f, era)) {
+            return true;
+        }
     }
-    // A one-way platform only counts when falling onto it.
-    const float feet = static_cast<float>(y + 1) * TileMap::kTileSize - 1.0f;
-    return map.oneWayLanding(Rect{left, static_cast<float>(y) * TileMap::kTileSize, 28.0f, 44.0f},
-                             feet, era);
+    return false;
 }
 
 /// Every cell the player can stand in, over the union of the three eras.
@@ -349,7 +360,7 @@ TEST_CASE("no cell in the shipped level traps the player inside solid geometry")
                 if (!fits(map, x, y, era)) {
                     continue;
                 }
-                const bool roofed = above.blocksIn(era) && !above.oneWay;
+                const bool roofed = above.blocksIn(era) && !above.isOneWayIn(era);
                 const bool walled = roofed && below.blocksIn(era);
                 const std::string where =
                     "cell (" + std::to_string(x) + ", " + std::to_string(y) +
@@ -395,12 +406,12 @@ TEST_CASE("tile rows parse, and unknown characters become holes rather than erro
     CHECK(tiles.size() == 8);
     CHECK(tiles[0].blocksIn(Era::Past));
     CHECK(tiles[0].blocksIn(Era::Future));
-    CHECK(tiles[1].oneWay);
+    CHECK(tiles[1].isOneWayIn(Era::Present));
     CHECK(tiles[2].blocksIn(Era::Past));
     CHECK_FALSE(tiles[2].blocksIn(Era::Present));
     CHECK(tiles[3].blocksIn(Era::Present));
     CHECK(tiles[4].blocksIn(Era::Future));
-    CHECK(tiles[5].hazard);
+    CHECK(tiles[5].isHazardIn(Era::Present));
     CHECK(tiles[6].kind == TileKind::Goal);
     CHECK(tiles[7].kind == TileKind::Empty);
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace EraShift::Game {
 
@@ -154,13 +155,16 @@ void resolvePenetration(const TileMap& map, Body& body, Era era)
         int y1 = 0;
         map.overlappingCells(r, x0, y0, x1, y1);
 
-        float smallest = 0.0f;
+        // Sentinel, not zero. Zero is a perfectly valid "smallest push" value,
+        // and initialising to it makes the comparison below reject every
+        // candidate - which is how this function ended up doing nothing at all.
+        float smallest = std::numeric_limits<float>::max();
         Vec2  push{0.0f, 0.0f};
 
         for (int y = y0; y <= y1; ++y) {
             for (int x = x0; x <= x1; ++x) {
                 const Tile tile = map.at(x, y);
-                if (!tile.blocksIn(era) || tile.oneWay) {
+                if (!tile.blocksIn(era) || tile.isOneWayIn(era)) {
                     continue;
                 }
                 const Rect cell = map.cellRect(x, y);
@@ -194,8 +198,8 @@ void resolvePenetration(const TileMap& map, Body& body, Era era)
             }
         }
 
-        if (smallest <= 0.0f) {
-            return;   // Nothing solid overlaps: resolved.
+        if (smallest == std::numeric_limits<float>::max()) {
+            return;   // Nothing solid overlaps: already resolved.
         }
 
         body.position += push;

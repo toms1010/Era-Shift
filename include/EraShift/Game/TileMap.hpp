@@ -37,39 +37,61 @@ enum class TileKind : std::uint8_t {
 };
 
 /// One cell of the grid.
+///
+/// Every property is an era mask rather than a flag. A single flag cannot
+/// express "solid in the Past, a hazard in the Present", and a level has to be
+/// able to say exactly that: the same tile is the ruined floor in one era and
+/// the pit you fall into in another.
 struct Tile {
     TileKind kind = TileKind::Empty;
 
-    /// Eras in which this cell is solid. Ignored for `Empty` and `Hazard`.
-    EraMask solidIn = kEraMaskAll;
+    /// Eras in which this cell blocks movement.
+    EraMask solidIn = 0;
 
-    /// Damages on contact rather than blocking.
-    bool hazard = false;
+    /// Eras in which this cell damages whatever stands in it. A cell can be
+    /// solid in one era and hazardous in another, so the two masks are
+    /// independent rather than a single `hazard` flag.
+    EraMask hazardIn = 0;
 
-    /// Blocks movement only when falling onto it from above.
-    bool oneWay = false;
+    /// Eras in which this cell blocks only from above.
+    EraMask oneWayIn = 0;
 
+    /// True when movement is blocked in `era`.
     [[nodiscard]] constexpr bool blocksIn(Era era) const noexcept
     {
-        // Markers are never solid: a goal has to be walkable through, or the
-        // player would be blocked one tile before reaching it.
-        if (kind == TileKind::Empty || kind == TileKind::Goal || hazard) {
-            return false;
-        }
-        return maskIncludes(solidIn, era);
+        return maskIncludes(solidIn, era) && !maskIncludes(hazardIn, era);
     }
 
+    [[nodiscard]] constexpr bool isHazardIn(Era era) const noexcept
+    {
+        return maskIncludes(hazardIn, era);
+    }
+
+    [[nodiscard]] constexpr bool isOneWayIn(Era era) const noexcept
+    {
+        return maskIncludes(oneWayIn, era);
+    }
+
+    [[nodiscard]] constexpr bool empty() const noexcept
+    {
+        return solidIn == 0 && hazardIn == 0;
+    }
+
+    /// The standard tile of a kind: solid wherever it makes sense to be.
     [[nodiscard]] static constexpr Tile of(TileKind kind) noexcept
     {
         Tile tile;
         tile.kind = kind;
         switch (kind) {
-            case TileKind::Crumble: tile.solidIn = kEraBitPast;    break;
-            case TileKind::Bridge:  tile.solidIn = kEraBitPresent; break;
-            case TileKind::Crystal: tile.solidIn = kEraBitFuture;  break;
-            case TileKind::Hazard:  tile.hazard  = true;           break;
-            case TileKind::Platform:tile.oneWay  = true;           break;
-            default:                                               break;
+            case TileKind::Empty:   break;
+            case TileKind::Solid:   tile.solidIn = kEraMaskAll;          break;
+            case TileKind::Platform: tile.solidIn = kEraMaskAll;
+                                   tile.oneWayIn = kEraMaskAll;         break;
+            case TileKind::Crumble: tile.solidIn = kEraBitPast;         break;
+            case TileKind::Bridge:  tile.solidIn = kEraBitPresent;      break;
+            case TileKind::Crystal: tile.solidIn = kEraBitFuture;       break;
+            case TileKind::Hazard:  tile.hazardIn = kEraMaskAll;        break;
+            case TileKind::Goal:    break;
         }
         return tile;
     }
@@ -144,9 +166,8 @@ public:
     [[nodiscard]] float oneWayLandingSurface(const Rect& rect, float previousBottom,
                                             Era era) const;
 
-    /// True when `rect` overlaps any hazard in `era`. Hazards exist in all eras,
-    /// so `era` only selects which cells are present at all.
-    [[nodiscard]] bool rectOverHazard(const Rect& rect) const;
+    /// True when `rect` overlaps a cell that is a hazard in `era`.
+    [[nodiscard]] bool rectOverHazard(const Rect& rect, Era era) const;
 
     /// True when the cell at `rect`'s centre is a goal marker.
     [[nodiscard]] bool rectOverGoal(const Rect& rect) const;
