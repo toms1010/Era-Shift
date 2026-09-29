@@ -59,15 +59,29 @@ struct UiScale {
     static constexpr float kMin = 0.70f;
     static constexpr float kMax = 2.20f;
 
+    /// Range the player's own preference (`graphics.uiScale`, stored as a
+    /// percentage) is allowed to move the computed factor by. Outside this the
+    /// setting is ignored, so a typo in the config cannot make the UI vanish.
+    static constexpr float kPreferenceMin = 0.50f;
+    static constexpr float kPreferenceMax = 2.00f;
+
     float factor = 1.0f;
 
-    [[nodiscard]] static UiScale forViewport(float width, float height) noexcept
+    /// Derives the scale from the viewport size.
+    ///
+    /// `preference` is the player's multiplier on top of the automatic fit
+    /// (1.0 = "as designed"). It is clamped to a sane range and the result is
+    /// still clamped to [kMin, kMax], so no combination of window size and
+    /// setting can produce unreadable or absurd type.
+    [[nodiscard]] static UiScale forViewport(float width, float height,
+                                             float preference = 1.0f) noexcept
     {
         // Fit the smaller axis: a short, wide window must not blow the type up.
         const float byWidth  = width / kReferenceWidth;
         const float byHeight = height / kReferenceHeight;
         const float fit      = (byWidth < byHeight) ? byWidth : byHeight;
-        return UiScale{clampValue(fit, kMin, kMax)};
+        const float wanted   = fit * clampValue(preference, kPreferenceMin, kPreferenceMax);
+        return UiScale{clampValue(wanted, kMin, kMax)};
     }
 
     /// Converts a reference-resolution size into pixels.

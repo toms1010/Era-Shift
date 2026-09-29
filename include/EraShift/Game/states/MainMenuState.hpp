@@ -7,13 +7,23 @@
 #include "EraShift/Graphics/Math.hpp"
 #include "EraShift/Graphics/TextRenderer.hpp"
 
+#include <cstddef>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace EraShift::Game {
 
 using Graphics::Rect;
 using Graphics::Vec2;
+
+/// The UI scale for the current viewport, honouring the player's
+/// `graphics.uiScale` preference.
+///
+/// Defined once, here, because two screens having slightly different ideas of
+/// what "one UI pixel" means is exactly how a menu ends up with one screen
+/// using 24px type and the next using 34px in the same window.
+[[nodiscard]] Graphics::UiScale uiScaleFor(const StateContext& ctx);
 
 /// Typography for a menu, shared by every screen that uses MenuList so the
 /// title, the entries and the hints cannot drift apart.
@@ -37,6 +47,28 @@ struct MenuStyles {
     /// The default Era Shift menu look at the given UI scale.
     [[nodiscard]] static MenuStyles make(Graphics::UiScale scale);
 };
+
+/// A panel whose size is derived from its contents rather than hard-coded.
+///
+/// Every screen that shows a list of entries lays it out through this, so the
+/// main menu, the pause menu and the settings screen cannot drift apart as the
+/// row count, the type size or the window size changes.
+struct PanelLayout {
+    Rect panel;    ///< The panel background and border.
+    Rect heading;  ///< Where the title line sits. Empty when there is none.
+    Rect list;     ///< Where the rows sit, inset by the panel padding.
+    Rect footer;   ///< Where the hint line sits. Empty when there is none.
+};
+
+/// Lays out a panel for `rowCount` entries, centred in `area`.
+///
+/// `area` is the space the panel may occupy (normally the whole viewport).
+/// The returned panel is never larger than `area`, so a long list on a short
+/// window degrades by clipping rather than by running off the screen.
+[[nodiscard]] PanelLayout layoutPanel(const Rect& area, const MenuStyles& styles,
+                                      std::size_t rowCount, std::string_view heading,
+                                      std::string_view footer,
+                                      Graphics::TextRenderer& text);
 
 /// A selectable entry in a menu list.
 struct MenuItem {
@@ -65,7 +97,12 @@ public:
     [[nodiscard]] bool isSelectedEnabled() const noexcept;
 
     /// Index of the hovered item, or npos when the pointer is not over the list.
-    [[nodiscard]] std::size_t hitTest(const Rect& bounds, Vec2 point) const noexcept;
+    ///
+    /// Takes the styles because row height is derived from the entry type size;
+    /// using the raw metric instead would put the hit area out of step with what
+    /// is drawn whenever a font is large enough to force the taller row.
+    [[nodiscard]] std::size_t hitTest(const Rect& bounds, Vec2 point,
+                                      const MenuStyles& styles) const noexcept;
 
     /// Draws the list. The row geometry is derived from the entry style so hit
     /// testing and drawing can never disagree.
@@ -73,10 +110,10 @@ public:
                 const Rect& bounds, Vec2 mouse, const MenuStyles& styles) const;
 
     /// Height one row occupies, in pixels.
-    [[nodiscard]] float rowHeight(const MenuStyles& styles) const;
+    [[nodiscard]] float rowHeight(const MenuStyles& styles) const noexcept;
     /// Bounds of a single row, or an empty rect when the index is out of range.
     [[nodiscard]] Rect rowBounds(std::size_t index, const Rect& bounds,
-                                 const MenuStyles& styles) const;
+                                 const MenuStyles& styles) const noexcept;
 
     void setMetrics(float rowHeight, float spacing) noexcept
     {
@@ -100,21 +137,44 @@ public:
     void update(StateContext& ctx, double fixedDelta) override;
     void render(StateContext& ctx, double alpha) override;
 
+    /// Where the list sits, given the current viewport and scale.
+    /// Used by update() for hit testing and by render() for drawing, so the
+    /// two can never disagree about where an entry is.
+    [[nodiscard]] Rect listBounds(const StateContext& ctx) const;
+
 private:
     void drawBackdrop(Graphics::Renderer2D& renderer, const Rect& area, double time) const;
     void activateSelection(StateContext& ctx);
-    /// Where the menu panel sits, given the current viewport and scale.
-    [[nodiscard]] Rect menuPanel(const Rect& area) const;
-    /// Where the title block sits.
-    [[nodiscard]] Rect titleBlock(const Rect& area) const;
+    /// Rebuilds the entry list, enabling entries whose backing feature exists.
+    void buildMenu(StateContext& ctx);
+    /// Rebuilds the styles when the viewport or the UI-scale preference changes.
+    void syncScale(StateContext& ctx);
+    /// Full vertical layout for this frame: title block, menu and captions
+    /// stacked from measured text heights and centred as one group.
+    struct Layout {
+        Rect title;
+        Rect tagline;
+        Rect build;
+        Rect panel;
+        Rect list;
+        Rect detail;
+        Rect hints;
+        float totalHeight = 0.0f;
+    };
+    [[nodiscard]] Layout computeLayout(const StateContext& ctx) const;
+    void drawTitleBlock(const StateContext& ctx, const Layout& layout) const;
 
-    MenuList    m_menu;
-    MenuStyles  m_styles;
-    float       m_time      = 0.0f;
+    MenuList   m_menu;
+    MenuStyles m_styles;
+    float      m_time = 0.0f;
     Graphics::UiScale m_viewportScale{1.0f};
 
-    /// UI scale derived from the current viewport.
-    [[nodiscard]] Graphics::UiScale currentUiScale(const StateContext& ctx) const;
+    /// Build label, tinted warm. Kept apart from the tagline so the two cannot
+    /// be accidentally styled as one.
+    Graphics::TextStyle m_buildStyle;
+
+    /// True when a save file exists, which is what enables CONTINUE.
+    bool m_hasSave = false;
 };
 
 } // namespace EraShift::Game

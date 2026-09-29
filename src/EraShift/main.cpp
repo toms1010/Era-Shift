@@ -40,6 +40,9 @@ void printUsage(const char* executable)
         "  --log-file <path>   Also write the log to <path>\n"
         "  --frames <n>        Quit after n frames. 0 means no limit.\n"
         "  --headless          Use the dummy video driver (CI, SSH, containers).\n"
+    "  --start-state <s>   Open on a screen other than the title screen:\n"
+    "                      playing | settings | credits | paused. A developer\n"
+    "                      and screenshot aid, not part of the game.\n"
         "  --screenshot <png>  Write a PNG of the window to <png>.\n"
         "  --screenshot-frame <n>  Take the screenshot on frame <n> (default 30).\n"
         "  --help, -h          Show this message\n"
@@ -59,6 +62,7 @@ int main(int argc, char* argv[])
     std::string logFilePath;
     std::string logLevelName;
     std::filesystem::path screenshotPath;
+    std::string startState;
     long frameLimit = 0;          ///< 0 means "run until quit".
     long screenshotFrame = 30;
 
@@ -154,6 +158,12 @@ int main(int argc, char* argv[])
             }
             continue;
         }
+        if (arg == "--start-state") {
+            const char* value = takeValue("--start-state");
+            if (value == nullptr) return usageError("--start-state requires a value");
+            startState = value;
+            continue;
+        }
         if (arg == "--headless") {
             // Forces the dummy video driver so the smoke test works over SSH and
             // in CI containers with no display server.
@@ -216,6 +226,11 @@ int main(int argc, char* argv[])
     Engine engine;
     std::string error;
 
+    // Must be set before initialise(): the game builds its state stack there.
+    if (!startState.empty()) {
+        engine.setStartState(startState);
+    }
+
     try {
         if (!engine.initialise(config.store(), contentRoot, projectRoot.string(), error)) {
             log.fatal("main", "engine initialisation failed: {}", error);
@@ -232,7 +247,11 @@ int main(int argc, char* argv[])
         }
 
         if (!screenshotPath.empty()) {
-            engine.setScreenshotRequest(screenshotPath);
+            // The frame is honoured here rather than left at its default, which
+            // is what `--screenshot-frame N` used to do: parse the number, then
+            // ignore it.
+            engine.setScreenshotRequest(screenshotPath,
+                                        static_cast<unsigned long>(screenshotFrame));
         }
 
         engine.run();

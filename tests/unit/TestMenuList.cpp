@@ -140,16 +140,16 @@ TEST_CASE("hit testing maps a point to its row")
     const Rect bounds{0.0f, 0.0f, 300.0f, 200.0f};
     const float stride = menu.rowHeight(styles) + styles.rowSpacing;
 
-    CHECK(menu.hitTest(bounds, Vec2{150.0f, stride * 0.5f}) == 0);
-    CHECK(menu.hitTest(bounds, Vec2{150.0f, stride * 1.5f}) == 1);
-    CHECK(menu.hitTest(bounds, Vec2{150.0f, stride * 2.5f}) == 2);
+    CHECK(menu.hitTest(bounds, Vec2{150.0f, stride * 0.5f}, styles) == 0);
+    CHECK(menu.hitTest(bounds, Vec2{150.0f, stride * 1.5f}, styles) == 1);
+    CHECK(menu.hitTest(bounds, Vec2{150.0f, stride * 2.5f}, styles) == 2);
 
     // Above the list.
-    CHECK(menu.hitTest(bounds, Vec2{150.0f, -10.0f}) == static_cast<std::size_t>(-1));
+    CHECK(menu.hitTest(bounds, Vec2{150.0f, -10.0f}, styles) == static_cast<std::size_t>(-1));
     // Left of the list.
-    CHECK(menu.hitTest(bounds, Vec2{-10.0f, stride * 0.5f}) == static_cast<std::size_t>(-1));
+    CHECK(menu.hitTest(bounds, Vec2{-10.0f, stride * 0.5f}, styles) == static_cast<std::size_t>(-1));
     // Past the last row.
-    CHECK(menu.hitTest(bounds, Vec2{150.0f, 5000.0f}) == static_cast<std::size_t>(-1));
+    CHECK(menu.hitTest(bounds, Vec2{150.0f, 5000.0f}, styles) == static_cast<std::size_t>(-1));
 }
 
 TEST_CASE("hit testing refuses disabled rows so the mouse cannot select them")
@@ -162,8 +162,32 @@ TEST_CASE("hit testing refuses disabled rows so the mouse cannot select them")
     const Rect bounds{0.0f, 0.0f, 300.0f, 200.0f};
     const float stride = menu.rowHeight(styles) + styles.rowSpacing;
 
-    CHECK(menu.hitTest(bounds, Vec2{150.0f, stride * 0.5f}) == 0);
-    CHECK(menu.hitTest(bounds, Vec2{150.0f, stride * 1.5f}) == static_cast<std::size_t>(-1));
+    CHECK(menu.hitTest(bounds, Vec2{150.0f, stride * 0.5f}, styles) == 0);
+    CHECK(menu.hitTest(bounds, Vec2{150.0f, stride * 1.5f}, styles) == static_cast<std::size_t>(-1));
+}
+
+TEST_CASE("hit testing uses the derived row height, not the raw metric")
+{
+    MenuList menu;
+    MenuStyles styles = testStyles();
+    // A font large enough to force the taller row. With the raw metric the
+    // hit area would sit above the drawn rows and every click would land one
+    // entry too high.
+    styles.entry.pixelSize = 120;
+    menu.setMetrics(10.0f, 4.0f);
+    menu.setItems({{"A", ""}, {"B", ""}, {"C", ""}});
+
+    const Rect bounds{0.0f, 0.0f, 400.0f, 800.0f};
+    const float stride = menu.rowHeight(styles) + 4.0f;
+
+    CHECK(menu.rowHeight(styles) > 10.0f);
+    CHECK(menu.hitTest(bounds, Vec2{200.0f, stride * 0.5f}, styles) == 0);
+    CHECK(menu.hitTest(bounds, Vec2{200.0f, stride * 1.5f}, styles) == 1);
+    CHECK(menu.hitTest(bounds, Vec2{200.0f, stride * 2.5f}, styles) == 2);
+
+    // In the spacing below the last row there is nothing to click.
+    CHECK(menu.hitTest(bounds, Vec2{200.0f, stride * 3.0f}, styles) ==
+          static_cast<std::size_t>(-1));
 }
 
 TEST_CASE("select() ignores disabled and out-of-range indices")

@@ -243,7 +243,28 @@ void Renderer2D::drawRect(const Rect& rect, Color color, bool filled, float thic
     }
     ++m_drawCalls;
     SDL_SetRenderDrawColor(m_renderer, color.r, color.g, color.b, color.a);
-    const SDL_FRect fr{rect.x, rect.y, rect.w, rect.h};
+
+    // Snap to whole pixels before filling. SDL's GPU renderer draws a fill as
+    // a quad with alpha blending, so a rect whose edges land mid-pixel is
+    // rasterised with partial coverage. Two abutting rects then both blend
+    // into the shared pixel row and it comes out darker than either colour -
+    // which shows up as a dark hairline across every gradient band, every
+    // parallax ridge and every seam between two tiles.
+    //
+    // The *edges* are snapped and the size is derived from them, rather than
+    // snapping the size as well. Rounding the size independently lets the edges
+    // drift apart and leaves a one-pixel gap that the cleared framebuffer shows
+    // through as a black line. Deriving it means abutting rects always share an
+    // exact edge: no overlap to double-blend, no gap to see through.
+    const float left   = std::round(rect.x);
+    const float top    = std::round(rect.y);
+    const float right  = std::round(rect.x + rect.w);
+    const float bottom = std::round(rect.y + rect.h);
+
+    const SDL_FRect fr{left, top, right - left, bottom - top};
+    if (fr.w <= 0.0f || fr.h <= 0.0f) {
+        return;
+    }
     if (filled) {
         SDL_RenderFillRect(m_renderer, &fr);
     } else {

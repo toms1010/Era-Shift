@@ -1,11 +1,14 @@
 # Era Shift - engine library
 #
 # Split into two objects libraries:
-#   EraShiftCore  - no SDL. Logging, config, timing, state machine, maths.
-#                   Linked into the test suite, so every unit test runs without
-#                   a display server.
+#   EraShiftCore  - no SDL. Logging, config, timing, state machine, maths, and
+#                   the whole gameplay simulation (tile map, actors, player,
+#                   enemies, world, levels, saves). Gameplay lives here rather
+#                   than with the renderer for one reason: it must be testable
+#                   headlessly, and the whole simulation has no reason to know
+#                   what a frame is.
 #   EraShiftEngine - everything that touches SDL. Window, renderer, input,
-#                   resources, audio bootstrap, game states.
+#                   resources, and the states that draw the simulation.
 
 add_library(erashift_core STATIC
     EraShift/Core/Log.cpp
@@ -14,8 +17,18 @@ add_library(erashift_core STATIC
     EraShift/Core/GameState.cpp
     EraShift/Core/Config.cpp
     EraShift/Core/SignalHandler.cpp
+    EraShift/Core/SaveGame.cpp
     EraShift/Graphics/Math.cpp
     EraShift/Graphics/Color.cpp
+
+    # Gameplay simulation. No SDL, no renderer, fully headless.
+    EraShift/Game/Era.cpp
+    EraShift/Game/TileMap.cpp
+    EraShift/Game/Actor.cpp
+    EraShift/Game/Player.cpp
+    EraShift/Game/Enemy.cpp
+    EraShift/Game/Level.cpp
+    EraShift/Game/World.cpp
 )
 
 target_include_directories(erashift_core PUBLIC
@@ -54,6 +67,7 @@ add_library(erashift_engine STATIC
     EraShift/Game/states/MainMenuState.cpp
     EraShift/Game/states/PlayingState.cpp
     EraShift/Game/states/PausedState.cpp
+    EraShift/Game/states/ResultState.cpp
 )
 
 target_include_directories(erashift_engine PUBLIC

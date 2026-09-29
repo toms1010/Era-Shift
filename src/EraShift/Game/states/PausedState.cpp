@@ -48,15 +48,6 @@ std::string percent(int value)
 
 } // namespace
 
-UiScale uiScaleFor(const StateContext& ctx)
-{
-    if (ctx.renderer == nullptr) {
-        return UiScale{1.0f};
-    }
-    return UiScale::forViewport(static_cast<float>(ctx.renderer->camera().viewportWidth()),
-                                static_cast<float>(ctx.renderer->camera().viewportHeight()));
-}
-
 void PausedState::syncScale(StateContext& ctx)
 {
     const UiScale latest = uiScaleFor(ctx);
@@ -146,6 +137,7 @@ void PausedState::update(StateContext& ctx, double fixedDelta)
 void PausedState::render(StateContext& ctx, double alpha)
 {
     Renderer2D& renderer = *ctx.renderer;
+    Graphics::TextRenderer& text = *ctx.text;
     const Rect area = fullArea(renderer);
     static_cast<void>(alpha);
 
@@ -156,25 +148,21 @@ void PausedState::render(StateContext& ctx, double alpha)
     // player keeps their bearings.
     renderer.drawRect(area, Color{0, 0, 0, 0xB0});
 
-    const float panelW = 360.0f;
-    const float panelH = 280.0f;
-    const Rect panel{area.center().x - panelW * 0.5f, area.center().y - panelH * 0.5f, panelW, panelH};
+    const PanelLayout layout =
+        layoutPanel(area, m_styles, m_menu.items().size(), "PAUSED", "ESC to resume", text);
 
-    renderer.drawRect(panel, Palette::PanelFill);
-    renderer.drawRect(panel, Palette::PanelBorder);
-
-    Graphics::TextRenderer& text = *ctx.text;
+    renderer.drawRect(layout.panel, Palette::PanelFill);
+    renderer.drawRect(layout.panel, Palette::PanelBorder);
 
     TextStyle heading = m_styles.heading;
-    heading.pixelSize = 34;
-    text.drawInRect(renderer, Rect{panel.x, panel.y + 22.0f, panel.w, 40.0f}, "PAUSED", heading);
-
-    const Rect bounds{panel.x + 24.0f, panel.y + 74.0f, panel.w - 48.0f, 180.0f};
-    m_menu.render(renderer, text, bounds,
+    text.drawInRect(renderer, layout.heading, "PAUSED", heading);
+    m_menu.render(renderer, text, layout.list,
                   ctx.input != nullptr ? ctx.input->mousePosition() : Vec2{}, m_styles);
+    text.drawInRect(renderer, layout.footer, "ESC to resume", m_styles.hint);
 
-    text.drawInRect(renderer, Rect{panel.x, panel.bottom() - 30.0f, panel.w, 22.0f},
-                    "ESC to resume", m_styles.hint);
+    if (ctx.overlay != nullptr && ctx.stats != nullptr) {
+        ctx.overlay->render(renderer, text, *ctx.stats, *ctx.states, ctx.loop->stats());
+    }
 
     renderer.setBlendMode(BlendMode::None);
 }
@@ -218,7 +206,10 @@ void SettingsState::onExit(StateContext& ctx)
 
 void SettingsState::buildItems(StateContext& ctx)
 {
-    m_menu.setMetrics(34.0f, 6.0f);
+    // Row metrics come from the shared style, never from a literal: the pause
+    // menu, the settings screen and the main menu must agree on what a row
+    // looks like or the three screens look like three different games.
+    m_menu.setMetrics(m_styles.rowHeight, m_styles.rowSpacing);
 
     switch (m_page) {
         case Page::General:
@@ -369,39 +360,37 @@ void SettingsState::update(StateContext& ctx, double fixedDelta)
 void SettingsState::render(StateContext& ctx, double alpha)
 {
     Renderer2D& renderer = *ctx.renderer;
+    Graphics::TextRenderer& text = *ctx.text;
     const Rect area = fullArea(renderer);
     static_cast<void>(alpha);
+
+    const char* title = "SETTINGS";
+    switch (m_page) {
+        case Page::General:  title = "SETTINGS"; break;
+        case Page::Graphics: title = "GRAPHICS"; break;
+        case Page::Audio:    title = "AUDIO";    break;
+        case Page::Controls: title = "CONTROLS"; break;
+    }
 
     renderer.setCameraEnabled(false);
     renderer.setBlendMode(BlendMode::Alpha);
     renderer.drawRect(area, Color{0, 0, 0, 0xB0});
 
-    const float panelW = 420.0f;
-    const float panelH = 360.0f;
-    const Rect panel{area.center().x - panelW * 0.5f, area.center().y - panelH * 0.5f, panelW, panelH};
+    const PanelLayout layout = layoutPanel(area, m_styles, m_menu.items().size(), title,
+                                           "Left / right to change      Esc to go back", text);
 
-    renderer.drawRect(panel, Palette::PanelFill);
-    renderer.drawRect(panel, Palette::PanelBorder);
+    renderer.drawRect(layout.panel, Palette::PanelFill);
+    renderer.drawRect(layout.panel, Palette::PanelBorder);
 
-    const char* title = "SETTINGS";
-    switch (m_page) {
-        case Page::General:  title = "SETTINGS";       break;
-        case Page::Graphics: title = "GRAPHICS";       break;
-        case Page::Audio:    title = "AUDIO";          break;
-        case Page::Controls: title = "CONTROLS";       break;
-    }
-    Graphics::TextRenderer& text = *ctx.text;
-
-    TextStyle heading = m_styles.heading;
-    heading.pixelSize = 30;
-    text.drawInRect(renderer, Rect{panel.x, panel.y + 24.0f, panel.w, 38.0f}, title, heading);
-
-    const Rect bounds{panel.x + 24.0f, panel.y + 78.0f, panel.w - 48.0f, 240.0f};
-    m_menu.render(renderer, text, bounds,
+    text.drawInRect(renderer, layout.heading, title, m_styles.heading);
+    m_menu.render(renderer, text, layout.list,
                   ctx.input != nullptr ? ctx.input->mousePosition() : Vec2{}, m_styles);
+    text.drawInRect(renderer, layout.footer, "Left / right to change      Esc to go back",
+                    m_styles.hint);
 
-    text.drawInRect(renderer, Rect{panel.x, panel.bottom() - 30.0f, panel.w, 22.0f},
-                    "Left / right to change    Esc to go back", m_styles.hint);
+    if (ctx.overlay != nullptr && ctx.stats != nullptr) {
+        ctx.overlay->render(renderer, text, *ctx.stats, *ctx.states, ctx.loop->stats());
+    }
 
     renderer.setBlendMode(BlendMode::None);
 }

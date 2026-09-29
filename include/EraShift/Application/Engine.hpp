@@ -66,6 +66,15 @@ public:
     /// disables the limit. Used by the headless smoke test.
     void setFrameLimit(unsigned long frames) noexcept { m_frameLimit = frames; }
 
+    /// Starts the game on a screen other than the title screen.
+    ///
+    /// A developer and screenshot aid, not a feature of the game: it exists so
+    /// every screen can be captured and smoke-tested without playing through to
+    /// it, which is how the earlier screenshots of this project ended up only
+    /// ever showing the main menu. Must be set before `run()`.
+    void setStartState(std::string state) { m_startState = std::move(state); }
+    [[nodiscard]] const std::string& startState() const noexcept { return m_startState; }
+
     /// Writes the next presented frame to `path` as a PNG. Used by the
     /// automated visual smoke test.
     void setScreenshotRequest(std::filesystem::path path, unsigned long frame = 30)
@@ -132,6 +141,9 @@ private:
     bool        m_initialised = false;
     /// Keeps the quit/close subscriptions alive for the session.
     std::vector<Application::EventBus::Subscription> m_subscriptions;
+
+    /// Name of the screen to start on. Empty means the normal title screen.
+    std::string m_startState;
 
     unsigned long m_frameLimit = 0;
     unsigned long m_framesPresented = 0;

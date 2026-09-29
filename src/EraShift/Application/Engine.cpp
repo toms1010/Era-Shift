@@ -186,6 +186,7 @@ bool Engine::initialise(const ConfigStore& config,
     rebuildContext();
 
     m_game = std::make_unique<Game::GameApp>();
+    m_game->setStartState(m_startState);
     m_game->initialise(m_context);
 
     // --- loop ----------------------------------------------------------------

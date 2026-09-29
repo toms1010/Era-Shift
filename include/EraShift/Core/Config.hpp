@@ -110,6 +110,12 @@ public:
     /// Directory that assets and data are loaded from.
     [[nodiscard]] const std::filesystem::path& contentRoot() const noexcept { return m_contentRoot; }
 
+    /// Directory save files live in: `<user config>/saves`.
+    ///
+    /// Beside the user's settings rather than beside the executable, so a save
+    /// survives a reinstall and cannot be picked up by a source checkout.
+    [[nodiscard]] std::filesystem::path saveDirectory() const;
+
     static std::filesystem::path defaultUserConfigDir();
 
 private:

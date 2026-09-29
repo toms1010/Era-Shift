@@ -421,6 +421,11 @@ std::filesystem::path ConfigManager::defaultUserConfigDir()
     return std::filesystem::current_path(ec) / "config";
 }
 
+std::filesystem::path ConfigManager::saveDirectory() const
+{
+    return m_userConfigDir / "saves";
+}
+
 std::filesystem::path executableDirectory(const char* argv0)
 {
     if (argv0 == nullptr || argv0[0] == '\0') {

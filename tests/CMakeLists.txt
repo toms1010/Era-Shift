@@ -1,10 +1,11 @@
 # Era Shift - automated tests
 #
-# Four binaries, split by what they need:
+# Three binaries, split by what they need:
 #   unit        - no SDL, no display. The default target for `ctest`.
 #   integration - no display either, but exercises several systems together.
-#   timeline    - reserved for the Era/Timeline system (Phase 4).
-#   save        - reserved for the save system (Phase 7).
+#   gameplay    - the whole simulation: era rules, tile collision, the player
+#                controller, enemies, the world, level data and saves. No SDL
+#                either, which is the reason all of it lives in erashift_core.
 #
 # All of them link only erashift_core plus doctest, so the suite runs on a
 # headless CI machine and in a container.
@@ -78,4 +79,20 @@ erashift_add_test(erashift_tests_integration
         integration/TestMain.cpp
         integration/TestStateFlow.cpp
         integration/TestConfigRoundTrip.cpp
+)
+
+# The gameplay suite links only erashift_core. If any of it needs SDL the split
+# has been broken, and this target failing to configure is the first place it
+# shows up.
+erashift_add_test(erashift_tests_gameplay
+    SOURCES
+        gameplay/TestMain.cpp
+        gameplay/TestEra.cpp
+        gameplay/TestTileMap.cpp
+        gameplay/TestActor.cpp
+        gameplay/TestPlayer.cpp
+        gameplay/TestEnemy.cpp
+        gameplay/TestWorld.cpp
+        gameplay/TestLevel.cpp
+        gameplay/TestSaveGame.cpp
 )

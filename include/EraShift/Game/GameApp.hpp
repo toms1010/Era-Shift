@@ -12,6 +12,7 @@
 #include "EraShift/Input/InputManager.hpp"
 
 #include <memory>
+#include <string>
 
 namespace EraShift::Game {
 
@@ -33,6 +34,10 @@ public:
     /// input systems exist.
     void initialise(StateContext& context);
 
+    /// Screen to open on instead of the title screen, or empty for the normal
+    /// start. See `Engine::setStartState`.
+    void setStartState(std::string state) { m_startState = std::move(state); }
+
     /// Tears down any state that holds resources.
     void shutdown() noexcept;
 
@@ -44,6 +49,7 @@ private:
     Core::StateMachine* m_stateMachine = nullptr;
     StateContext*       m_context      = nullptr;
     std::shared_ptr<MainMenuState> m_mainMenu;
+    std::string m_startState;
 };
 
 } // namespace EraShift::Game
