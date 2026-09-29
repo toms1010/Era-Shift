@@ -1,0 +1,26 @@
+{
+  "game": {
+    "title": "Era Shift",
+    "version": "0.1.0",
+    "startEra": "Present",
+    "startingRegion": "AncientForest",
+    "language": "en"
+  },
+  "engine": {
+    "fixedTicksPerSecond": 60,
+    "maxSimulationStepsPerFrame": 5,
+    "maxFrameDeltaMs": 250
+  },
+  "save": {
+    "directory": "saves",
+    "fileExtension": ".json",
+    "maxSlots": 12,
+    "autosaveOnAnchor": true
+  },
+  "paths": {
+    "assets": "assets",
+    "data": "data",
+    "maps": "maps",
+    "config": "config"
+  }
+}

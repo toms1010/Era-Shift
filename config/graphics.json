@@ -1,0 +1,22 @@
+{
+  "graphics": {
+    "windowTitle": "Era Shift",
+    "windowWidth": 1280,
+    "windowHeight": 720,
+    "resizable": true,
+    "fullscreen": false,
+    "vsync": true,
+    "highDpi": true,
+    "logicalWidth": 0,
+    "logicalHeight": 0,
+    "uiScale": 100,
+    "scaleMode": "nearest",
+    "targetFps": 60,
+    "maxParticles": 4000,
+    "enableParallax": true,
+    "enableLighting": false,
+    "enableScreenShake": true,
+    "uiFont": "assets/fonts/SpaceGrotesk.ttf",
+    "uiFontSize": 20
+  }
+}

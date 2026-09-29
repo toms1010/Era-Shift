@@ -1,0 +1,26 @@
+# Build output
+build/
+out/
+cmake-build-*/
+.cache/
+compile_commands.json
+
+# Project-local third-party prefix produced by scripts/fetch_deps.sh
+.deps/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Runtime artefacts
+*.log
+logs/
+saves/
+crashdumps/
+*.pid
+
+# Asset pipeline scratch output
+tools/**/out/

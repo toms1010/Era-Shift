@@ -1,0 +1,26 @@
+{
+  "debug": {
+    "showStats": false,
+    "logLevel": "info",
+    "logToFile": false,
+    "logDirectory": "logs",
+
+    "drawColliders": false,
+    "drawAiState": false,
+    "drawEntityIds": false,
+    "drawGrid": false,
+    "drawNavigation": false,
+    "drawTimelineGraph": false,
+    "freezeOnBreakpoint": false,
+
+    "allowConsoleCommands": false,
+    "allowCheats": false,
+    "logResourceLoads": true,
+    "logStateTransitions": true
+  },
+  "profiling": {
+    "enabled": false,
+    "writeCsv": false,
+    "outputFile": "logs/profile.csv"
+  }
+}

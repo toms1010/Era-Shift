@@ -1,0 +1,17 @@
+{
+  "audio": {
+    "enabled": true,
+    "masterVolume": 80,
+    "musicVolume": 70,
+    "sfxVolume": 90,
+    "ambienceVolume": 60,
+
+    "outputDevice": "",
+    "mixRate": 48000,
+    "channels": 2,
+    "bufferSamples": 1024,
+
+    "musicFadeSeconds": 1.5,
+    "eraTransitionSfx": "sfx/era_shift/shift.wav"
+  }
+}

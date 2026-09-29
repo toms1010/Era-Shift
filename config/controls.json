@@ -1,0 +1,33 @@
+{
+  "controls": {
+    "MoveLeft": "A",
+    "MoveRight": "D",
+    "MoveUp": "W",
+    "MoveDown": "S",
+
+    "Jump": "Space",
+    "Dash": "Left Shift",
+    "Interact": "E",
+    "Attack": "Mouse Left",
+    "HeavyAttack": "Mouse Right",
+    "Aim": "Mouse Middle",
+
+    "ShiftEra": "Q",
+    "Inventory": "I",
+    "Map": "M",
+    "QuestLog": "J",
+    "Pause": "Escape",
+
+    "DebugOverlay": "F3",
+    "Screenshot": "F12"
+  },
+  "mouse": {
+    "sensitivity": 1.0,
+    "invertY": false,
+    "aimWithCamera": true
+  },
+  "gamepad": {
+    "deadzone": 0.2,
+    "vibration": true
+  }
+}
