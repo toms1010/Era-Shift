@@ -170,6 +170,50 @@ TEST_CASE("every one-shot can be asked for on a live mixer")
     CHECK(manager->available());   // every one-shot fired without wedging the pool
 }
 
+TEST_CASE("a one-shot actually starts a mixer track")
+{
+    // This is the test that the bug above should have been caught by.
+    //
+    // Every one-shot used to be dropped: the samples were handed to
+    // `MIX_SetTrackIOStream`, which reads a container header to learn the
+    // format, and a buffer of raw float PCM has no header, so the track was
+    // left with no input and `MIX_PlayTrack` failed. The mixer stayed open, the
+    // beds kept playing, and the old version of the test above only checked that
+    // `available()` was still true - which it was. Music and ambience played and
+    // every sound effect was silent, which reads exactly like a healthy audio
+    // system from the outside.
+    //
+    // So the assertion has to be about a voice actually sounding, not about the
+    // mixer existing.
+    auto manager = liveManager();
+    if (manager == nullptr) {
+        return;   // no device: nothing to assert, and that is supported
+    }
+    REQUIRE(manager->available());
+
+    for (int i = 0; i <= static_cast<int>(Sfx::Victory); ++i) {
+        const auto sfx = static_cast<Sfx>(i);
+        manager->play(sfx, 1.0f);
+        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+        // Checked per sound, not once at the end: the pool is six voices deep,
+        // so a single check at the end could pass on a bed voice and prove
+        // nothing about the one-shot.
+        CHECK_MESSAGE(manager->diagnostics().sfxVoices > 0,
+                      "no channel started for " << std::string(toString(sfx)));
+    }
+}
+
+TEST_CASE("the self-test reports no problems on a live device")
+{
+    // The same checks `--audio-test` runs, so the diagnostic a person runs by
+    // hand is also a test.
+    auto manager = liveManager();
+    if (manager == nullptr) {
+        return;
+    }
+    CHECK(manager->runSelfTest() == 0);
+}
+
 TEST_CASE("volume settings reach the mixer")
 {
     auto manager = liveManager();

@@ -484,9 +484,25 @@ void renderSfx(Sfx sfx, int sampleRate, SampleBuffer& out)
         }
     };
 
-    /// A filtered noise gesture: impacts, whooshes, rubble.
-    const auto addNoise = [&](float amp, float shape, float length, float cutoff) {
-        LowPass filter;
+    /// A band-passed noise gesture: impacts, whooshes, rubble.
+    ///
+    /// This was a *single* one-pole low-pass with a coefficient of 0.45-0.60,
+    /// which is 6dB/octave - so white noise through it is still overwhelmingly
+    /// hiss. The swing whoosh and the dash were, to the ear, static. Measured, the
+    /// swing was 54% energy above the filter corner and the dash 61%, and a
+    /// capture of a fight had *no musical peaks at all*: the noise layer had
+    /// smeared over the music entirely. Muting the SFX brought the peaks straight
+    /// back, which is what identified it.
+    ///
+    /// A band-pass is `high-pass then low-pass`: subtract a low-passed copy to
+    /// remove the rumble, then low-pass what is left to remove the hiss. What
+    /// survives is the mid band, which is where an impact actually lives.
+    ///
+    /// `lowCut` and `highCut` are one-pole coefficients, so the corner is roughly
+    /// `coefficient * sampleRate / 2pi`.
+    const auto addNoise = [&](float amp, float shape, float length, float lowCut, float highCut) {
+        LowPass rumble;
+        LowPass top;
         for (int i = 0; i < frames; ++i) {
             const float t = static_cast<float>(i) / rate;
             if (t > length) {
@@ -495,8 +511,11 @@ void renderSfx(Sfx sfx, int sampleRate, SampleBuffer& out)
             const float local = t / length;
             const std::uint32_t index = static_cast<std::uint32_t>(t * static_cast<float>(sampleRate)) +
                                         static_cast<std::uint32_t>(sfx) * 104729u;
-            const float value =
-                filter.process(hashNoise(index), cutoff) * amp * std::exp(-shape * local);
+            const float raw = hashNoise(index);
+            // High-pass by subtracting a low-passed copy...
+            const float band = raw - rumble.process(raw, lowCut);
+            // ...then tame the top, which is what makes it an impact and not a hiss.
+            const float value = top.process(band, highCut) * amp * std::exp(-shape * local);
             out[static_cast<std::size_t>(i) * 2] += value;
             out[static_cast<std::size_t>(i) * 2 + 1] += value;
         }
@@ -509,32 +528,32 @@ void renderSfx(Sfx sfx, int sampleRate, SampleBuffer& out)
 
         case Sfx::Jump: addTone(320.0f, 620.0f, 0.16f, 7.0f, 0.0f, duration); break;
         case Sfx::Land:
-            addNoise(0.22f, 14.0f, duration, 0.20f);
+            addNoise(0.22f, 14.0f, duration, 0.04f, 0.10f);
             addTone(120.0f, 70.0f, 0.14f, 9.0f, 0.0f, duration);
             break;
-        case Sfx::Dash: addNoise(0.20f, 4.0f, duration, 0.45f); break;
+        case Sfx::Dash: addNoise(0.20f, 4.0f, duration, 0.05f, 0.20f); break;
 
         case Sfx::Attack:
-            addNoise(0.24f, 10.0f, 0.16f, 0.55f);
+            addNoise(0.24f, 10.0f, 0.16f, 0.06f, 0.22f);
             addTone(900.0f, 420.0f, 0.10f, 11.0f, 0.0f, 0.16f);
             break;
         case Sfx::HitEnemy:
-            addNoise(0.30f, 18.0f, 0.14f, 0.35f);
+            addNoise(0.30f, 18.0f, 0.14f, 0.03f, 0.15f);
             addTone(180.0f, 90.0f, 0.20f, 14.0f, 0.0f, 0.16f);
             break;
         case Sfx::EnemyHurt: addTone(420.0f, 260.0f, 0.16f, 12.0f, 0.0f, duration); break;
         case Sfx::EnemyDie:
-            addNoise(0.26f, 7.0f, 0.45f, 0.30f);
+            addNoise(0.26f, 7.0f, 0.45f, 0.03f, 0.10f);
             addTone(300.0f, 60.0f, 0.22f, 6.0f, 0.0f, 0.5f);
             break;
 
         case Sfx::PlayerHurt:
             addTone(260.0f, 130.0f, 0.26f, 8.0f, 0.0f, duration);
-            addNoise(0.14f, 10.0f, 0.2f, 0.25f);
+            addNoise(0.14f, 10.0f, 0.2f, 0.02f, 0.08f);
             break;
         case Sfx::PlayerDie:
             addTone(220.0f, 55.0f, 0.30f, 3.0f, 0.0f, duration);
-            addNoise(0.20f, 3.0f, 0.6f, 0.15f);
+            addNoise(0.20f, 3.0f, 0.6f, 0.015f, 0.06f);
             break;
 
         case Sfx::PickupChrono:
@@ -565,12 +584,12 @@ void renderSfx(Sfx sfx, int sampleRate, SampleBuffer& out)
         case Sfx::ShiftImpact:
             // The signature: a low impact under a burst of distortion.
             addTone(90.0f, 40.0f, 0.34f, 5.0f, 0.0f, 0.7f);
-            addNoise(0.20f, 6.0f, 0.35f, 0.5f);
+            addNoise(0.20f, 6.0f, 0.35f, 0.04f, 0.18f);
             addTone(1400.0f, 300.0f, 0.12f, 9.0f, 0.0f, 0.4f);
             break;
 
         case Sfx::Hazard:
-            addNoise(0.24f, 12.0f, 0.22f, 0.60f);
+            addNoise(0.24f, 12.0f, 0.22f, 0.08f, 0.30f);
             addTone(500.0f, 200.0f, 0.12f, 10.0f, 0.0f, 0.22f);
             break;
         case Sfx::Victory:

@@ -148,6 +148,21 @@ public:
 
     [[nodiscard]] Diagnostics diagnostics() const noexcept;
 
+    /// Plays every documented sound in sequence through the real device and
+    /// logs what each one actually did, one `[AUDIO TEST]` block per event.
+    ///
+    /// This exists because "the mixer opened" and "the game makes a noise" are
+    /// different claims, and only the second one is the one a player cares
+    /// about. A silent one-shot, a bed whose stream ran dry, or a bus muted to
+    /// zero all report healthy initialisation, so the only way to catch them is
+    /// to generate, queue, and measure each stage.
+    ///
+    /// Needs a running mixer to be useful; with no device it still measures the
+    /// generated PCM, so it remains a meaningful test on a headless machine.
+    ///
+    /// Returns the number of checks that failed, so a script can gate on it.
+    int runSelfTest();
+
     /// A human-readable dump, one field per line. Returns an owned string so the
     /// caller decides where it goes.
     [[nodiscard]] std::string describe() const;
@@ -218,6 +233,10 @@ private:
     static constexpr std::size_t kSfxChannels = 6;
     std::array<Channel, kSfxChannels> m_channels{};
     std::uint64_t m_channelClock = 0;
+
+    /// Latches after the first failed `MIX_PlayTrack`, so a systematic failure
+    /// is reported once rather than on every footstep.
+    bool m_sfxStartFailureLogged = false;
 
     /// Rendered once at start-up so playback costs a track start and nothing
     /// else. Indexed by `Sfx`.

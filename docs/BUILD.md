@@ -178,9 +178,13 @@ Run it under gdb (see `CRASH_ANALYSIS.md`) or with `--log-level trace`. A null
 `StateContext::valid()`.
 
 **No audio**
-ALSA development headers were absent on this machine, so SDL was built with the
-dummy audio backend. Install `libasound2-dev` and re-run `./scripts/fetch_deps.sh
---clean`. Audio is not wired into the game until Phase 5 regardless.
+If the game logs `no available audio device`, SDL was built without a real audio
+backend. `./scripts/fetch_deps.sh` probes PulseAudio and ALSA independently and
+builds SDL against whichever it finds, so a machine with only PipeWire/PulseAudio
+still gets working sound. `./scripts/get_audio_headers.sh` installs the needed
+headers without root if the distribution package is unavailable. Check
+`./EraShift --audio-debug` for the driver it ended up with. A game with no sound
+device is still playable — audio is deliberately not a required subsystem.
 
 **The window closes but the process lingers**
 Fixed in this version — see `CRASH_ANALYSIS.md` §5. If it recurs, confirm

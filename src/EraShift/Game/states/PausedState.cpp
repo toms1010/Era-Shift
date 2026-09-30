@@ -343,14 +343,24 @@ std::vector<MenuItem> SettingsState::controlItems(StateContext& ctx) const
 
 const std::vector<Input::Action>& SettingsState::controlActions()
 {
-    // The actions a player actually rebinds. Debug and screenshot keys are left
-    // alone: a player who has rebound those away has no way to get the overlay
-    // or a screenshot back.
+    // The actions a player actually rebinds, which is the list of actions that
+    // something actually reads.
+    //
+    // `Aim` used to be here. It is bound to a key and it appeared in this list as
+    // a rebindable row, and it did nothing at all - there is no aiming in a
+    // melee-only game, so no consumer ever read the action. A row in a settings
+    // screen is a promise that the control does something, and offering one that
+    // does not is worse than not offering it: the player rebinds it, sees no
+    // change, and concludes the rebinding is broken rather than that the row was
+    // a lie.
+    //
+    // Debug and screenshot are left alone deliberately: a player who rebound those
+    // away would have no way to get the overlay or a capture back.
     static const std::vector<Input::Action> kActions = {
         Input::Action::MoveLeft, Input::Action::MoveRight, Input::Action::MoveUp,
         Input::Action::MoveDown, Input::Action::Jump,     Input::Action::Dash,
         Input::Action::Interact, Input::Action::Attack,   Input::Action::HeavyAttack,
-        Input::Action::Aim,      Input::Action::ShiftEra,
+        Input::Action::ShiftEra,
     };
     return kActions;
 }

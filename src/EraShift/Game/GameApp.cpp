@@ -7,6 +7,7 @@
 #include "EraShift/Game/states/ResultState.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <filesystem>
 #include <string_view>
@@ -89,6 +90,62 @@ void GameApp::updateGlobalInput(StateContext& context)
         context.overlay->toggle();
         context.log->debug("Game", "debug overlay {}", context.overlay->visible() ? "enabled" : "disabled");
     }
+
+    // F12.
+    //
+    // This handler is the entire reason the key was not working. The binding to
+    // F12 existed, the key reached the InputManager, and `Engine` had a
+    // subscription for `ScreenshotRequested` ready to write the file - but
+    // nothing ever *published* that event, so the chain dead-ended at the input
+    // manager and the key did nothing. A subscription with no publisher is a
+    // feature that reads as implemented and is not, which is worse than an
+    // obviously missing one: the README documented F12, the key was bound, and
+    // pressing it did nothing.
+    //
+    // The event is published rather than the file written here, because the
+    // Engine owns the renderer and the capture has to happen on a presented
+    // frame rather than mid-draw.
+    if (context.input->wasPressed(Input::Action::Screenshot)) {
+        publishScreenshot(context);
+    }
+}
+
+void GameApp::publishScreenshot(StateContext& context)
+{
+    // Where a screenshot goes. Beside the user's other content rather than the
+    // working directory, so it is findable afterwards and so pressing F12 while
+    // the game was launched from somewhere unusual does not scatter PNGs about.
+    std::filesystem::path directory;
+    if (context.config != nullptr) {
+        directory = context.config->userConfigDir() / "screenshots";
+    }
+    if (directory.empty()) {
+        directory = std::filesystem::temp_directory_path() / "erashift-screenshots";
+    }
+
+    // A name that sorts chronologically and cannot collide with an existing
+    // file, because silently overwriting the previous screenshot is how you lose
+    // the one you actually wanted.
+    const auto now = std::chrono::system_clock::now();
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                             now.time_since_epoch())
+                             .count();
+    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now.time_since_epoch() - std::chrono::seconds(seconds))
+                            .count();
+
+    std::filesystem::path path = directory / ("erashift-" + std::to_string(seconds) + "-" +
+                                              std::to_string(millis) + ".png");
+    for (int suffix = 1; std::filesystem::exists(path) && suffix < 1000; ++suffix) {
+        path = directory / ("erashift-" + std::to_string(seconds) + "-" +
+                            std::to_string(millis) + "-" + std::to_string(suffix) + ".png");
+    }
+
+    Application::Event event;
+    event.type = Application::EventType::ScreenshotRequested;
+    event.path = path;
+    context.events->publish(event);
+    context.log->info("Game", "screenshot requested: {}", path.string());
 }
 
 } // namespace EraShift::Game

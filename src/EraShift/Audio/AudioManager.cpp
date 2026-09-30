@@ -301,14 +301,34 @@ void AudioManager::play(Sfx sfx, float volume, float pitch)
         return;
     }
 
-    // An IOStream over the cached samples. This is what replaces loading a .wav
-    // from disk: the buffer is already in memory, and SDL reads it the same way.
-    SDL_IOStream* io = SDL_IOFromConstMem(m_sfxCache[index].data(),
-                                          m_sfxCache[index].size() * sizeof(float));
-    if (io == nullptr) {
+    // The cached samples go in through an explicitly-formatted audio stream,
+    // the same way the music and ambience beds do.
+    //
+    // This used to hand the samples to `MIX_SetTrackIOStream`, which is the
+    // function for *decodable containers* - it reads a WAV or Ogg header to
+    // learn the format. The cache is raw interleaved float PCM with no header at
+    // all, so the mixer could not determine a format, the track ended up with no
+    // input assigned, and every `MIX_PlayTrack` failed with "No audio currently
+    // assigned to this track".
+    //
+    // The failure was invisible from outside: the mixer opened, the buses had
+    // gain, the bed tracks played, and the log reported a healthy audio system.
+    // Every one-shot was simply dropped, so the game had music, ambience and
+    // silence. `MIX_PlayTrack`'s return value was discarded, which is what let
+    // it stay hidden - it is checked now.
+    SDL_AudioStream* stream = makeStream(m_sampleRate);
+    if (stream == nullptr) {
         return;
     }
-    MIX_SetTrackIOStream(static_cast<MIX_Track*>(channel->track), io, true);
+    if (!SDL_PutAudioStreamData(stream, m_sfxCache[index].data(),
+                               static_cast<int>(m_sfxCache[index].size() * sizeof(float)))) {
+        SDL_DestroyAudioStream(stream);
+        return;
+    }
+    if (!MIX_SetTrackAudioStream(static_cast<MIX_Track*>(channel->track), stream)) {
+        SDL_DestroyAudioStream(stream);
+        return;
+    }
 
     // Pitch is a resample ratio on the track, which is how one footstep becomes a
     // heavier or lighter one without a second buffer.
@@ -319,8 +339,19 @@ void AudioManager::play(Sfx sfx, float volume, float pitch)
 
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetNumberProperty(props, MIX_PROP_PLAY_LOOPS_NUMBER, 0);
-    MIX_PlayTrack(static_cast<MIX_Track*>(channel->track), props);
+    const bool started = MIX_PlayTrack(static_cast<MIX_Track*>(channel->track), props);
     SDL_DestroyProperties(props);
+    if (!started && m_log != nullptr) {
+        // Once per distinct failure rather than once per sound: a footstep that
+        // fails sixty times a second would bury every other line in the log.
+        if (m_sfxStartFailureLogged) {
+            return;
+        }
+        m_sfxStartFailureLogged = true;
+        m_log->warn("audio", "one-shot track refused to start ({}); further "
+                              "one-shot failures will not be logged",
+                    SDL_GetError());
+    }
 }
 
 void AudioManager::playPriority(Sfx sfx, float volume, float pitch)
@@ -664,6 +695,226 @@ void AudioManager::shutdown() noexcept
     m_available = false;
     m_driverName = "none";
     MIX_Quit();
+}
+
+
+namespace {
+
+const char* musicStateName(MusicState state) noexcept
+{
+    switch (state) {
+        case MusicState::Exploring: return "Exploring";
+        case MusicState::Alert:     return "Alert";
+        case MusicState::Combat:    return "Combat";
+        case MusicState::Still:     return "Still";
+    }
+    return "Unknown";
+}
+
+/// RMS and peak of a buffer, and how much of it is exactly zero.
+///
+/// The zero count is the one that catches the failure a peak cannot: a sound
+/// that decays to silence for its last few milliseconds is correct, a sound
+/// that is *entirely* zero is a synthesis or routing bug wearing a healthy
+/// peak.
+struct PcmStats {
+    float rms      = 0.0f;
+    float peak     = 0.0f;
+    int   zeros    = 0;
+    int   samples  = 0;
+    float seconds  = 0.0f;
+    int   clipped  = 0;
+};
+
+PcmStats measure(const SampleBuffer& buffer, int sampleRate) noexcept
+{
+    PcmStats s;
+    s.samples = static_cast<int>(buffer.size());
+    if (s.samples == 0 || sampleRate <= 0) {
+        return s;
+    }
+    double sumSquares = 0.0;
+    for (const float sample : buffer) {
+        const float magnitude = std::fabs(sample);
+        s.peak = std::max(s.peak, magnitude);
+        if (sample == 0.0f) {
+            ++s.zeros;
+        }
+        if (magnitude > 1.0f) {
+            ++s.clipped;
+        }
+        sumSquares += static_cast<double>(sample) * static_cast<double>(sample);
+    }
+    s.rms     = static_cast<float>(std::sqrt(sumSquares / static_cast<double>(s.samples)));
+    s.seconds = static_cast<float>(s.samples) / static_cast<float>(sampleRate * 2);
+    return s;
+}
+
+} // namespace
+
+int AudioManager::runSelfTest()
+{
+    // The eleven events the audio design commits to, in the order a player
+    // meets them. Kept as a table so the log and the checks cannot drift apart.
+    struct Step {
+        const char* label;
+        Sfx         sfx;
+    };
+    static constexpr Step kOneShots[] = {
+        {"ui_click",        Sfx::UiConfirm},
+        {"player_attack",   Sfx::Attack},
+        {"player_hit",      Sfx::PlayerHurt},
+        {"enemy_hit",       Sfx::EnemyHurt},
+        {"enemy_death",     Sfx::EnemyDie},
+        {"era_shift",       Sfx::ShiftImpact},
+        {"chrono_pickup",   Sfx::PickupChrono},
+        {"seal_pickup",     Sfx::SealTaken},
+        {"gate_opening",    Sfx::GateOpened},
+    };
+
+    const int rate = sampleRate();
+    int failures  = 0;
+
+    auto emit = [this](const std::string& line) {
+        if (m_log != nullptr) {
+            m_log->info("AUDIO TEST", "{}", line);
+        }
+    };
+
+    emit("--- device ---");
+    emit("device=" + std::string(m_driverName) + " rate=" + std::to_string(rate) +
+         " channels=2 format=f32 mixer=" + std::string(m_mixer != nullptr ? "open" : "none") +
+         " available=" + (m_available ? "true" : "false") +
+         " audible=" + (audible() ? "true" : "false") +
+         " muted=" + (m_muted ? "true" : "false"));
+    emit("bus_gain master=" + std::to_string(masterVolume()) +
+         " music=" + std::to_string(busVolume(Bus::Music)) +
+         " ambience=" + std::to_string(busVolume(Bus::Ambience)) +
+         " sfx=" + std::to_string(busVolume(Bus::Sfx)));
+
+    if (!m_available) {
+        emit("no audio device: measuring generated PCM only, playback not checked");
+    }
+
+    // --- one-shots -----------------------------------------------------------
+    for (const Step& step : kOneShots) {
+        // Rendered fresh rather than read from the cache, so this measures the
+        // synthesiser. The cache is exercised immediately afterwards by
+        // playing it.
+        SampleBuffer rendered;
+        renderSfx(step.sfx, rate, rendered);
+        const PcmStats stats = measure(rendered, rate);
+
+        // Feed the beds too, so the mixer keeps draining while the one-shot is
+        // being timed, exactly as it would in play.
+        const bool silent = stats.peak <= 0.0f || stats.rms <= 0.0f;
+        const bool allZero = stats.zeros == stats.samples;
+        if (silent || allZero) {
+            ++failures;
+        }
+        if (stats.clipped > 0) {
+            ++failures;
+        }
+
+        play(step.sfx);
+
+        int voicesNow = 0;
+        for (const Channel& channel : m_channels) {
+            if (channel.track != nullptr && MIX_TrackPlaying(static_cast<MIX_Track*>(channel.track))) {
+                ++voicesNow;
+            }
+        }
+
+        // Let it actually sound: a fixed step per iteration keeps this the same
+        // code path the game uses rather than a test-only shortcut.
+        for (int i = 0; i < 12; ++i) {
+            update(1.0f / 60.0f, m_era, m_musicState, m_tension);
+        }
+
+        int voices = 0;
+        for (const Channel& channel : m_channels) {
+            if (channel.track != nullptr && MIX_TrackPlaying(static_cast<MIX_Track*>(channel.track))) {
+                ++voices;
+            }
+        }
+        // Voices only mean something when there is a device to play them on.
+        if (m_available && voices == 0) {
+            ++failures;
+        }
+
+        std::string line = "[AUDIO TEST] event=" + std::string(step.label) +
+                           " generated_samples=" + std::to_string(stats.samples) +
+                           " rms=" + std::to_string(stats.rms) +
+                           " peak=" + std::to_string(stats.peak) +
+                           " zero_samples=" + std::to_string(stats.zeros) +
+                           " clipped=" + std::to_string(stats.clipped) +
+                           " duration_s=" + std::to_string(stats.seconds) +
+                           " track_playing=" + (voices > 0 ? "true" : "false") +
+                           " voices_at_play=" + std::to_string(voicesNow) +
+                           " bus_gain=" + std::to_string(busVolume(Bus::Sfx)) +
+                           " master_gain=" + std::to_string(masterVolume()) +
+                           " device=" + std::string(m_driverName) +
+                           " verdict=" + (silent || allZero ? "SILENT" : "ok");
+        emit(line);
+    }
+
+    // --- ambience bed --------------------------------------------------------
+    {
+        setBedsPlaying(true);
+        for (int i = 0; i < 60; ++i) {
+            update(1.0f / 60.0f, m_era, MusicState::Still, m_tension);
+        }
+        const Diagnostics d = diagnostics();
+        // `lastAmbiencePeak` is a decaying hold, so a working bed that happens to
+        // be between gusts still reads as non-zero.
+        if (d.lastAmbiencePeak <= 0.0f) {
+            ++failures;
+        }
+        if (m_available && !d.ambiencePlaying) {
+            ++failures;
+        }
+        emit("[AUDIO TEST] event=ambient_loop generated_samples=n/a" +
+             std::string(" rms=n/a peak=") + std::to_string(d.lastAmbiencePeak) +
+             " stream_available=" + std::to_string(d.ambienceBacklogBytes) + "B" +
+             " track_playing=" + (d.ambiencePlaying ? "true" : "false") +
+             " bus_gain=" + std::to_string(busVolume(Bus::Ambience)) +
+             " master_gain=" + std::to_string(masterVolume()) +
+             " device=" + std::string(m_driverName) +
+             " verdict=" + (d.lastAmbiencePeak > 0.0f ? "ok" : "SILENT"));
+    }
+
+    // --- music bed -----------------------------------------------------------
+    {
+        // All four documented states, so a state that produced nothing would
+        // show up as a silent bed rather than as a plausible-looking log line.
+        for (const MusicState state :
+             {MusicState::Exploring, MusicState::Alert, MusicState::Combat, MusicState::Still}) {
+            setMusicState(state);
+            for (int i = 0; i < 30; ++i) {
+                update(1.0f / 60.0f, m_era, state, m_tension);
+            }
+            const Diagnostics d = diagnostics();
+            if (d.lastMusicPeak <= 0.0f) {
+                ++failures;
+            }
+            if (m_available && !d.musicPlaying) {
+                ++failures;
+            }
+            emit("[AUDIO TEST] event=music_loop state=" + std::string(musicStateName(state)) +
+                 " generated_samples=n/a" +
+                 " rms=n/a peak=" + std::to_string(d.lastMusicPeak) +
+                 " stream_available=" + std::to_string(d.musicBacklogBytes) + "B" +
+                 " track_playing=" + (d.musicPlaying ? "true" : "false") +
+                 " bus_gain=" + std::to_string(busVolume(Bus::Music)) +
+                 " master_gain=" + std::to_string(masterVolume()) +
+                 " device=" + std::string(m_driverName) +
+                 " verdict=" + (d.lastMusicPeak > 0.0f ? "ok" : "SILENT"));
+        }
+    }
+
+    emit("--- result ---");
+    emit("failures=" + std::to_string(failures));
+    return failures;
 }
 
 } // namespace EraShift::Audio

@@ -46,6 +46,13 @@ public:
     void updateGlobalInput(StateContext& context);
 
 private:
+    /// Publishes a `ScreenshotRequested` event with a collision-free path.
+    ///
+    /// Split out of `updateGlobalInput` because the path policy (where, named
+    /// how, never overwriting) is worth reading on its own and is the part most
+    /// likely to change.
+    void publishScreenshot(StateContext& context);
+
     Core::StateMachine* m_stateMachine = nullptr;
     StateContext*       m_context      = nullptr;
     std::shared_ptr<MainMenuState> m_mainMenu;

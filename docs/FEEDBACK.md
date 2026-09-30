@@ -122,6 +122,35 @@ When every channel is still sounding, the oldest is stolen rather than the new
 sound being dropped — a fresh hit is more informative than the tail of an old
 one. A dropped footstep is inaudible; a dropped hit is a missing hit.
 
+### Click-free by construction
+
+Three rules, each of which was a measured defect first:
+
+1. **Any filter state that has to outlive a call is a member.** A one-pole filter
+   declared as a local in `render` is rebuilt from zero every call: that is not
+   filtering, it is re-attacking, and it clicks once per block. The pad and lead
+   filters were locals; the ambience's were members. That is the entire reason the
+   music clicked and the ambience did not.
+2. **No oscillator's phase comes from a clock that wraps.** `m_time` is the *beat*
+   clock and is deliberately wrapped every step; feeding it to a sine makes the
+   note jump. Accumulated phase, always.
+3. **Every rendered one-shot is faded at both ends.** All twenty started at full
+   amplitude and stopped at their exact length, which is a step at each edge. One
+   `applyEdgeFades` over the finished buffer, so it applies to everything
+   regardless of how it is built.
+
+Measured on captured output: −17.2dBFS RMS, −4.7dBFS peak, zero clipped samples.
+
+A note on how these were found, because it is the useful part: the first defect
+was found by *recording the sink and analysing the waveform*, not by listening.
+Listening tells you "it's clicky"; analysing tells you the gaps cluster at exact
+multiples of 16.7ms, which points at the frame boundary and therefore at state
+that does not survive a call. And a click detector cannot tell noise from clicks —
+muting the ambience removed most of the apparent transients, because wind is
+filtered noise and has steep slopes by nature. Isolating each synth and feeding it
+the game's exact 800-frame blocks is what separated the real defect from the
+measurement artefact.
+
 ### Beds never stop
 
 A mixer track reading a stream that has run dry reaches the end of it and stops.

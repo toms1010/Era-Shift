@@ -20,14 +20,18 @@ using Graphics::Vec2;
 
 /// Mirrors InputManager::kActionCount. A static_assert in the member functions
 /// below keeps the two from drifting apart.
-constexpr std::size_t kActionCount = 17;
+constexpr std::size_t kActionCount = 13;
 static_assert(static_cast<std::size_t>(Action::Count) == kActionCount,
               "kActionNames table is out of sync with the Action enum");
 
+// A static_assert above keeps this in step with the enum, and a name is only here
+// if something consumes the action it labels. "Aim", "Inventory", "Map" and
+// "QuestLog" were removed rather than kept as placeholders: see the note on
+// `Action::Count`.
 constexpr std::array<std::string_view, kActionCount> kActionNames = {
     "MoveLeft", "MoveRight", "MoveUp", "MoveDown",
-    "Jump", "Dash", "Interact", "Attack", "HeavyAttack", "Aim",
-    "ShiftEra", "Inventory", "Map", "QuestLog", "Pause",
+    "Jump", "Dash", "Interact", "Attack", "HeavyAttack",
+    "ShiftEra", "Pause",
     "DebugOverlay", "Screenshot",
 };
 
@@ -193,14 +197,10 @@ void InputManager::setDefaultBindings()
     m_bindings[static_cast<std::size_t>(Action::Interact)]   = {key(Key::E), key(Key::F)};
     m_bindings[static_cast<std::size_t>(Action::Attack)]     = {mouse(MouseButton::Left), key(Key::J)};
     m_bindings[static_cast<std::size_t>(Action::HeavyAttack)] = {mouse(MouseButton::Right), key(Key::K)};
-    m_bindings[static_cast<std::size_t>(Action::Aim)]        = {mouse(MouseButton::Middle), {}};
 
     // Era Shift is the signature verb, so it gets the most reachable key.
-    m_bindings[static_cast<std::size_t>(Action::ShiftEra)]  = {key(Key::Q), key(Key::R)};
-    m_bindings[static_cast<std::size_t>(Action::Inventory)] = {key(Key::I), key(Key::Tab)};
-    m_bindings[static_cast<std::size_t>(Action::Map)]       = {key(Key::M), {}};
-    m_bindings[static_cast<std::size_t>(Action::QuestLog)]  = {key(Key::J), {}};
-    m_bindings[static_cast<std::size_t>(Action::Pause)]     = {key(Key::Escape), key(Key::P)};
+    m_bindings[static_cast<std::size_t>(Action::ShiftEra)] = {key(Key::Q), key(Key::R)};
+    m_bindings[static_cast<std::size_t>(Action::Pause)]    = {key(Key::Escape), key(Key::P)};
 
     m_bindings[static_cast<std::size_t>(Action::DebugOverlay)] = {key(Key::F3), {}};
     m_bindings[static_cast<std::size_t>(Action::Screenshot)]   = {key(Key::F12), {}};

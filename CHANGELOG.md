@@ -172,6 +172,59 @@ can see it.
 
 ### Fixed
 
+- **The music bed clicked 39 times a second, at exactly the frame rate.** The
+  pad and lead low-pass filters were *local variables* in
+  `MusicSynth::render`, so their state was rebuilt from zero on every call. A
+  one-pole filter that restarts from zero is not filtering, it is re-attacking:
+  a step discontinuity at every block boundary, and a bright, pumping pad that
+  had never actually been filtered. Measured 1101 transients over 28 seconds,
+  with gaps clustering at 17ms/33ms/50ms — exact multiples of the 16.7ms fixed
+  step. After the fix: 54, with the periodic signature gone entirely. The
+  ambience filters were members all along, which is why the ambience never
+  clicked and the music did.
+
+- **The whole mix was 20dB too quiet.** Measured −24.5dBFS RMS. The attenuation
+  was in two places at once (a 0.5 synth gain *and* the 0.65 music bus), so the
+  bed arrived at about a quarter of full scale: audible on a laptop, gone on a
+  phone speaker or anything with a limiter. Now −17.2dBFS RMS, −4.7dBFS peak,
+  zero clipped samples.
+
+- **The ambience bed was inaudible at −28dBFS.** The bed is a difference of two
+  heavily-filtered noise signals, so its natural amplitude is small — peak 0.18,
+  about −15dBFS. Scaled at the source rather than by raising `gain`, because
+  `gain` at 2.5 would hit the ±1 clamp inside `render` and turn gusts into
+  distortion. Now −4.5 to −10dBFS.
+
+- **Every one-shot had a step at both ends.** All twenty start at full amplitude
+  and stop the instant their length runs out; a step is a click. This was
+  invisible while the mix sat 20dB low — **fixing the level exposed a second
+  defect that had been there all along**, which is worth knowing: the two
+  bugs hid each other. `applyEdgeFades` now fades the first 1.5ms and last 12ms of
+  every rendered one-shot, once over the finished buffer, so every sound gets
+  clean edges however it was built.
+
+- **The bass note jumped discontinuously several times a second.** Its phase was
+  read from `m_time`, which is the *beat* clock and is deliberately wrapped every
+  step. It now has its own accumulated phase.
+
+- **The arpeggio's notes started at full amplitude**, which is a step, so every
+  note onset was a small click. A 4% attack ramp fixed it.
+
+- **`clampValue(NaN, 0, 1)` returned NaN.** `NaN < low` and `NaN > high` are
+  both false, so the two-comparison implementation returned the value it was asked
+  to contain. This matters most for audio: one NaN reaching a mixer gain turns
+  every sample into NaN, which is silence or noise rather than a quiet sound.
+  It now resolves to `low`, so the failure mode is "inaudible" instead of
+  "corrupts everything downstream". Volumes additionally enter the system only
+  through `setMasterPercent` / `setBusPercent`, which sanitise.
+
+- **`--audio-debug` added.** Prints the mixer's own view of itself at start-up and
+  exit: driver, buses, **whether each bed is actually playing** as opposed to
+  merely wanted, stream backlog, peak-hold level, SFX voices, and put failures.
+  The `playing` field and the peak-hold are the two that earn their keep: "the
+  game is quiet" is undiagnosable otherwise, and a single 16ms window of wind is
+  near-silence, so a per-block peak made a working ambience bed read as broken.
+
 - **The music and ambience beds stopped after about 100ms and never restarted.**
   This is the one that made the game silent, and it is worth reading because
   every diagnostic available at the time said audio was fine. A mixer track

@@ -69,6 +69,7 @@ ctest --preset debug --output-on-failure
 | `--start-state <s>` | Open on `playing`, `settings`, `credits` or `paused`. |
 | `--level <file>` | Load a specific level instead of the shipped one. |
 | `--demo` | Replace input with the built-in attract script. |
+| `--audio-debug` | Print the mixer's state: driver, buses, whether each bed is playing, backlog, level. |
 | `--content <dir>` | Load assets and data from elsewhere. |
 | `--set key=value` | Override any configuration value. |
 | `--log-level`, `--log-file` | Logging. |
@@ -332,6 +333,10 @@ that is what makes the music able to do the thing the game needs it to do.
   and stops, so both beds are primed with silence and a watchdog restarts either
   of them. That covers the ways a bed genuinely dies: a PipeWire sink suspending
   when idle, a Bluetooth headset appearing mid-game, a pause.
+- **Click-free by construction, and measured.** Every filter state that has to
+  outlive a call is a member, every one-shot is faded at both ends, and no
+  oscillator's phase comes from a clock that wraps. Captured output is
+  −17.2dBFS RMS, −4.7dBFS peak, zero clipped samples.
 
 **If the game is silent**, it is almost always that SDL was built without a
 PulseAudio backend — the driver is compiled in, not loaded at runtime, so no

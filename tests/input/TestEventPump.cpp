@@ -313,3 +313,38 @@ TEST_CASE("null and empty input are no-ops")
     SDL_Event event = keyEvent(SDL_EVENT_KEY_DOWN, SDLK_D);
     CHECK(pump.pump(&event, 0) == 0);
 }
+
+TEST_CASE("F12 reaches the screenshot action, and no dead key is bound to anything")
+{
+    // F12 was documented in the README and bound in the config, and pressing it
+    // did nothing: the event that the engine was subscribed to had no publisher.
+    // This test only covers the half that a platform test can honestly reach -
+    // that the key becomes the action. The publish -> subscribe -> save half is
+    // the same `requestScreenshot` path the `--screenshot` flag exercises, so it
+    // is verified by running the binary rather than by this test.
+    Core::Logger log;
+    Input::InputManager input;
+    input.setDefaultBindings();
+    Application::EventBus bus;
+    Application::EventPump pump(input, bus, log);
+
+    input.beginFrame();
+    SDL_Event down[] = {keyEvent(SDL_EVENT_KEY_DOWN, SDLK_F12)};
+    pump.pump(down, 1);
+    CHECK(input.wasPressed(Input::Action::Screenshot));
+    input.endFrame();
+
+    // Held, not re-pressed, and released on the way up - the same edge handling
+    // every other action gets, so a held F12 cannot queue a screenshot per frame.
+    input.beginFrame();
+    pump.pump(down, 1);
+    CHECK_FALSE(input.wasPressed(Input::Action::Screenshot));
+    CHECK(input.isDown(Input::Action::Screenshot));
+    input.endFrame();
+
+    input.beginFrame();
+    SDL_Event up[] = {keyEvent(SDL_EVENT_KEY_UP, SDLK_F12)};
+    pump.pump(up, 1);
+    CHECK_FALSE(input.isDown(Input::Action::Screenshot));
+    input.endFrame();
+}

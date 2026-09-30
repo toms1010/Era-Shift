@@ -99,15 +99,23 @@ enum class Action : std::uint16_t {
     Interact,
     Attack,
     HeavyAttack,
-    Aim,
     ShiftEra,
-    Inventory,
-    Map,
-    QuestLog,
     Pause,
     DebugOverlay,
     Screenshot,
 
+    /// One past the last action, so `kActionCount` stays correct.
+    ///
+    /// Every value above has a consumer. `Aim`, `Inventory`, `Map` and
+    /// `QuestLog` used to be here, bound to keys in `controls.json` and - in
+    /// Aim's case - offered to the player as a rebindable row in the settings
+    /// screen, with nothing anywhere reading them. An action with no consumer is
+    /// a button that does nothing, and a *visible* one is worse: the player
+    /// rebinds it, sees no change, and concludes the rebinding is broken.
+    ///
+    /// They were removed rather than left as placeholders. This game has no
+    /// aiming, no inventory, no map and no quest log, and adding a dead action
+    /// "for later" is how a settings screen starts lying.
     Count
 };
 
