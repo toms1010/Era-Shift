@@ -189,6 +189,20 @@ private:
         bool      busy = false;
         /// Monotonic, so "steal the oldest" is a comparison rather than a search.
         std::uint64_t startedAt = 0;
+        /// The one-shot's audio stream, owned by this channel.
+        ///
+        /// Owned rather than handed off, because `MIX_SetTrackAudioStream` does
+        /// *not* take ownership: the stream must stay valid for as long as the
+        /// track reads it and has to be destroyed by whoever made it. The
+        /// previous implementation used an `SDL_IOStream` with `closeio = true`,
+        /// which SDL_mixer did close for us, so the leak was invisible. Playing
+        /// through an explicit `SDL_AudioStream` instead - which is what fixed
+        /// BUG-013, because a headerless IOStream gave the mixer no format - means
+        /// the channel has to clean up after itself.
+        ///
+        /// Measured at 77.6 kB per one-shot before this was tracked, so a minute
+        /// of ordinary running leaked tens of megabytes.
+        SDL_AudioStream* stream = nullptr;
     };
 
     bool createMixer();

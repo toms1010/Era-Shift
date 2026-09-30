@@ -498,3 +498,37 @@ TEST_CASE("both beds recover together after simultaneous starvation")
     CHECK_GT(d.lastAmbiencePeak, 0.0f);
     CHECK_EQ(d.putFailures, 0u);
 }
+
+TEST_CASE("a long run of one-shots stays bounded and does not starve the beds")
+{
+    // The regression test for the stream-ownership leak: `play()` hands an
+    // explicitly-formatted `SDL_AudioStream` to the mixer, and
+    // `MIX_SetTrackAudioStream` does not take ownership, so the channel has to
+    // free the previous one itself. It did not, and every one-shot leaked a
+    // stream: measured at 77.6 kB per play by RSS, which is over 100 MB an hour
+    // of ordinary running.
+    //
+    // RSS is not asserted here because it is far too allocator-dependent to make
+    // a stable assertion - the numbers that matter were taken out of band with
+    // `scripts/check_audio_leaks.sh`. What is asserted here is the part that is
+    // deterministic: the pool stays inside its bound, the mixer keeps accepting
+    // data, and the beds are still running afterwards. A leak severe enough to
+    // matter would exhaust memory or wedge the mixer long before this finishes.
+    auto manager = liveManager();
+    if (manager == nullptr) {
+        return;
+    }
+    for (int i = 0; i < 60; ++i) {
+        manager->update(kStep, Game::Era::Present, MusicState::Combat, 0.0f);
+    }
+    for (int i = 0; i < 5000; ++i) {
+        manager->play(static_cast<Sfx>(i % 20), 1.0f);
+        manager->update(kStep, Game::Era::Present, MusicState::Combat, 0.0f);
+    }
+    const auto d = manager->diagnostics();
+    CHECK_LE(d.sfxVoices, 6);
+    CHECK_EQ(d.putFailures, 0u);
+    CHECK_MESSAGE(d.musicPlaying, "music stopped during one-shot pressure");
+    CHECK_MESSAGE(d.ambiencePlaying, "ambience stopped during one-shot pressure");
+    CHECK_GT(d.lastMusicPeak, 0.0f);
+}

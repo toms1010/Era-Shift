@@ -335,8 +335,7 @@ void AudioManager::play(Sfx sfx, float volume, float pitch)
     SDL_AudioStream* stream = makeStream(m_sampleRate);
     if (stream == nullptr) {
         return;
-    }
-    if (!SDL_PutAudioStreamData(stream, m_sfxCache[index].data(),
+    }    if (!SDL_PutAudioStreamData(stream, m_sfxCache[index].data(),
                                static_cast<int>(m_sfxCache[index].size() * sizeof(float)))) {
         SDL_DestroyAudioStream(stream);
         return;
@@ -345,6 +344,17 @@ void AudioManager::play(Sfx sfx, float volume, float pitch)
         SDL_DestroyAudioStream(stream);
         return;
     }
+    // Replacing the track's input is the documented point at which the previous
+    // stream is no longer needed, so the old one is freed *here* and not before.
+    // Doing it the other way round - stopping the track and freeing its stream
+    // while the track was still pointing at it - segfaults, because the audio
+    // thread is not synchronised with `MIX_StopTrack`.
+    if (channel->stream != nullptr) {
+        SDL_DestroyAudioStream(channel->stream);
+    }
+    // `MIX_SetTrackAudioStream` does not take ownership, so the channel owns it
+    // from here and frees it on the next play and at shutdown.
+    channel->stream = stream;
 
     // Pitch is a resample ratio on the track, which is how one footstep becomes a
     // heavier or lighter one without a second buffer.
@@ -727,6 +737,15 @@ void AudioManager::shutdown() noexcept
         }
         MIX_DestroyMixer(static_cast<MIX_Mixer*>(m_mixer));
         m_mixer = nullptr;
+    }
+    // After the mixer, not before: these streams were being read by the mixer, and
+    // destroying them while it still exists is a use-after-free rather than a
+    // tidy-up.
+    for (Channel& channel : m_channels) {
+        if (channel.stream != nullptr) {
+            SDL_DestroyAudioStream(channel.stream);
+            channel.stream = nullptr;
+        }
     }
     // The streams belong to the tracks that were reading them, and the mixer
     // being gone means nothing is reading. SDL frees them on quit.
