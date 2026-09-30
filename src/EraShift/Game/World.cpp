@@ -26,6 +26,30 @@ constexpr float kHazardCooldown = 0.7f;
 constexpr float kSealReach = 76.0f;
 /// Paradox awarded for each kind of event, shown on the results screen.
 constexpr float kParadoxPerShift = 12.0f;
+
+/// Seconds of freeze for each kind of impact. A graze should barely register; a
+/// kill and a shift are the two moments the game is allowed to stop the world.
+constexpr float kHitStopHit       = 0.045f;
+constexpr float kHitStopKill      = 0.11f;
+constexpr float kHitStopPlayerHit = 0.09f;
+constexpr float kHitStopShift     = 0.16f;
+constexpr float kHitStopSeal      = 0.20f;
+
+/// Midpoint of the overlap between two rects, falling back to the midpoint of
+/// their centres when they only just touch. `Rect` has no intersection helper
+/// in this codebase, and adding one for a single call site would be the wrong
+/// trade.
+Vec2 midpointOfContact(const Rect& a, const Rect& b, const Vec2& centreA, const Vec2& centreB)
+{
+    const float left   = std::max(a.left(), b.left());
+    const float right  = std::min(a.right(), b.right());
+    const float top    = std::max(a.top(), b.top());
+    const float bottom = std::min(a.bottom(), b.bottom());
+    if (right > left && bottom > top) {
+        return Vec2{(left + right) * 0.5f, (top + bottom) * 0.5f};
+    }
+    return (centreA + centreB) * 0.5f;
+}
 constexpr float kParadoxPerSeal  = 60.0f;
 constexpr float kParadoxPerKill  = 25.0f;
 
@@ -58,7 +82,16 @@ void World::emit(WorldEvent kind, std::string text)
     if (m_events.size() >= kMaxEvents) {
         m_events.erase(m_events.begin());
     }
-    m_events.push_back(EventRecord{kind, std::move(text)});
+    m_events.push_back(EventRecord{kind, std::move(text), m_player.body().center(), Vec2{1.0f, 0.0f}, 1.0f});
+}
+
+void World::emit(WorldEvent kind, Vec2 position, Vec2 direction, float strength)
+{
+    if (m_events.size() >= kMaxEvents) {
+        m_events.erase(m_events.begin());
+    }
+    m_events.push_back(EventRecord{kind, std::string{}, position, direction,
+                                   Graphics::clampValue(strength, 0.0f, 4.0f)});
 }
 
 std::vector<EventRecord> World::takeEvents()
@@ -98,6 +131,7 @@ void World::load(const Level& level)
             case EntityKind::Enemy: {
                 Enemy enemy;
                 enemy.spawn(entity.enemy, at, entity.existsIn);
+                enemy.setId(m_nextEnemyId++);
                 m_enemies.push_back(enemy);
                 break;
             }
@@ -158,6 +192,10 @@ void World::restart()
         }
         Enemy enemy;
         enemy.spawn(entity.enemy, m_level.worldPosition(entity), entity.existsIn);
+        // Ids keep counting up across a restart rather than starting over, so a
+        // stale presentation entry from the previous attempt can never be
+        // mistaken for the same enemy.
+        enemy.setId(m_nextEnemyId++);
         rebuilt.push_back(enemy);
     }
     m_enemies.swap(rebuilt);
@@ -229,6 +267,16 @@ bool World::gateOpen() const noexcept
     return !m_seals.empty() && sealsTaken() == static_cast<int>(m_seals.size());
 }
 
+std::vector<std::uint32_t> World::enemyIds() const
+{
+    std::vector<std::uint32_t> ids;
+    ids.reserve(m_enemies.size());
+    for (const Enemy& enemy : m_enemies) {
+        ids.push_back(enemy.id());
+    }
+    return ids;
+}
+
 int World::enemyCount() const noexcept
 {
     return static_cast<int>(m_enemies.size());
@@ -275,12 +323,43 @@ void World::update(const PlayerInput& input, const WorldCommands& commands, floa
         return;
     }
 
+    // Hit-stop. The simulation genuinely stops: physics, enemies, pickups and
+    // combat all hold, so an enemy cannot land a hit during the freeze the
+    // player's own blow caused. Only the presentation clock keeps running, so the
+    // spark travels while the world it came from is still. Holding a direction
+    // through a freeze is exactly what should feel heavy, so held input does not
+    // cancel it.
+    //
+    // What does cancel it is a fresh *press*. A freeze that swallows a button
+    // press is a lost input, and a lost input is felt as the game being
+    // unresponsive rather than as a stylistic choice - so any step the player
+    // pressed something on runs normally.
+    const bool pressed = commands.shiftPressed || commands.interactPressed || input.jumpPressed ||
+                         input.dashPressed || input.attackPressed;
+    const bool frozen  = (m_hitStop > 0.0f) && !pressed;
+    if (m_hitStop > 0.0f) {
+        m_hitStop = std::max(0.0f, m_hitStop - dt);
+    }
+
+    if (frozen) {
+        m_damageFlash = std::max(0.0f, m_damageFlash - dt * 2.5f);
+        return;
+    }
+
+    // `elapsed` is the run timer, and it is incremented *after* the freeze check
+    // on purpose. It measures how long the world actually experienced, so it
+    // stays in step with how far everything moved. Counting frozen steps would
+    // make the results screen disagree with the run it is describing: a player
+    // who landed many heavy hits would read a longer time having seen less
+    // happen.
     m_stats.elapsed += static_cast<double>(dt);
     ++m_frameIndex;
 
+    // The shift runs on the same step as everything else, never on its own clock.
     updateEraShift(commands);
 
     const bool alive = m_player.update(m_map, input, dt);
+    forwardPlayerEvents();
     if (!alive) {
         updateOutcome();
         return;
@@ -316,8 +395,41 @@ void World::updateEraShift(const WorldCommands& commands)
 
     ++m_stats.shifts;
     m_stats.paradox += kParadoxPerShift;
+    // The longest freeze in the game. A shift is the punctuation mark; if
+    // anything is allowed to make the world stop, it is this.
+    m_hitStop = std::max(m_hitStop, kHitStopShift);
     emit(WorldEvent::EraShifted,
          std::string("SHIFTED TO ") + std::string(eraName(target)));
+}
+
+void World::forwardPlayerEvents()
+{
+    const PlayerStepEvents& edges = m_player.stepEvents();
+    const Vec2  centre = m_player.body().center();
+    const float facing = m_player.facing();
+
+    if (edges.jumped) {
+        emit(WorldEvent::PlayerJumped, centre, Vec2{0.0f, -1.0f}, 1.0f);
+    }
+    if (edges.landed) {
+        // Strength from the impact speed, so a small step is quiet and a drop
+        // from the top of the level is not.
+        const float strength = Graphics::clampValue(edges.landSpeed / 900.0f, 0.15f, 1.6f);
+        emit(WorldEvent::PlayerLanded, centre, Vec2{0.0f, 1.0f}, strength);
+    }
+    if (edges.dashed) {
+        emit(WorldEvent::PlayerDashed, centre, Vec2{facing, 0.0f}, 1.0f);
+    }
+    if (edges.attacked) {
+        emit(WorldEvent::SwingStarted, centre, Vec2{facing, 0.0f}, 1.0f);
+    }
+    if (edges.swingConnected) {
+        emit(WorldEvent::SwingActive, centre, Vec2{facing, 0.0f}, 1.0f);
+    }
+    if (edges.footstep) {
+        emit(WorldEvent::PlayerFootstep, centre, Vec2{0.0f, 1.0f},
+             Graphics::clampValue(std::fabs(m_player.body().velocity.x) / 250.0f, 0.2f, 1.4f));
+    }
 }
 
 void World::updatePickups(float dt)
@@ -379,10 +491,24 @@ void World::updateCombat(float dt)
         }
         if (enemy.takeDamage(m_player.tuning().attackDamage, m_player.body().center())) {
             m_swingResolved = true;
-            if (enemy.state() == EnemyState::Dying) {
+            // The contact point is the intersection, not the enemy centre: the
+            // spark belongs where the two things met.
+            // The midpoint of the two centres, clipped to where they actually
+            // meet, is the contact point: the spark belongs where the swing and
+            // the target collided, not where either of them is centred.
+            const Vec2 contact = midpointOfContact(enemy.body().rect(), box,
+                                                   enemy.body().center(), m_player.body().center());
+            const Vec2 away = (contact - m_player.body().center());
+            const bool killed = enemy.state() == EnemyState::Dying;
+            emit(killed ? WorldEvent::EnemyKilled : WorldEvent::EnemyHurt, contact,
+                 away.isZero() ? Vec2{m_player.facing(), 0.0f} : away.normalized(),
+                 killed ? 1.6f : 1.0f);
+            if (killed) {
                 ++m_stats.kills;
                 m_stats.paradox += kParadoxPerKill;
-                emit(WorldEvent::EnemyKilled, std::string(enemyName(enemy.kind())) + " DESTROYED");
+                m_hitStop = std::max(m_hitStop, kHitStopKill);
+            } else {
+                m_hitStop = std::max(m_hitStop, kHitStopHit);
             }
             break;
         }
@@ -403,6 +529,7 @@ void World::updateCombat(float dt)
             ++m_stats.damageTaken;
             m_playerHurt  = true;
             m_damageFlash = 1.0f;
+            m_hitStop = std::max(m_hitStop, kHitStopPlayerHit);
             emit(WorldEvent::PlayerHurt, "HIT BY " + std::string(enemyName(enemy.kind())));
         }
     }
@@ -436,7 +563,9 @@ void World::updateCombat(float dt)
                 ++m_stats.damageTaken;
                 m_playerHurt  = true;
                 m_damageFlash = 1.0f;
+                m_hitStop = std::max(m_hitStop, kHitStopPlayerHit);
                 emit(WorldEvent::PlayerHurt, "HAZARD");
+                emit(WorldEvent::HazardTick, playerRect.center(), Vec2{0.0f, -1.0f}, 1.0f);
             }
         }
     } else {
@@ -486,6 +615,7 @@ void World::updateSealsAndGate(const WorldCommands& commands)
         seal.collected = true;
         ++m_stats.sealsTaken;
         m_stats.paradox += kParadoxPerSeal;
+        m_hitStop = std::max(m_hitStop, kHitStopSeal);
         emit(WorldEvent::SealTaken, seal.label + " RECOVERED");
     }
 

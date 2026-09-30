@@ -91,6 +91,10 @@ private:
     int   m_masterVolume = 80;
     int   m_musicVolume  = 70;
     int   m_sfxVolume    = 90;
+    /// Matches the default in `config/audio.json`. Kept separate from the SFX
+    /// slider so the two can be moved independently, which is the whole reason
+    /// the mixer has separate tags for them.
+    int   m_ambienceVolume = 55;
     int   m_uiScale      = 100;
 
     Rebind m_rebind = Rebind::None;

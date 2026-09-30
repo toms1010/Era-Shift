@@ -1,5 +1,7 @@
 #include "EraShift/Game/states/MainMenuState.hpp"
 
+#include "EraShift/Game/UiSound.hpp"
+
 #include "EraShift/Core/SaveGame.hpp"
 #include "EraShift/Game/states/PausedState.hpp"
 #include "EraShift/Game/states/ResultState.hpp"
@@ -467,11 +469,16 @@ void MainMenuState::update(StateContext& ctx, double fixedDelta)
 
     syncScale(ctx);
 
+    // The sound is on the press, not on the selection changing. A menu that
+    // skips disabled rows can move the highlight twice for one keypress, and
+    // clicking then would sound like the input was dropped.
     if (ctx.input->wasPressed(Action::MoveUp)) {
         m_menu.move(-1);
+        playUiMove(ctx);
     }
     if (ctx.input->wasPressed(Action::MoveDown)) {
         m_menu.move(1);
+        playUiMove(ctx);
     }
 
     const Rect list = computeLayout(ctx).list;
@@ -493,9 +500,14 @@ void MainMenuState::update(StateContext& ctx, double fixedDelta)
 void MainMenuState::activateSelection(StateContext& ctx)
 {
     const MenuItem* item = m_menu.currentItem();
-    if (item == nullptr || !item->enabled) {
+    if (item == nullptr) {
         return;
     }
+    if (!item->enabled) {
+        playUiDeny(ctx);
+        return;
+    }
+    playUiConfirm(ctx);
 
     if (item->label == "NEW GAME") {
         ctx.states->switchTo(std::make_shared<PlayingState>());

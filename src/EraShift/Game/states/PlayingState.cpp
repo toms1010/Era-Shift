@@ -1,5 +1,10 @@
 #include "EraShift/Game/states/PlayingState.hpp"
 
+#include "EraShift/Audio/AudioManager.hpp"
+#include "EraShift/Core/Config.hpp"
+#include "EraShift/Audio/Synth.hpp"
+#include "EraShift/Game/EraTheme.hpp"
+
 #include "EraShift/Application/EventBus.hpp"
 #include "EraShift/Core/SaveGame.hpp"
 #include "EraShift/Game/states/PausedState.hpp"
@@ -90,20 +95,6 @@ Rect fullArea(Renderer2D& renderer)
 }
 
 /// Interpolates between two themes during a shift.
-EraTheme blendThemes(const EraTheme& from, const EraTheme& to, float t)
-{
-    EraTheme out;
-    out.sky       = from.sky.lerpTo(to.sky, t);
-    out.skyLow    = from.skyLow.lerpTo(to.skyLow, t);
-    out.solid     = from.solid.lerpTo(to.solid, t);
-    out.solidEdge = from.solidEdge.lerpTo(to.solidEdge, t);
-    out.oneWay    = from.oneWay.lerpTo(to.oneWay, t);
-    out.hazard    = from.hazard.lerpTo(to.hazard, t);
-    out.actor     = from.actor.lerpTo(to.actor, t);
-    out.accent    = from.accent.lerpTo(to.accent, t);
-    return out;
-}
-
 /// Each enemy kind gets its own saturated body colour.
 ///
 /// Deriving them from the era theme made every ground enemy the same white as
@@ -152,6 +143,21 @@ void drawPips(Renderer2D& renderer, const Vec2& origin, int filled, int total, f
 }
 
 } // namespace
+
+EraTheme blendThemes(const EraTheme& from, const EraTheme& to, float t)
+{
+    const float k = Graphics::clampValue(t, 0.0f, 1.0f);
+    EraTheme out;
+    out.sky       = from.sky.lerpTo(to.sky, k);
+    out.skyLow    = from.skyLow.lerpTo(to.skyLow, k);
+    out.solid     = from.solid.lerpTo(to.solid, k);
+    out.solidEdge = from.solidEdge.lerpTo(to.solidEdge, k);
+    out.oneWay    = from.oneWay.lerpTo(to.oneWay, k);
+    out.hazard    = from.hazard.lerpTo(to.hazard, k);
+    out.actor     = from.actor.lerpTo(to.actor, k);
+    out.accent    = from.accent.lerpTo(to.accent, k);
+    return out;
+}
 
 const EraTheme& themeFor(Game::Era era)
 {
@@ -215,6 +221,25 @@ void PlayingState::onEnter(StateContext& ctx)
     m_outcomeDelay = kOutcomeDelay;
     m_toasts.clear();
     m_toastTimer  = 0.0f;
+
+    // Presentation state is per-run, not per-process: a restart must not inherit
+    // the previous attempt's particles or enemy animations, or the new run opens
+    // with debris falling that nothing in it caused.
+    m_feedback.reset();
+    m_enemyAnims.clear();
+    m_playerAnim.reset();
+
+    // `graphics.maxParticles` is a real budget, applied here rather than left as
+    // a decoration. A slider that looks live and does nothing is worse than no
+    // slider, and this is the one number a player might genuinely want to raise
+    // on a machine that can afford it.
+    if (ctx.config != nullptr && ctx.log != nullptr) {
+        const int budget =
+            ctx.config->store().clampInt("graphics", "maxParticles",
+                                         static_cast<int>(m_feedback.particleCapacity()), 64,
+                                         8192, *ctx.log);
+        m_feedback.setParticleCapacity(static_cast<std::size_t>(budget));
+    }
 
     syncLevel(ctx);
 
@@ -281,6 +306,12 @@ void PlayingState::onExit(StateContext& ctx)
     saveProgress(ctx);
     if (ctx.renderer != nullptr) {
         ctx.renderer->camera().clearBounds();
+    }
+    // The beds keep running: the results screen is still part of the run, and a
+    // hard cut to silence the moment the level stops is the single most
+    // noticeable thing a game can do to a soundscape.
+    if (ctx.audio != nullptr) {
+        ctx.audio->setMusicState(Audio::MusicState::Still);
     }
     ctx.log->info("Game", "left Playing");
 }
@@ -410,27 +441,24 @@ void PlayingState::update(StateContext& ctx, double fixedDelta)
     m_world.update(input, commands, dt);
     m_currentPlayer = m_world.player().body().position;
 
-    // --- events -> presentation --------------------------------------------
-    for (const Game::EventRecord& event : m_world.takeEvents()) {
+    // --- events -> presentation ---------------------------------------------
+    // The feedback system owns every reaction to an event. This loop only keeps
+    // the toasts, because a toast is this state's business: it is text on this
+    // screen, and no other state draws toasts.
+    const std::vector<Game::EventRecord> events = m_world.takeEvents();
+    for (const Game::EventRecord& event : events) {
+        if (event.text.empty()) {
+            continue;
+        }
         m_toasts.push_back(event.text);
         m_toastTimer = kToastLifetime;
-
-        switch (event.kind) {
-            case Game::WorldEvent::EraShifted:
-                m_shiftFlash = 1.0f;
-                ctx.renderer->camera().shake(5.0f, 0.25);
-                break;
-            case Game::WorldEvent::EnemyKilled:
-                ctx.renderer->camera().shake(4.0f, 0.18);
-                break;
-            case Game::WorldEvent::PlayerHurt:
-                m_hurtFlash = 1.0f;
-                ctx.renderer->camera().shake(7.0f, 0.22);
-                break;
-            default:
-                break;
-        }
     }
+    m_feedback.consume(events, m_world, ctx);
+
+    // Runs on the full step even when the world is in hit-stop. That is the
+    // point of hit-stop: the world is frozen and the spark that caused it keeps
+    // travelling.
+    m_feedback.update(ctx, fixedDelta, m_world);
 
     m_hurtFlash  = std::max(0.0f, m_hurtFlash - dt * 2.2f);
     m_shiftFlash = std::max(0.0f, m_shiftFlash - dt * 2.0f);
@@ -439,6 +467,10 @@ void PlayingState::update(StateContext& ctx, double fixedDelta)
         m_toasts.erase(m_toasts.begin());
         m_toastTimer = kToastLifetime * 0.55f;
     }
+
+    // --- animation -----------------------------------------------------------
+    updatePlayerAnimation(dt);
+    updateEnemyAnimations(dt);
 
     // --- camera -------------------------------------------------------------
     // Look-ahead in the direction of travel, damped frame-rate independently so
@@ -463,6 +495,169 @@ void PlayingState::update(StateContext& ctx, double fixedDelta)
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
+namespace {
+
+/// Picks the clip for the player from what the simulation is doing.
+///
+/// The switch is on simulation state, not on input, which is the whole point:
+/// the animation cannot get ahead of the physics or fall behind it, because it
+/// has no clock of its own to get ahead with. Where a single action spans
+/// several simulation phases - a swing, which is windup then active then
+/// recovery - one clip covers all of it and its time is driven from
+/// `attackProgress()`.
+AnimId playerClipFor(const Game::World& world, bool charging)
+{
+    const Game::Player& player = world.player();
+
+    if (!player.alive()) {
+        return AnimId::Death;
+    }
+    if (player.attacking() || player.attackPhase() != Game::AttackPhase::Idle) {
+        return AnimId::Attack;
+    }
+    if (player.dashing()) {
+        return AnimId::Dash;
+    }
+    if (charging) {
+        return AnimId::ShiftCharge;
+    }
+    if (!player.body().onGround) {
+        if (player.body().velocity.y < -40.0f) {
+            return AnimId::Jump;
+        }
+        if (player.body().velocity.y > 220.0f) {
+            return AnimId::Fall;
+        }
+        return AnimId::JumpStart;
+    }
+    const float speed = std::fabs(player.body().velocity.x);
+    if (speed < 12.0f) {
+        return AnimId::Idle;
+    }
+    return speed > 190.0f ? AnimId::Run : AnimId::Walk;
+}
+
+/// The same for an enemy, from its AI state.
+/// Applies a rig pose to a rectangle: squash about the feet, then lean about
+/// the centre.
+///
+/// Order matters and is not negotiable. Squashing about the *bottom* edge keeps
+/// the character standing on the floor while it compresses; squashing about the
+/// centre makes it sink into the ground. The lean is applied afterwards about
+/// the result, because a lean about the original centre would slide the feet out
+/// from under the body.
+Rect poseRect(const Rect& base, const Game::Pose& pose, float facing)
+{
+    const Vec2 feet{base.center().x, base.bottom()};
+    const float height = base.h * pose.scaleY;
+    const float width  = base.w * pose.scaleX * (1.0f - pose.limbSpread * 0.12f);
+
+    Rect out{0.0f, feet.y - height, width, height};
+    out.x = feet.x - width * 0.5f + pose.offsetX * facing;
+
+    if (pose.lean != 0.0f) {
+        // A rectangle has no rotation, so a lean is faked by shearing the top
+        // edge: the body leans and the feet stay put. At the angles a character
+        // actually uses, the difference from a real rotation is invisible, and
+        // it costs one subtraction instead of a quad.
+        const float radians = pose.lean * 0.0174533f;
+        out.x += std::sin(radians) * height;
+    }
+    return out;
+}
+
+AnimId enemyClipFor(const Game::Enemy& enemy)
+{
+    if (enemy.state() == Game::EnemyState::Dying) {
+        return AnimId::EDie;
+    }
+    switch (enemy.state()) {
+        case Game::EnemyState::Asleep:  return AnimId::EIdle;
+        case Game::EnemyState::Idle:    return AnimId::EIdle;
+        case Game::EnemyState::Patrol:  return AnimId::EPatrol;
+        case Game::EnemyState::Chase:   return AnimId::EChase;
+        case Game::EnemyState::Windup:  return AnimId::EWindup;
+        case Game::EnemyState::Attack:  return AnimId::EAttack;
+        case Game::EnemyState::Recover: return AnimId::ERecover;
+        // The enemy's hurt state is a frame, not a state: `takeDamage` sets a
+        // flash timer rather than entering a phase, so the hurt animation is
+        // selected from that flag instead of from the AI state.
+        case Game::EnemyState::Dying:   return AnimId::EDie;
+    }
+    return enemy.hurt() ? AnimId::EHurt : AnimId::EIdle;
+}
+
+} // namespace
+
+void PlayingState::updatePlayerAnimation(float dt)
+{
+    const Game::Player& player = m_world.player();
+    const bool charging = m_world.player().chrono() > 0.0f;
+
+    const AnimId wanted = playerClipFor(m_world, charging);
+    m_playerAnim.play(wanted);
+
+    // A swing is one clip covering all three simulation phases, so its time is
+    // set from the simulation rather than advanced. Everything else free-runs on
+    // its own clock, because nothing about it is load-bearing.
+    if (wanted == AnimId::Attack) {
+        m_playerAnim.setTime(player.attackProgress() * Game::clipFor(AnimId::Attack).duration);
+    } else {
+        m_playerAnim.update(dt);
+    }
+
+    // Footsteps come from the simulation, which counts them by ground covered
+    // rather than by time. The clip's own footstep markers would be on a clock,
+    // and a clock-tied footstep slides at low speed and scrabbles at high.
+    if (player.stepEvents().footstep) {
+        m_feedback.particles().emitFootfall(player.body().center().x, player.body().center().y,
+                                            0.4f, themeFor(m_world.era()).accent);
+    }
+}
+
+void PlayingState::updateEnemyAnimations(float dt)
+{
+    std::unordered_map<std::uint32_t, Game::AnimationController> live;
+    live.reserve(m_world.enemies().size());
+
+    for (const Game::Enemy& enemy : m_world.enemies()) {
+        auto [it, inserted] = m_enemyAnims.try_emplace(enemy.id());
+        if (inserted) {
+            it->second.play(AnimId::EIdle, true);
+        }
+        // Only enemies in the current era animate; a sleeping one is drawn as an
+        // outline, and a running walk cycle behind an outline would be odd.
+        if (enemy.inCurrentEra()) {
+            it->second.play(enemyClipFor(enemy));
+            it->second.update(dt);
+        }
+        live.emplace(enemy.id(), it->second);
+    }
+
+    // Rebuild from `live` so controllers for removed enemies are freed. A run
+    // with twelve enemies does not keep twelve controllers alive after it ends.
+    m_enemyAnims = std::move(live);
+}
+
+Game::AnimationController& PlayingState::enemyAnimation(std::uint32_t id)
+{
+    auto [it, inserted] = m_enemyAnims.try_emplace(id);
+    if (inserted) {
+        it->second.play(AnimId::EIdle, true);
+    }
+    return it->second;
+}
+
+const Game::Pose& PlayingState::enemyPose(const Game::Enemy& enemy) const
+{
+    const auto it = m_enemyAnims.find(enemy.id());
+    if (it == m_enemyAnims.end()) {
+        static const Game::Pose neutral{};
+        return neutral;
+    }
+    return it->second.pose();
+}
+
 void PlayingState::drawBackdrop(const StateContext& ctx, const Rect& area) const
 {
     Renderer2D& renderer = *ctx.renderer;
@@ -819,13 +1014,27 @@ void PlayingState::drawEnemies(const StateContext& ctx) const
             bodyColour = bodyColour.lerpTo(Palette::Warning, 0.25f + 0.55f * wind);
         }
 
-        const Rect drawable{r.x, r.y + (dying ? 8.0f : 0.0f), r.w, r.h};
+        const Game::Pose& pose = enemyPose(enemy);
+        const Rect drawable = poseRect(r, pose, enemy.facing());
         renderer.drawRect(drawable, bodyColour.withAlpha(static_cast<std::uint8_t>(255.0f * alpha)));
         renderer.drawRectOutline(drawable, theme.accent.withAlpha(0xC0), 2.0f);
 
         // Facing indicator: an eye that moves to the side it is looking at.
         const float eyeX = enemy.facing() > 0.0f ? drawable.right() - 10.0f : drawable.x + 4.0f;
         renderer.drawRect(Rect{eyeX, drawable.y + 7.0f, 6.0f, 6.0f}, Palette::Black);
+
+        // A windup ring: the telegraph made literal. It appears exactly when the
+        // enemy commits and grows as the commit completes, so the moment it turns
+        // dangerous is the moment the ring is full.
+        if (enemy.state() == Game::EnemyState::Windup) {
+            const float wind = Graphics::clampValue(enemy.stateProgress(), 0.0f, 1.0f);
+            const float radius = 14.0f + 16.0f * wind;
+            const Color warn = Palette::Warning.withAlpha(
+                static_cast<std::uint8_t>(0x60 + 0x90 * wind));
+            const Rect ring{drawable.center().x - radius, drawable.center().y - radius,
+                            radius * 2.0f, radius * 2.0f};
+            renderer.drawRectOutline(ring, warn, 1.0f + wind);
+        }
 
         // Health above the enemy once it has been hurt, so a long fight is
         // legible without opening anything.
@@ -847,56 +1056,92 @@ void PlayingState::drawPlayer(const StateContext& ctx, const Vec2& interpolated)
     const Game::Player& player = m_world.player();
     const EraTheme theme = blendThemes(themeFor(m_world.previousEra()), themeFor(m_world.era()),
                                        Graphics::clampValue(m_world.eraBlend(), 0.0f, 1.0f));
+    const Game::Pose& pose = m_playerAnim.pose();
+    const float facing = player.facing();
 
-    const Vec2 delta = interpolated - m_previousPlayer;
-    const float squash = Graphics::clampValue(1.0f - delta.y * 0.0016f, 0.92f, 1.08f);
-
-    const Rect body{interpolated.x, interpolated.y, player.body().size.x,
-                    player.body().size.y * squash};
+    // The animation supplies the squash, so the old velocity-derived one is gone.
+    // Two competing squash terms is one too many, and the one driven by speed is
+    // the one that made a fast fall look like a small hop.
+    const Rect body = poseRect(Rect{interpolated.x, interpolated.y, player.body().size.x,
+                                    player.body().size.y},
+                               pose, facing);
 
     // Contact shadow. Without it the player floats and the jump arc is much
-    // harder to read.
+    // harder to read. It is drawn at the interpolated position so it slides with
+    // the body rather than snapping a step behind it.
     const float shadowY = static_cast<float>(m_world.map().rows()) * kTile;
     renderer.drawRect(Rect{body.center().x - body.w * 0.45f, shadowY - 4.0f, body.w * 0.9f, 4.0f},
                       Palette::Black.withAlpha(0x40));
 
-    // Invulnerability is shown by flickering, which reads instantly and needs
-    // no extra UI explaining it.
-    const bool flicker = player.invulnerable() &&
-                         (static_cast<int>(m_time * 22.0f) % 2 == 0);
+    // Invulnerability is shown by flickering, which reads instantly and needs no
+    // extra UI explaining it.
+    const bool flicker =
+        player.invulnerable() && (static_cast<int>(m_time * 22.0f) % 2 == 0);
 
     if (!flicker) {
-        renderer.drawRect(body, theme.actor);
-        renderer.drawRectOutline(body, theme.accent, 2.0f);
+        const std::uint8_t alpha =
+            static_cast<std::uint8_t>(Graphics::clampValue(pose.alpha, 0.0f, 1.0f) * 255.0f);
 
-        // A visor that looks the way the player is facing.
-        const float facing = player.facing();
-        renderer.drawRect(Rect{body.center().x + (facing > 0.0f ? 2.0f : -10.0f), body.y + 8.0f,
-                               8.0f, 5.0f},
-                          theme.accent);
+        // --- legs ---------------------------------------------------------
+        // The rig is four rectangles: two legs, a body, a leading arm. The legs
+        // swing on `limbSwing` and the arm extends with `armExtension`, which is
+        // what makes a windup read as a windup before the hitbox opens.
+        const float swing = pose.limbSwing;
+        const float legH = body.h * 0.30f;
+        const float legW = std::max(3.0f, body.w * 0.24f);
+        const Color limb = theme.actor.scaled(0.72f);
+        renderer.drawRect(Rect{body.x + body.w * 0.18f - swing * 4.0f, body.bottom() - legH,
+                               legW, legH},
+                          limb.withAlpha(alpha));
+        renderer.drawRect(Rect{body.x + body.w * 0.82f - body.w * 0.24f + swing * 4.0f,
+                               body.bottom() - legH, legW, legH},
+                          limb.withAlpha(alpha));
+
+        renderer.drawRect(body, theme.actor.withAlpha(alpha));
+        renderer.drawRectOutline(body, theme.accent.withAlpha(alpha), 2.0f);
+
+        // A visor that looks the way the player is facing, and which leads the
+        // lean so the head still points where the character is going.
+        const float visorX = body.center().x + (facing > 0.0f ? 2.0f : -10.0f);
+        renderer.drawRect(Rect{visorX, body.y + body.h * 0.18f, 8.0f, 5.0f},
+                          theme.accent.withAlpha(alpha));
+
+        // The leading arm, which is the one that reaches out during a swing.
+        const float armLen = body.h * 0.34f * (1.0f + pose.armExtension * 0.9f);
+        const float armX = body.center().x + (facing > 0.0f
+                                                  ? body.w * 0.35f + armLen * 0.5f * facing
+                                                  : -body.w * 0.35f + armLen * 0.5f * facing);
+        renderer.drawRect(Rect{armX - armLen * 0.5f, body.y + body.h * 0.32f, armLen,
+                               std::max(3.0f, body.w * 0.2f)},
+                          theme.accent.withAlpha(alpha));
     }
 
     // The swing itself, drawn as an arc of the hit box so the reach is visible.
+    // Only while the hit window is genuinely open: the simulation decides, and
+    // the picture agrees with it frame for frame.
     const Rect swing = player.attackBox();
     if (!swing.isEmpty()) {
-        renderer.drawRect(swing, theme.accent.withAlpha(0x33));
+        // Fades across the window rather than blinking, so the player can see how
+        // much of the swing is left.
+        const float window = Graphics::clampValue(player.attackProgress(), 0.0f, 1.0f);
+        renderer.drawRect(swing, theme.accent.withAlpha(static_cast<std::uint8_t>(0x33 * window)));
         renderer.drawRectOutline(swing, theme.accent.withAlpha(0xCC), 2.0f);
     }
 
     // Dash trail: echoes of the body trailing behind the direction of travel,
-    // fading out. Reads as speed without a particle system.
+    // fading out. Reads as speed without needing a particle.
     if (player.dashing()) {
-        const float facing = player.facing();
         for (int i = 1; i <= 3; ++i) {
             const float trailX = body.x - facing * static_cast<float>(i) * 12.0f;
-            renderer.drawRectOutline(
-                Rect{trailX, body.y, body.w, body.h},
-                theme.accent.withAlpha(static_cast<std::uint8_t>(0x50 - i * 0x10)), 2.0f);
+            renderer.drawRectOutline(Rect{trailX, body.y, body.w, body.h},
+                                     theme.accent.withAlpha(static_cast<std::uint8_t>(0x50 - i * 0x10)),
+                                     2.0f);
         }
     }
 
     renderer.setBlendMode(BlendMode::None);
 }
+
 
 void PlayingState::drawHud(const StateContext& ctx, const Rect& area) const
 {
@@ -990,10 +1235,49 @@ void PlayingState::drawHud(const StateContext& ctx, const Rect& area) const
     leftY = energy.bottom() + gap * 0.5f;
 
     // --- paradox ------------------------------------------------------------
+    // A tiered gauge rather than a plain bar. The tiers are where the game
+    // actually changes - the screen distorts, the music destabilises - so a
+    // number the player has to interpret is the wrong thing to show them. The
+    // ticks say "you are approaching something", which is actionable, and the
+    // label says what you are currently in.
     const Rect paradox{pad, leftY, barW, scale.px(7.0f)};
     constexpr float kParadoxMax = 600.0f;
-    drawBar(renderer, paradox, m_world.stats().paradox / kParadoxMax, Palette::ParadoxFill,
-            Palette::ParadoxBack);
+    const float paradoxFill = Graphics::clampValue(m_world.stats().paradox / kParadoxMax, 0.0f, 1.0f);
+    drawBar(renderer, paradox, paradoxFill, Palette::ParadoxFill, Palette::ParadoxBack);
+
+    // Tier boundaries, drawn as gaps in the fill rather than as marks above it,
+    // so they read at a glance and cost nothing.
+    for (Game::ParadoxTier tier : {Game::ParadoxTier::Strained, Game::ParadoxTier::Fractured,
+                                    Game::ParadoxTier::Collapse}) {
+        const float t = Game::tierThreshold(tier) / kParadoxMax;
+        const float x = paradox.x + paradox.w * Graphics::clampValue(t, 0.0f, 1.0f);
+        renderer.drawRect(Rect{x - scale.px(1.0f), paradox.y - scale.px(2.0f), scale.px(2.0f),
+                              paradox.h + scale.px(4.0f)},
+                          Palette::ParadoxBack.withAlpha(0xFF));
+    }
+    // The tier's own colour, brightening as the tier does. At Collapse the bar
+    // is the same hue as the vignette, which ties the two together visually.
+    const Game::ParadoxTier tier = m_feedback.tier();
+    const Color tierColour = (tier == Game::ParadoxTier::Collapse)  ? Palette::Warning
+                             : (tier == Game::ParadoxTier::Fractured) ? Palette::ParadoxFill
+                             : (tier == Game::ParadoxTier::Strained)  ? Palette::ParadoxFill.scaled(0.8f)
+                                                                     : Palette::ParadoxFill.scaled(0.6f);
+    if (paradoxFill > 0.0f) {
+        renderer.drawRect(Rect{paradox.x, paradox.y, paradox.w * paradoxFill, paradox.h},
+                          tierColour.withAlpha(0xFF));
+    }
+    {
+        TextStyle tierStyle = label;
+        tierStyle.align     = TextAlign::Right;
+        // The label pulses as the tier changes, so crossing a boundary is felt
+        // and not just noticed. Driven by the tier crossing rather than by the
+        // screen flash: a flash also fires on damage and on pickups, and a label
+        // that pulses when you collect a health cell is lying about why.
+        const float pulse = 0.65f + 0.35f * m_feedback.tierPulse();
+        tierStyle.color = tierColour.scaled(0.6f + 0.4f * pulse);
+        text.drawAligned(renderer, Vec2{pad + barW, leftY + paradox.h * 0.5f - scale.px(7.0f)},
+                         std::string("PARADOX  ") + std::string(Game::toString(tier)), tierStyle);
+    }
     leftY = paradox.bottom() + gap;
 
     // --- era badge ----------------------------------------------------------
@@ -1165,7 +1449,23 @@ void PlayingState::render(StateContext& ctx, double alpha)
     drawEnemies(ctx);
     drawPlayer(ctx, interpolated);
 
+    // Effects that live in the world sit over the actors but under the HUD, so
+    // an explosion cannot obscure the health the player needs to read.
+    m_feedback.drawWorld(ctx);
+
     drawHud(ctx, area);
+
+    // Atmosphere under the text. Paradox is meant to make the *world* hard to
+    // look at, not the objective line - a player who cannot read what to do next
+    // is not under pressure, they are stuck.
+    m_feedback.drawUnderlay(ctx);
+
+    // A shift's flash goes over everything: it is light, not decoration, and it
+    // is meant to wash the whole frame.
+    m_feedback.drawOverlay(ctx);
+
+    // Toasts last, so the newest thing that happened is the clearest thing on
+    // screen no matter what the run looks like underneath it.
     drawToasts(ctx, area);
 
     if (ctx.stats != nullptr) {

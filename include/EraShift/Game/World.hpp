@@ -81,7 +81,8 @@ struct RunStats {
     }
 };
 
-/// One-shot things that happened this step, for the state to turn into toasts.
+/// One-shot things that happened this step, for the state to turn into toasts,
+/// sound and particles.
 enum class WorldEvent : std::uint8_t {
     EraShifted,
     EraShiftFailed,
@@ -94,11 +95,35 @@ enum class WorldEvent : std::uint8_t {
     PlayerHurt,
     PlayerDied,
     Victory,
+
+    // --- presentation events -------------------------------------------------
+    // The kinds above are things the player is told about in words. These are
+    // things they are shown: they carry a position and no text, because a spark
+    // at the point of contact says "that landed" better than a toast does, and a
+    // toast for every footstep would be unreadable.
+    PlayerJumped,
+    PlayerLanded,
+    PlayerDashed,
+    SwingStarted,
+    /// The hit window opened. Not the same as SwingStarted: a swing that whiffs
+    /// still makes a sound, but only a swing that connects throws sparks.
+    SwingActive,
+    PlayerFootstep,
+    EnemyHurt,
+    HazardTick,
 };
 
 struct EventRecord {
     WorldEvent kind = WorldEvent::EraShifted;
     std::string text;
+    /// Where it happened, in world space. Meaningless for the word-events, which
+    /// default to the player's position.
+    Vec2  position{};
+    /// Which way the impact faced. Drives the spark cone and the camera punch.
+    Vec2  direction{1.0f, 0.0f};
+    /// 0..1, how hard it was. A graze and a full swing are the same event with
+    /// different numbers, which is how one emitter covers both.
+    float strength = 1.0f;
 };
 
 /// Non-player actions, kept apart from `PlayerInput` so the movement controller
@@ -126,6 +151,14 @@ public:
     /// Cleared at the start of every step.
     [[nodiscard]] float lastDamageFlash() const noexcept { return m_damageFlash; }
     [[nodiscard]] bool  playerHurtThisStep() const noexcept { return m_playerHurt; }
+
+    /// Seconds of hit-stop remaining.
+    ///
+    /// Hit-stop is a real simulation pause, not a render trick: on a heavy hit
+    /// the world holds still for a few frames. Implemented here rather than in
+    /// the camera because it has to stop the *enemy*, or the player can land a
+    /// blow, watch the world freeze, and still be hit by something mid-freeze.
+    [[nodiscard]] float hitStopRemaining() const noexcept { return m_hitStop; }
 
     /// Drains the event log.
     ///
@@ -176,6 +209,8 @@ public:
     [[nodiscard]] Rect goalBounds() const noexcept { return m_goalBounds; }
 
     [[nodiscard]] int enemyCount() const noexcept;
+    /// Ids currently in play, for a caller keeping per-enemy state.
+    [[nodiscard]] std::vector<std::uint32_t> enemyIds() const;
     /// Enemies that exist and are awake in the current era.
     [[nodiscard]] int activeEnemyCount() const noexcept;
 
@@ -187,7 +222,11 @@ public:
 
 private:
     void emit(WorldEvent kind, std::string text);
+    void emit(WorldEvent kind, Vec2 position, Vec2 direction, float strength);
     void updateEraShift(const WorldCommands& commands);
+    /// Turns the player's one-step edges into world events, so the presentation
+    /// layer has a single event stream to read rather than two to correlate.
+    void forwardPlayerEvents();
     void updateSealsAndGate(const WorldCommands& commands);
     void updatePickups(float dt);
     void updateCombat(float dt);
@@ -217,6 +256,15 @@ private:
     bool  m_playerHurt = false;
     /// Set while a single swing is live so it cannot hit two enemies.
     bool  m_swingResolved = false;
+
+    /// Source of enemy identities. Never resets, so an id is unique for the whole
+    /// session rather than just the current attempt.
+    std::uint32_t m_nextEnemyId = 1;
+
+    float m_hitStop = 0.0f;
+    /// Distance walked since the last footfall, mirrored from the player so the
+    /// world's footstep events stay in step with the animation's.
+    float m_strideDistance = 0.0f;
 };
 
 } // namespace EraShift::Game

@@ -14,6 +14,9 @@
 
 #include "EraShift/Core/GameState.hpp"
 #include "EraShift/Core/SaveGame.hpp"
+#include "EraShift/Game/Animation.hpp"
+#include "EraShift/Game/EraTheme.hpp"
+#include "EraShift/Game/Feedback.hpp"
 #include "EraShift/Game/Level.hpp"
 #include "EraShift/Game/World.hpp"
 #include "EraShift/Graphics/Color.hpp"
@@ -21,6 +24,7 @@
 #include "EraShift/Graphics/TextRenderer.hpp"
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace EraShift::Game {
@@ -29,22 +33,6 @@ using Graphics::Color;
 using Graphics::UiScale;
 
 class PausedState;
-
-/// Presentation values for one era. The gameplay layer decides *what* the world
-/// is; this decides how it looks.
-struct EraTheme {
-    Color sky;
-    Color skyLow;
-    Color solid;
-    Color solidEdge;
-    Color oneWay;
-    Color hazard;
-    Color actor;
-    Color accent;
-};
-
-/// The three era themes, in `Era` order.
-[[nodiscard]] const EraTheme& themeFor(Game::Era era);
 
 /// How far back the parallax layers sit, as a fraction of camera movement.
 struct ParallaxLayer {
@@ -84,6 +72,13 @@ private:
     void drawSeals(const StateContext& ctx, float blend) const;
     void drawEnemies(const StateContext& ctx) const;
     void drawPlayer(const StateContext& ctx, const Vec2& interpolated) const;
+    /// Chooses the player's clip from the simulation's state and advances it.
+    void updatePlayerAnimation(float dt);
+    /// Same, for every enemy, keyed on the enemy's stable id.
+    void updateEnemyAnimations(float dt);
+    /// The controller for an enemy, created on first sight. Pruned on death.
+    [[nodiscard]] Game::AnimationController& enemyAnimation(std::uint32_t id);
+    [[nodiscard]] const Game::Pose& enemyPose(const Enemy& enemy) const;
     void drawHud(const StateContext& ctx, const Rect& area) const;
     void drawToasts(const StateContext& ctx, const Rect& area) const;
 
@@ -91,6 +86,18 @@ private:
 
     Game::World      m_world;
     Game::Level      m_level;
+
+    /// Everything the player sees and hears in response to the simulation. Owned
+    /// here because this is the only state that draws the world, and a feedback
+    /// system that outlived its state would have nothing to draw into.
+    Game::FeedbackSystem m_feedback;
+
+    /// The player's rig. Driven from the simulation's state rather than from the
+    /// controller's own clock, so the picture cannot disagree with the physics.
+    Game::AnimationController m_playerAnim;
+    /// One controller per living enemy, keyed on `Enemy::id()` so an enemy keeps
+    /// its animation when the vector it lives in is compacted.
+    std::unordered_map<std::uint32_t, Game::AnimationController> m_enemyAnims;
 
     /// Positions from the previous fixed step, kept so rendering can
     /// interpolate and motion stays smooth on any refresh rate.

@@ -77,6 +77,22 @@ public:
 
     void shake(float magnitude, double durationSeconds);
 
+    /// A short zoom kick, for impacts that should feel like they landed.
+    ///
+    /// Separate from `setZoom` on purpose: the zoom the player set is the zoom
+    /// they get back, and the punch decays back to it on its own. Pushing the
+    /// punch into the base zoom would mean every hit permanently changed how far
+    /// the player could see.
+    void punch(float amount, double durationSeconds);
+    /// How far the punch has decayed, 1 at the moment of impact. Read by the
+    /// VFX layer to fade the screen flash in step with the zoom.
+    [[nodiscard]] float punchAmount() const noexcept { return m_punch; }
+    [[nodiscard]] float punchProgress() const noexcept
+    {
+        return (m_punchDuration > 0.0f) ? Graphics::clampValue(m_punchTimer / m_punchDuration, 0.0f, 1.0f)
+                                        : 0.0f;
+    }
+
     void update(double deltaSeconds);
 
     void setBounds(const Rect& bounds) noexcept { m_bounds = bounds; m_hasBounds = !bounds.isEmpty(); }
@@ -87,7 +103,11 @@ public:
 
     [[nodiscard]] const Vec2& position() const noexcept { return m_position; }
     [[nodiscard]] Vec2  stablePosition() const noexcept;
+    /// The base zoom, unaffected by any punch.
     [[nodiscard]] float zoom() const noexcept { return m_zoom; }
+    /// What is actually being drawn with: the base zoom times the decaying
+    /// impact punch. Every projection in this class uses this, not `zoom()`.
+    [[nodiscard]] float effectiveZoom() const noexcept;
     [[nodiscard]] float shakeMagnitude() const noexcept { return m_shakeMagnitude; }
     [[nodiscard]] int   viewportWidth() const noexcept { return m_viewportWidth; }
     [[nodiscard]] int   viewportHeight() const noexcept { return m_viewportHeight; }
@@ -110,6 +130,10 @@ private:
     float m_shakeTimer     = 0.0f;
     float m_shakeDuration  = 0.0f;
     float m_shakeSeed      = 0.0f;
+
+    float m_punch          = 0.0f;
+    float m_punchTimer     = 0.0f;
+    float m_punchDuration  = 0.0f;
 };
 
 class Renderer2D {
@@ -175,6 +199,23 @@ public:
 
     /// Draws an axis-aligned filled circle using a triangle fan approximation.
     void drawCircle(const Vec2& center, float radius, Color color, int segments = 24);
+
+    /// Fills `rect` rotated by `radians` about its centre.
+    ///
+    /// Added for sparks and debris, which are stretched along their direction of
+    /// travel. Drawn as two triangles rather than through a texture, so it costs
+    /// no texture binding and works with the same batching the rest of the
+    /// particle pass uses.
+    void drawRectRotated(const Rect& rect, float radians, Color color);
+
+    /// The whole drawable area in screen pixels, origin top-left. Full-screen
+    /// effects - vignette, flash, ripple - are laid out against this rather
+    /// than against a hard-coded resolution, so they survive a resize.
+    [[nodiscard]] Rect viewportRect() const noexcept
+    {
+        return Rect{0.0f, 0.0f, static_cast<float>(m_camera.viewportWidth()),
+                    static_cast<float>(m_camera.viewportHeight())};
+    }
 
     void setBlendMode(BlendMode mode);
     [[nodiscard]] BlendMode blendMode() const noexcept { return m_blend; }

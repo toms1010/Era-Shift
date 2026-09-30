@@ -8,7 +8,202 @@ All notable changes to Era Shift are recorded here. The format follows
 
 ## [Unreleased]
 
-Phase 2: The game. `Playing` is no longer an engine verification scene — it is
+Phase 3: The game has a voice. Audio, animation and effects are no longer a
+TODO — the shift now has a sound, the swing has a windup you can read, a hit has
+sparks and a moment of silence, and paradox is something you can hear before you
+can see it.
+
+### Added
+
+**Procedural audio (`Audio/Synth.hpp`, `Audio/Synth.cpp` — in `erashift_core`)**
+- A runtime synthesiser for everything the game plays. There is no audio asset
+  in the repository, and the reason is that music which reacts to the era is a
+  *parameter*, not a file: see `assets/README.md`.
+- `MusicSynth` and `AmbienceSynth`, both continuous and both stateful, so a bed
+  does not restart every frame and a parameter change glides instead of jumping.
+- Three genuinely different musical scales. The Past is a minor pentatonic, the
+  Present a natural minor, and the Future a whole tone — symmetric, so a phrase
+  built from it has no leading tone and nowhere to resolve. That is the sound of
+  a timeline coming apart, and it comes out of a degree table.
+- `Sfx`, a closed enum of 20 one-shots: movement, combat, pickups, seals, the
+  shift signature, hazards, victory. A typo is a compile error, not silence.
+- `Envelope`, `Voice`, `EraScale` and `noteFrequency` as separately testable
+  pieces, and the whole file is pure arithmetic so it is unit tested with no
+  sound card.
+
+**Audio output (`Audio/AudioManager.hpp`, `.cpp` — in `erashift_engine`)**
+- SDL3_mixer 3.x plumbing: a looping track per bed over an `SDL_AudioStream` that
+  is fed one block of float PCM per fixed step. This is what lets a shift glide
+  the music mid-bar, which two crossfading loops cannot do.
+- Four buses as mixer tags — master, music, ambience, sfx — driven by
+  `config/audio.json` and by the audio settings page, which now changes the live
+  mixer instead of only the file. Ambience is separate from music on purpose.
+- A pool of six interchangeable one-shot tracks, with oldest-first voice stealing
+  so a new hit is never dropped in favour of an old footstep. Pitch is
+  `MIX_SetTrackFrequencyRatio`, which is how one footstep becomes a heavy one.
+- `MusicState` — Exploring, Alert, Combat, Still — driven by the nearest enemy,
+  so a tense room sounds tense before anything has gone wrong.
+- Paradox tension: tempo instability, a widened tremolo and an audible drop-out
+  as paradox climbs.
+- Fails soft everywhere. Audio is not in `kRequiredSubsystems`, a partial
+  `MIX_Init` is logged and ignored (a machine with no MIDI tables can still play
+  synthesised PCM, which is everything this game uses), and a machine with no
+  device plays silently rather than not at all.
+
+**Animation (`Game/Animation.hpp`, `.cpp` — in `erashift_core`)**
+- `Game::Pose`: the nine numbers a rectangle needs — squash, stretch, bob, lean,
+  limb swing, limb spread, arm extension, alpha. Nothing else.
+- `AnimationClip` with key poses and gameplay markers, and 21 clips covering
+  the player's twelve states and the enemy's nine.
+- `AnimationController` with cross-fades, and a rule that a short non-looping
+  action cannot be cut short — so mashing attack does not visually restart the
+  swing while the input buffer queues a second one.
+- `setTime()`, for clips the simulation owns. The attack's key times and its
+  `AttackHit` marker are read off `PlayerTuning`, and a test asserts they still
+  agree, because the picture and the hitbox must not be two independent timers.
+- `Player::attackProgress()` and `PlayerStepEvents`. Footsteps are now counted in
+  ground covered rather than in time, so they land where the foot lands instead
+  of sliding at low speed and scrabbling at high.
+
+**Effects (`Graphics/ParticleSystem.hpp`, `.cpp` and `Game/Feedback.hpp`, `.cpp`)**
+- A fixed pool of 768 particles with no allocation during play, and four shape
+  families that the renderer draws in four passes so the blend mode changes four
+  times per system rather than once per particle.
+- Emitters for impacts, footfalls, dash trails, pickups, seals, deaths, the
+  shift's charge and burst, ambient weather and paradox glitch. Era weather is
+  three different particles with different behaviour, not one particle recoloured.
+- `FeedbackSystem`: one place that turns `WorldEvent`s into sound, particles,
+  light and camera work. It holds only a `const World&`, so no amount of effects
+  can make the game unwinnable — and a new event is visibly incomplete until it
+  has been given a sound and an effect.
+- `Camera2D::punch` and `Camera2D::effectiveZoom`: an impact zoom kick that decays
+  back to the zoom the player set, rather than pushing it permanently.
+- `Renderer2D::drawRectRotated` and `Renderer2D::viewportRect`, for stretched
+  sparks and for full-screen effects that survive a resize.
+- Hit-stop in the simulation: 45ms on a hit, 110ms on a kill, 90ms when hurt,
+  200ms on a seal. It runs on the presentation clock, so the spark keeps
+  travelling while the world it came from is still.
+- Paradox tiers — Calm, Strained, Fractured, Collapse — driving one eased value
+  that both the audio and the renderer read, so a player who hears the music
+  destabilise sees the edges close in at the same moment. The HUD gauge grew tick
+  marks at the tier boundaries and a live tier label.
+- Shift charge aura, shift ripple, paradox vignette and glitch bars. Glitch bars
+  regenerate every ~160ms rather than every frame, because per-frame is noise and
+  160ms is an event the eye reads as the picture tearing. Drawn in two layers:
+  the atmosphere under the text and the shift flash over it, so paradox makes the
+  *world* hard to look at without making the objective line unreadable.
+- `graphics.maxParticles` is now a real budget rather than a decoration, applied
+  once at level load through `ParticleSystem::resize`. A setting that looks live
+  and does nothing is worse than no setting.
+- **The run timer no longer ticks during hit-stop.** `RunStats::elapsed` counts
+  the time the world actually experienced, so it stays in step with how far
+  everything moved. It was counting frozen steps, which meant a player who landed
+  many heavy hits read a longer time having seen less happen.
+- The paradox tier label now pulses on a *tier crossing* rather than on the
+  screen flash. A flash also fires on damage and on pickups, and a label that
+  pulses when you collect a health cell is lying about why.
+- Screen effects split into `drawUnderlay` (vignette, glitch — under the text) and
+  `drawOverlay` (flash — over everything). Paradox should make the world hard to
+  look at, not the objective line unreadable.
+- Menu sounds, and a settings page that adjusts the live mixer.
+
+**World events and player edges**
+- `EventRecord` now carries a position, a direction and a strength, so a
+  presentation effect knows *where* a thing happened and *how hard* rather than
+  guessing.
+- Nine new presentation-only `WorldEvent` kinds — jumped, landed, dashed, swing
+  started, swing active, footstep, enemy hurt, hazard — carrying no text,
+  because a spark at the point of contact says "that landed" better than a toast
+  and a toast for every footstep would be unreadable.
+- `Player::id()` on enemies, so per-enemy presentation state survives the vector
+  compaction that happens when one dies.
+
+**Tests — 47 new cases, all headless**
+- `tests/gameplay/TestSynth.cpp`: no one-shot is silent, clipping, or a copy of
+  another one-shot; the three eras are in different keys; a parameter change
+  glides; synthesis is deterministic.
+- `tests/gameplay/TestAnimation.cpp`: every clip is well-formed and its keys are
+  in order; a frame hitch does not lose a hit marker; a loop does not drop the
+  footstep on its wrap; the attack's hit window still matches `PlayerTuning`.
+- `tests/gameplay/TestParticles.cpp`: the pool never grows and never reallocates;
+  emission is frame-rate independent; the three eras emit visibly different
+  weather; a degenerate region emits nothing rather than dividing by zero.
+
+**Documentation**
+- `docs/FEEDBACK.md`: audio, animation, effects, hit-stop and paradox, with the
+  reasoning behind each decision and the tests that protect them.
+- `assets/README.md`: the asset layout, and why there is no `audio/` or
+  `sprites/` directory.
+- `README.md` rewritten, with two Mermaid diagrams — the frame, and a gameplay
+  step — both verified to render.
+
+### Fixed
+
+- **Hit-stop swallowed player input.** The first implementation returned early
+  from `World::update` during a freeze, so a shift or an interact pressed during
+  the 160ms after a hit was silently dropped. A freeze that eats a button press
+  is felt as the game being unresponsive rather than as a stylistic choice, so
+  any step on which the player pressed something now runs normally. Holding a
+  direction through a freeze still freezes, because that is what should feel
+  heavy. Four gameplay tests caught this.
+- **`randomRange` mapped a signed noise source as if it were unsigned.** The
+  particle pool's noise is in [-1, 1] because that is the useful shape for
+  scattering a velocity, but it was being used directly as a range fraction, so
+  half the ambient particles spawned *outside* the room they were spawned in. The
+  Past's mean spawn height was above the top of the screen.
+- **Every era emitted the same ambient density.** At 60Hz a rate of 3 particles
+  per second is 0.05 per frame, and rounding that to an integer gave zero — at
+  which point the "at least one per frame" floor took over and the three weathers
+  became indistinguishable. Fixed with a fractional accumulator carried between
+  calls, plus a per-step cap so a one-second hitch cannot spend the whole budget.
+- **Attacks never visibly reached, and deaths never faded.** The animation clip
+  table was written with a positional key helper, and values intended for
+  `armExtension` and `alpha` were landing in `limbSpread` and defaulting. Both
+  compiled, ran, and were wrong. The table now uses designated initialisers, and
+  a test asserts the death clip actually ends transparent.
+- **A negative frame count tried to allocate the address space.** `Synth`'s
+  renderers sized their buffer with `size_t(frames)` before checking `frames`,
+  so a negative value became a number near `SIZE_MAX`. A frame that took no time
+  at all reaches these functions.
+- **A zero-length attack envelope was unreachable.** The envelope returned early
+  for `t == 0` before it could check whether the attack was zero-length, so every
+  click in the game started from a sample of silence.
+- **`config/audio.json` pointed at a `.wav` that does not exist.**
+  `eraTransitionSfx: "sfx/era_shift/shift.wav"` named a file in a directory the
+  project has never had. The config now describes what actually happens.
+- **The attack clip's markers did not match `PlayerTuning`.** They were at 0.08s
+  and 0.20s; the windup ends at 0.06s and the active window closes at 0.16s. The
+  spark appeared before the hitbox opened. The clip's key times are now read off
+  the tuning constants and a test keeps them aligned.
+- **`Camera2D` read `m_zoom` directly in its projection maths**, so a punch would
+  have had to be pushed into the base zoom to be visible — permanently changing
+  how far the player could see. Projections now use `effectiveZoom()`.
+
+### Changed
+
+- `Game::EventRecord` grew three fields. Existing call sites are unaffected; the
+  two-argument `emit` overload fills in the player's position and a default
+  strength.
+- `AnimationController::play` returns `bool` where it returned `void`, so a
+  caller can tell a refused transition from a played one.
+- `StateContext` gained an `audio` pointer, which is always non-null and whose
+  `available()` is the only question callers need to ask.
+- The audio settings page gained an AMBIENCE row and now applies its changes to
+  the live mixer.
+
+### Fixed in the previous phase, still worth noting
+
+- The renderer was drawing geometry in screen space while the camera transform
+  was also applied, putting the world a full camera offset away from where the
+  collision code thought it was.
+- Rectangle edges showed seams because the shader rounded the wrong corners.
+- Tile draws were not merging, costing a draw call per tile per frame.
+
+---
+
+## [0.2.0] — Phase 2, the game
+
+`Playing` is no longer an engine verification scene — it is
 a complete run of the Ancient Forest vertical slice, from spawn to the Ancient
 Gate, with era-dependent geometry, enemies that exist in some eras and not
 others, combat, three seals to recover and a save file to continue from.

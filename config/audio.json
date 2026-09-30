@@ -1,17 +1,24 @@
 {
   "audio": {
+    "//": "Every sound in Era Shift is synthesised at runtime; there are no audio files in the repository. These settings drive the SDL3_mixer bus gains and the synthesis parameters, not a file list.",
+
     "enabled": true,
+
     "masterVolume": 80,
-    "musicVolume": 70,
-    "sfxVolume": 90,
-    "ambienceVolume": 60,
+    "musicVolume": 65,
+    "ambienceVolume": 55,
+    "sfxVolume": 85,
 
     "outputDevice": "",
     "mixRate": 48000,
     "channels": 2,
     "bufferSamples": 1024,
 
+    "musicTempo": 96,
     "musicFadeSeconds": 1.5,
-    "eraTransitionSfx": "sfx/era_shift/shift.wav"
+    "combatIntensity": 85,
+
+    "paradoxTension": true,
+    "glitchAtHighParadox": true
   }
 }

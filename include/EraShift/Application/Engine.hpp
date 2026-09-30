@@ -17,6 +17,7 @@
 #include "EraShift/Core/Log.hpp"
 #include "EraShift/Core/SignalHandler.hpp"
 #include "EraShift/Core/Time.hpp"
+#include "EraShift/Audio/AudioManager.hpp"
 #include "EraShift/Application/EventBus.hpp"
 #include "EraShift/Application/StateContext.hpp"
 #include "EraShift/Debug/DebugOverlay.hpp"
@@ -124,6 +125,7 @@ public:
     [[nodiscard]] Application::EventBus&    events()    noexcept { return m_eventBus; }
     [[nodiscard]] Debug::DebugOverlay&      overlay()   noexcept { return m_overlay; }
     [[nodiscard]] Debug::PerformanceStats&  stats()     noexcept { return m_stats; }
+    [[nodiscard]] Audio::AudioManager&      audio()     noexcept { return m_audio; }
 
     [[nodiscard]] const std::string& buildLabel() const noexcept { return m_buildLabel; }
     [[nodiscard]] bool isDebugBuild() const noexcept { return m_debugBuild; }
@@ -154,6 +156,10 @@ private:
     std::unique_ptr<Graphics::ResourceManager> m_resources;
     std::unique_ptr<Graphics::TextRenderer>     m_text;
     Application::EventBus       m_eventBus;
+    /// Long-lived and owned here, like every other subsystem. It outlives the
+    /// state stack, so a sound started by a state finishes playing even as the
+    /// state that asked for it is torn down.
+    Audio::AudioManager         m_audio;
     std::unique_ptr<Application::EventPump>   m_eventPump;
     std::unique_ptr<Game::GameApp>            m_game;
     Debug::PerformanceStats     m_stats;

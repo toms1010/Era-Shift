@@ -1,5 +1,7 @@
 #include "EraShift/Game/states/PausedState.hpp"
 
+#include "EraShift/Game/UiSound.hpp"
+
 #include "EraShift/Game/states/MainMenuState.hpp"
 #include "EraShift/Game/states/PlayingState.hpp"
 #include "EraShift/Graphics/BitmapFont.hpp"
@@ -280,9 +282,14 @@ void SettingsState::buildItems(StateContext& ctx)
             break;
 
         case Page::Audio:
+            // Four buses, matching the mixer's tags. Ambience is separate from
+            // music on purpose: ambience is the constant bed a player stops
+            // hearing, and being able to duck it without losing the music is the
+            // difference between a setting and a nuisance.
             m_menu.setItems({
                 option("MASTER", percent(m_masterVolume)),
                 option("MUSIC", percent(m_musicVolume)),
+                option("AMBIENCE", percent(m_ambienceVolume)),
                 option("SFX", percent(m_sfxVolume)),
                 {"BACK", "return", true},
             });
@@ -358,7 +365,8 @@ void SettingsState::setPage(Page page, StateContext& ctx)
 bool SettingsState::isAdjustable(const std::string& label) const
 {
     return label == "FULLSCREEN" || label == "VSYNC" || label == "UI SCALE" ||
-           label == "MASTER" || label == "MUSIC" || label == "SFX";
+           label == "MASTER" || label == "MUSIC" || label == "AMBIENCE" ||
+           label == "SFX";
 }
 
 void SettingsState::persistBinding(StateContext& ctx, Input::Action action,
@@ -485,14 +493,33 @@ void SettingsState::adjust(StateContext& ctx, int direction)
     } else if (label == "MASTER") {
         step(m_masterVolume, 0, 100, 10);
         store.setInt("audio", "masterVolume", m_masterVolume);
+        // Applied to the live mixer, not just to the file. A volume slider that
+        // only takes effect on the next launch is a bug that reads as a setting.
+        if (ctx.audio != nullptr) {
+            ctx.audio->setMasterVolume(static_cast<float>(m_masterVolume) / 100.0f);
+        }
     } else if (label == "MUSIC") {
         step(m_musicVolume, 0, 100, 10);
         store.setInt("audio", "musicVolume", m_musicVolume);
+        if (ctx.audio != nullptr) {
+            ctx.audio->setBusVolume(Audio::Bus::Music, static_cast<float>(m_musicVolume) / 100.0f);
+        }
+    } else if (label == "AMBIENCE") {
+        step(m_ambienceVolume, 0, 100, 10);
+        store.setInt("audio", "ambienceVolume", m_ambienceVolume);
+        if (ctx.audio != nullptr) {
+            ctx.audio->setBusVolume(Audio::Bus::Ambience,
+                                    static_cast<float>(m_ambienceVolume) / 100.0f);
+        }
     } else if (label == "SFX") {
         step(m_sfxVolume, 0, 100, 10);
         store.setInt("audio", "sfxVolume", m_sfxVolume);
+        if (ctx.audio != nullptr) {
+            ctx.audio->setBusVolume(Audio::Bus::Sfx, static_cast<float>(m_sfxVolume) / 100.0f);
+        }
     }
 
+    playUiTick(ctx);
     buildItems(ctx);
 }
 
@@ -514,6 +541,7 @@ void SettingsState::update(StateContext& ctx, double fixedDelta)
     }
 
     if (ctx.input->wasPressed(Action::Pause)) {
+        playUiConfirm(ctx);
         if (m_page != Page::General) {
             m_page = Page::General;
             m_rebind = Rebind::None;
@@ -526,9 +554,11 @@ void SettingsState::update(StateContext& ctx, double fixedDelta)
 
     if (ctx.input->wasPressed(Action::MoveUp)) {
         m_menu.move(-1);
+        playUiMove(ctx);
     }
     if (ctx.input->wasPressed(Action::MoveDown)) {
         m_menu.move(1);
+        playUiMove(ctx);
     }
 
     // Left/right adjust the highlighted value. Repeat is handled by the input

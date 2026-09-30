@@ -42,6 +42,9 @@ namespace Debug {
 class PerformanceStats;
 class DebugOverlay;
 }
+namespace Audio {
+class AudioManager;
+}
 namespace Application {
 class EventBus;
 }
@@ -60,6 +63,10 @@ struct StateContext {
     Core::ConfigManager*       config    = nullptr;
     Graphics::Window*          window    = nullptr;
     Graphics::TextRenderer*    text      = nullptr;
+    /// Audio. Null when the platform has no device, when `audio.enabled` is
+    /// false, or when the mixer would not open: every caller must treat null as
+    /// "play silently", never as an error.
+    Audio::AudioManager*      audio     = nullptr;
 
     /// Build identification shown on the title screen and in the overlay.
     std::string_view buildLabel = "Development Build";

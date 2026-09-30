@@ -80,6 +80,16 @@ public:
 
     void spawn(EnemyKind kind, const Vec2& position, EraMask existsIn);
 
+    /// A stable identity, unique for the lifetime of a run.
+    ///
+    /// Enemies live in a vector that gets compacted when one dies, so a vector
+    /// index is not an identity: shift two entries and every index after them
+    /// now points at a different enemy. The presentation layer keeps per-enemy
+    /// state - an animation controller, a flash timer - and it needs something
+    /// that survives the compaction. Set by `World` at spawn; never reused.
+    [[nodiscard]] std::uint32_t id() const noexcept { return m_id; }
+    void setId(std::uint32_t id) noexcept { m_id = id; }
+
 /// Advances one step. `playerPosition` and `era` are passed in rather than
     /// reached through the world, so an enemy never needs a world pointer and
     /// its behaviour is a pure function of what it is told.
@@ -124,6 +134,7 @@ private:
     void think(const Vec2& playerPosition);
 
     EnemyKind  m_kind = EnemyKind::Sentinel;
+    std::uint32_t m_id = 0;
     EnemyState m_state = EnemyState::Idle;
     EnemyTuning m_tuning;
     Body        m_body;

@@ -16,7 +16,7 @@ suite runs in a container, over SSH, and in CI.
 | --- | --- | --- |
 | `erashift_tests_unit` | 94 cases | Maths, logging, config, timing, game loop, state machine, font |
 | `erashift_tests_integration` | 10 cases | Full state flow, config round trips and migrations |
-| `erashift_tests_gameplay` | 110 cases | The whole simulation: eras, tile collision, physics, the player, enemies, the world, level data and saves |
+| `erashift_tests_gameplay` | 157 cases | The whole simulation — eras, tile collision, physics, the player, enemies, the world, level data, saves — **and the three presentation systems that are pure arithmetic: the synthesiser, the animation controller and the particle pool** |
 
 ```bash
 ./build/debug/erashift_tests_unit --success              # verbose
@@ -78,6 +78,67 @@ A settings file survives save and load, untouched keys keep their defaults, a
 newer build adds new defaults without disturbing saved values, command-line
 overrides win over files, and a corrupt user file does not stop the game
 starting.
+
+### `TestSynth` — the synthesiser
+There is no sound card in CI, and that is the point: `Audio/Synth.cpp` is pure
+arithmetic, so the audio is testable. The assertions are about properties rather
+than about specific waveforms.
+
+- No one-shot is silent, clipping, or **a copy of another one-shot**. A pair-wise
+  comparison across all 20 sounds catches a copy-paste in a switch statement,
+  which is the classic way an eight-way audio table quietly becomes a two-way one.
+- The three eras are in different keys with different degree counts, and the
+  Future's is a whole tone — symmetric, so it has no leading tone and cannot
+  resolve.
+- Combat is not just louder than exploring, it has content exploring does not:
+  the arpeggio only exists under pressure.
+- A parameter change *glides*: the synth's intensity is still easing toward its
+  target on the first block.
+- A negative frame count and a zero sample rate are both safe.
+- Two identical calls produce bit-identical output. Without this, "the music
+  sounds different on my machine" is not answerable.
+
+### `TestAnimation` — clips, markers and the simulation's clock
+The property under test is that the picture and the hitbox cannot disagree.
+
+- Every clip is well-formed: keys in ascending order, markers inside the
+  duration. A marker past the end never fires, and a key out of order makes the
+  sampler interpolate backwards.
+- **The attack clip's hit window still matches `PlayerTuning`.** The windup ends
+  at 0.06s and the active window closes at 0.16s; the clip's keys and its
+  `AttackHit` marker sit on those boundaries. This is the test that stops the two
+  drifting apart when someone retunes the swing.
+- A single 200ms step still delivers both attack markers. A frame hitch that
+  skipped the hit frame would give the player a blow with no spark and no sound.
+- A looping clip fires its markers again on the wrap, or a walk cycle drops a
+  footstep once every two steps.
+- A short non-looping action refuses to be cut short, so mashing attack does not
+  visually restart the swing.
+- `setTime` places a simulation-synced clip without emitting markers, and clamps
+  rather than wrapping — a swing that wrapped past its end would look recovered
+  while still being thrown.
+- The death clip ends genuinely transparent. It did not, once: `alpha` was
+  landing in the wrong field of a positional literal.
+
+### `TestParticles` — the pool
+A particle system has no rules to break, so these are about the things that go
+wrong quietly.
+
+- The pool is a fixed size, never grows, and never reallocates — a full pool
+  recycles the oldest rather than refusing, because a busy screen that silently
+  loses every effect is worse than one that drops a footstep.
+- **Emission is frame-rate independent.** At 60Hz a rate of 3/s is 0.05 per
+  frame, and rounding that to an integer gives zero, at which point an
+  "at least one per frame" floor takes over. That bug made all three eras emit
+  exactly the same number.
+- **The three eras emit visibly different weather**, and in opposite halves of
+  the screen: leaves fall from above, embers rise from below.
+- `randomRange` actually lands in its range. It once mapped a signed `[-1, 1]`
+  noise source directly as a fraction, so half the ambient particles spawned
+  outside the room.
+- A one-second step does not flood the pool, and a degenerate region emits
+  nothing rather than dividing by zero.
+- Two identical calls produce identical particles.
 
 ---
 

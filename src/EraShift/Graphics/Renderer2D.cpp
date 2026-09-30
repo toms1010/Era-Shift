@@ -29,9 +29,14 @@ void Camera2D::setViewport(int width, int height) noexcept
     m_viewportHeight = std::max(height, 1);
 }
 
+float Camera2D::effectiveZoom() const noexcept
+{
+    return std::clamp(m_zoom * (1.0f + m_punch), kMinZoom, kMaxZoom);
+}
+
 Vec2 Camera2D::halfExtent() const noexcept
 {
-    const float zoom = std::clamp(m_zoom, kMinZoom, kMaxZoom);
+    const float zoom = effectiveZoom();
     return {static_cast<float>(m_viewportWidth) / (2.0f * zoom),
             static_cast<float>(m_viewportHeight) / (2.0f * zoom)};
 }
@@ -44,14 +49,14 @@ Rect Camera2D::viewportBounds() const noexcept
 
 Vec2 Camera2D::screenToWorld(const Vec2& screen) const noexcept
 {
-    const float zoom = std::clamp(m_zoom, kMinZoom, kMaxZoom);
+    const float zoom = effectiveZoom();
     return {m_position.x + (screen.x - static_cast<float>(m_viewportWidth) * 0.5f) / zoom,
             m_position.y + (screen.y - static_cast<float>(m_viewportHeight) * 0.5f) / zoom};
 }
 
 Vec2 Camera2D::worldToScreen(const Vec2& world) const noexcept
 {
-    const float zoom = std::clamp(m_zoom, kMinZoom, kMaxZoom);
+    const float zoom = effectiveZoom();
     return {(world.x - m_position.x) * zoom + static_cast<float>(m_viewportWidth) * 0.5f,
             (world.y - m_position.y) * zoom + static_cast<float>(m_viewportHeight) * 0.5f};
 }
@@ -87,6 +92,18 @@ void Camera2D::shake(float magnitude, double durationSeconds)
     m_shakeSeed      = std::fmod(m_shakeSeed + magnitude * 0.731f, 6.2831853f);
 }
 
+void Camera2D::punch(float amount, double durationSeconds)
+{
+    if (amount <= 0.0f || durationSeconds <= 0.0) {
+        return;
+    }
+    // Same rule as shake: a bigger impact is never cancelled by a smaller one
+    // landing on top of it.
+    m_punch         = std::max(m_punch, amount);
+    m_punchDuration = static_cast<float>(std::max(durationSeconds, static_cast<double>(m_punchDuration)));
+    m_punchTimer    = m_punchDuration;
+}
+
 void Camera2D::update(double deltaSeconds)
 {
     if (m_shakeTimer > 0.0f) {
@@ -95,6 +112,14 @@ void Camera2D::update(double deltaSeconds)
             m_shakeTimer     = 0.0f;
             m_shakeMagnitude = 0.0f;
             m_shakeDuration  = 0.0f;
+        }
+    }
+    if (m_punchTimer > 0.0f) {
+        m_punchTimer -= static_cast<float>(deltaSeconds);
+        if (m_punchTimer <= 0.0f) {
+            m_punchTimer    = 0.0f;
+            m_punchDuration = 0.0f;
+            m_punch         = 0.0f;
         }
     }
     clampToBounds();
@@ -187,6 +212,29 @@ void Renderer2D::endFrame()
     }
 }
 
+void Renderer2D::drawRectRotated(const Rect& rect, float radians, Color color)
+{
+    if (rect.isEmpty() || color.a == 0) {
+        return;
+    }
+    const Vec2  centre = rect.center();
+    const float cosA = std::cos(radians);
+    const float sinA = std::sin(radians);
+
+    const auto corner = [&](float dx, float dy) {
+        return Vec2{centre.x + dx * cosA - dy * sinA, centre.y + dx * sinA + dy * cosA};
+    };
+
+    const Vec2 topLeft     = corner(-rect.w * 0.5f, -rect.h * 0.5f);
+    const Vec2 topRight    = corner(rect.w * 0.5f, -rect.h * 0.5f);
+    const Vec2 bottomRight = corner(rect.w * 0.5f, rect.h * 0.5f);
+    const Vec2 bottomLeft  = corner(-rect.w * 0.5f, rect.h * 0.5f);
+
+    // Two triangles, wound the same way the rest of the renderer expects.
+    drawTriangle(topLeft, topRight, bottomRight, color);
+    drawTriangle(topLeft, bottomRight, bottomLeft, color);
+}
+
 void Renderer2D::setBlendMode(BlendMode mode)
 {
     if (m_blend == mode) {
@@ -233,7 +281,7 @@ float Renderer2D::worldScale() const noexcept
     if (!m_cameraEnabled) {
         return 1.0f;
     }
-    return std::clamp(m_camera.zoom(), kMinZoom, kMaxZoom);
+    return m_camera.effectiveZoom();
 }
 
 Vec2 Renderer2D::toScreen(const Vec2& world) const noexcept
@@ -242,7 +290,7 @@ Vec2 Renderer2D::toScreen(const Vec2& world) const noexcept
         return world;
     }
     const Camera2D& cam   = m_camera;
-    const float zoom      = std::clamp(cam.zoom(), kMinZoom, kMaxZoom);
+    const float zoom      = cam.effectiveZoom();
     const Vec2  centre    = cam.stablePosition();
     const float halfWidth  = static_cast<float>(cam.viewportWidth()) * 0.5f;
     const float halfHeight = static_cast<float>(cam.viewportHeight()) * 0.5f;

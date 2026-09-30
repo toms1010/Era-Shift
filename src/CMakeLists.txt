@@ -30,6 +30,12 @@ add_library(erashift_core STATIC
     EraShift/Game/Enemy.cpp
     EraShift/Game/Level.cpp
     EraShift/Game/World.cpp
+
+    # Presentation that is still pure arithmetic. The synthesiser lives here for
+    # the same reason the simulation does: it is fully testable headlessly.
+    EraShift/Audio/Synth.cpp
+    EraShift/Game/Animation.cpp
+    EraShift/Graphics/ParticleSystem.cpp
 )
 
 target_include_directories(erashift_core PUBLIC
@@ -58,6 +64,8 @@ add_library(erashift_engine STATIC
 
     EraShift/Input/InputManager.cpp
 
+    EraShift/Audio/AudioManager.cpp
+
     EraShift/Application/EventBus.cpp
     EraShift/Application/Engine.cpp
 
@@ -65,6 +73,7 @@ add_library(erashift_engine STATIC
     EraShift/Debug/DebugOverlay.cpp
 
     EraShift/Game/GameApp.cpp
+    EraShift/Game/Feedback.cpp
     EraShift/Game/states/MainMenuState.cpp
     EraShift/Game/states/PlayingState.cpp
     EraShift/Game/states/PausedState.cpp

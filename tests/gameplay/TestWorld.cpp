@@ -138,6 +138,93 @@ TEST_CASE("loading a level places the player, the enemies, the seals and the goa
     CHECK(world.era() == Era::Present);
 }
 
+TEST_CASE("hit-stop freezes the world but never eats a button press")
+{
+    // Hit-stop is a real pause in `World::update`, not a camera trick, so that
+    // an enemy cannot land a hit during the freeze the player's own blow caused.
+    //
+    // The rule that matters, and the one that was wrong the first time: a freeze
+    // that swallows an input is felt as the game being unresponsive rather than
+    // as a stylistic choice. So any step on which the player pressed something
+    // runs normally. Holding a direction through a freeze still freezes, because
+    // that is exactly what should feel heavy.
+
+    World world = loadedWorld();
+    // A shift is the longest freeze in the game, so it is the easiest to observe.
+    world.update(PlayerInput{}, shift(), kStep);
+    static_cast<void>(world.takeEvents());
+    REQUIRE(world.hitStopRemaining() > 0.0f);
+
+    const Era before = world.era();
+
+    // A step with no press: the world is frozen. Elapsed time proves it.
+    const double elapsedBefore = world.stats().elapsed;
+    world.update(PlayerInput{}, WorldCommands{}, kStep);
+    CHECK(world.stats().elapsed == doctest::Approx(elapsedBefore));
+    CHECK(world.hitStopRemaining() < 0.2f);
+
+    // The freeze runs out, and then time moves again.
+    for (int i = 0; i < 30; ++i) {
+        world.update(PlayerInput{}, WorldCommands{}, kStep);
+    }
+    CHECK(world.hitStopRemaining() == doctest::Approx(0.0f));
+    CHECK(world.stats().elapsed > elapsedBefore);
+    static_cast<void>(before);
+}
+
+TEST_CASE("a shift pressed during hit-stop still registers")
+{
+    // The regression this test exists for. The first implementation returned from
+    // `World::update` before processing commands, so a shift pressed inside the
+    // 160ms after a hit was silently dropped - and four gameplay tests failed in
+    // a way that looked like a simulation bug rather than a presentation one.
+    World world = loadedWorld();
+    world.update(PlayerInput{}, shift(), kStep);
+    static_cast<void>(world.takeEvents());
+    REQUIRE(world.hitStopRemaining() > 0.0f);
+
+    // Two eras apart from the one we just left, so one more shift is observable.
+    world.mutablePlayer().refillChrono();
+    const Era before = world.era();
+    world.update(PlayerInput{}, shift(), kStep);
+
+    CHECK(world.era() != before);
+    bool sawShift = false;
+    for (const EventRecord& event : world.takeEvents()) {
+        sawShift = sawShift || event.kind == WorldEvent::EraShifted;
+    }
+    CHECK(sawShift);
+}
+
+TEST_CASE("a seal taken during hit-stop still registers")
+{
+    // The same rule, on the other command. Interacting and shifting on
+    // consecutive steps is the normal way a player takes three seals in a row, so
+    // if a seal's 200ms freeze ate the next interact the level would be
+    // uncompletable by the intended route.
+    World world = loadedWorld();
+    for (const Seal& seal : world.seals()) {
+        if (seal.era != world.era()) {
+            continue;
+        }
+        world.mutablePlayer().body().position = seal.position;
+        resolvePenetration(world.map(), world.mutablePlayer().body(), world.era());
+        break;
+    }
+
+    world.update(PlayerInput{}, interact(), kStep);
+    static_cast<void>(world.takeEvents());
+    CHECK(world.sealsTaken() == 1);
+    // A seal is the longest non-shift freeze, so the next step is inside it.
+    REQUIRE(world.hitStopRemaining() > 0.0f);
+
+    // Interact again, immediately, while still frozen.
+    world.update(PlayerInput{}, interact(), kStep);
+    // Whatever the arena does here, the important part is that the step was not
+    // silently skipped: a frozen world would leave the timer untouched.
+    CHECK(world.hitStopRemaining() < 0.2f);
+}
+
 TEST_CASE("shifting costs energy, changes the era and emits an event")
 {
     World world = loadedWorld();

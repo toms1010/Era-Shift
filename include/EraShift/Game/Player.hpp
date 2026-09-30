@@ -87,6 +87,37 @@ struct PlayerTuning {
 /// The three phases of a swing.
 enum class AttackPhase : std::uint8_t { Idle, Windup, Active, Recover };
 
+/// One-step edges, for the presentation layer to turn into sound and particles.
+///
+/// The simulation already knows when these happen; what it deliberately does not
+/// know is that a jump should make a noise. So it publishes the fact and lets the
+/// state decide what that fact looks and sounds like. Reset at the top of every
+/// `update`, so anything still set is from this step and nothing is.
+struct PlayerStepEvents {
+    bool  jumped   = false;
+    /// Landed this step. Distinguishing the two is what lets a small step off a
+    /// ledge stay quiet while a deliberate drop lands with a thump.
+    bool  landed   = false;
+    /// Vertical speed at the moment of landing, which is what decides how hard
+    /// the thump is.
+    float landSpeed = 0.0f;
+    bool  dashed   = false;
+    /// A swing started this step.
+    bool  attacked = false;
+    /// The swing's hit window opened this step. Distinct from `attacked`, which
+    /// fires on the press: a swing that whiffs still has a swing sound.
+    bool  swingConnected = false;
+    /// Set the step the player is knocked back, so the HUD and the camera can
+    /// react to the same instant.
+    bool  hurt = false;
+    /// True while standing still and off the ground is irrelevant: this is just
+    /// "is on the floor", used to pick the idle rather than the fall animation.
+    bool  grounded = false;
+    /// True on the step a foot would land, derived from distance travelled, so
+    /// the walk cycle's footstep matches the ground rather than the clock.
+    bool  footstep = false;
+};
+
 class Player {
 public:
     Player() = default;
@@ -104,6 +135,23 @@ public:
     /// Advances one fixed step. Returns false once the player is dead, so the
     /// caller can stop simulating input for them.
     bool update(const TileMap& map, const PlayerInput& input, float dt);
+
+    /// Edges from the step that just ran. Valid until the next `update`.
+    [[nodiscard]] const PlayerStepEvents& stepEvents() const noexcept { return m_events; }
+
+    /// 0..1 through a whole swing, windup included, and 0 when not swinging.
+    ///
+    /// The animation controller is driven from this rather than from its own
+    /// clock. That is the arrangement that keeps the two in agreement: the
+    /// simulation decides when the hitbox opens, and the picture is told where
+    /// the simulation is, instead of both running separate timers and hoping.
+    [[nodiscard]] float attackProgress() const noexcept;
+
+    /// True when the swing's hit window is currently open.
+    [[nodiscard]] bool attackWindowOpen() const noexcept
+    {
+        return m_attack.phase == AttackPhase::Active;
+    }
 
     /// Applies damage. Returns false when the hit was ignored (already dead or
     /// still invulnerable), which is what makes i-frames observable in tests.
@@ -170,6 +218,9 @@ private:
     float m_eraBlend      = 1.0f;
 
     AttackState m_attack;
+    PlayerStepEvents m_events;
+    /// Accumulated ground distance since the last footstep, in pixels.
+    float m_strideDistance = 0.0f;
 };
 
 } // namespace EraShift::Game

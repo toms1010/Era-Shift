@@ -53,6 +53,30 @@ violation nobody notices.
 The payoff is concrete: **the whole test suite runs without a display server**,
 in a container, over SSH.
 
+### What else ended up in `Core`, and why
+
+Three subsystems that a reader would reasonably expect to find in the engine
+layer are in `Core` instead, and the reason is the same in all three cases:
+**they are arithmetic, and arithmetic can be tested.**
+
+| Subsystem | File | What it is |
+| --- | --- | --- |
+| The synthesiser | `Audio/Synth.cpp` | Oscillators, envelopes, filters, scales. Produces float PCM; knows nothing about a device. |
+| `ParticleSystem` | `Graphics/ParticleSystem.cpp` | A fixed pool with velocity integration. Draws nothing. |
+| `AnimationController` | `Game/Animation.cpp` | Clip sampling and blending. Poses, not pixels. |
+
+`AudioManager` is the only part of the audio that needs a device, and it is in
+`erashift_engine`. The split is not tidy for its own sake — it is that
+`tests/gameplay/TestSynth.cpp` and `TestParticles.cpp` assert on waveform
+properties and emission rates with no sound card and no display, which is the
+only reason anyone can change a synthesis constant with any confidence.
+
+`Graphics/ParticleSystem.hpp` sitting in `Core` while every other file in
+`Graphics/` is in the engine looks odd in a directory listing. It is a
+consequence of the rule, not an exception to it, and moving it would put a
+`std::vector` allocation in the middle of a combat frame behind a layer that
+cannot be tested without a window.
+
 ---
 
 ## 3. Ownership

@@ -133,6 +133,31 @@ bool Engine::initialise(Core::ConfigManager& configManager,
         m_log.info("Engine", "SDL3_ttf ready");
     }
 
+    // --- audio ---------------------------------------------------------------
+    // Deliberately not part of kRequiredSubsystems. A machine with no sound
+    // card, a container with no device, and a CI runner all still get a playable
+    // game, and the one-line cost is that `context().audio` may be a manager
+    // that reports `available() == false`.
+    {
+        const bool audioEnabled = config.getBool("audio", "enabled", true);
+        const int mixRate = config.clampInt("audio", "mixRate", Audio::kSampleRate, 8000, 192000, m_log);
+        if (m_audio.initialise(audioEnabled, mixRate, &m_log)) {
+            // The bus gains are the user-facing volumes, on a 0..100 scale.
+            const auto asFraction = [](int percent) noexcept {
+                return Graphics::clampValue(static_cast<float>(percent) / 100.0f, 0.0f, 1.0f);
+            };
+            m_audio.setMasterVolume(asFraction(config.clampInt("audio", "masterVolume", 80, 0, 100, m_log)));
+            m_audio.setBusVolume(Audio::Bus::Music,
+                                 asFraction(config.clampInt("audio", "musicVolume", 65, 0, 100, m_log)));
+            m_audio.setBusVolume(Audio::Bus::Ambience,
+                                 asFraction(config.clampInt("audio", "ambienceVolume", 55, 0, 100, m_log)));
+            m_audio.setBusVolume(Audio::Bus::Sfx,
+                                 asFraction(config.clampInt("audio", "sfxVolume", 85, 0, 100, m_log)));
+        } else if (audioEnabled) {
+            m_log.warn("Engine", "continuing without audio");
+        }
+    }
+
     // --- window --------------------------------------------------------------
     Graphics::WindowConfig windowConfig;
     windowConfig.title      = config.getString("graphics", "windowTitle", "Era Shift");
@@ -250,6 +275,7 @@ void Engine::rebuildContext() noexcept
     m_context.window    = &m_window;
     m_context.window    = &m_window;
     m_context.text      = m_text.get();
+    m_context.audio     = &m_audio;
 
     m_context.buildLabel = m_buildLabel;
     m_context.version    = ERASHIFT_VERSION;
@@ -294,6 +320,13 @@ void Engine::update(double fixedDelta)
         m_game->updateGlobalInput(m_context);
     }
     m_states.update(fixedDelta);
+
+    // Audio is pumped after the simulation so the synths are fed the era and
+    // tension the step just produced. It is here rather than in a state so that
+    // the beds keep running identically in every state, and so a state can never
+    // forget to feed them.
+    m_audio.update(static_cast<float>(fixedDelta), m_audio.era(), m_audio.musicState(),
+                   m_audio.tension());
 }
 
 void Engine::render(double frameDelta, double alpha)
@@ -447,6 +480,10 @@ void Engine::shutdown() noexcept
     m_resources.reset();
     m_text.reset();
     m_window.destroy();
+
+    // Audio before SDL_Quit: the mixer holds device and stream handles that
+    // belong to the subsystem it is being shut down with.
+    m_audio.shutdown();
 
     TTF_Quit();
     SDL_Quit();

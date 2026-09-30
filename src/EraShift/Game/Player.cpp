@@ -5,6 +5,15 @@
 
 namespace EraShift::Game {
 
+namespace {
+
+/// Ground covered between footfalls. A stride, in the sense that matters: it is
+/// the distance a foot travels, so the sound lands where the foot lands. At the
+/// default 250px/s this is a step roughly every third of a second.
+constexpr float kStrideLength = 76.0f;
+
+} // namespace
+
 void Player::reset(const Vec2& spawn, Era era)
 {
     m_era    = era;
@@ -61,8 +70,12 @@ bool Player::update(const TileMap& map, const PlayerInput& input, float dt)
         return m_health > 0.0f;
     }
     if (!alive()) {
+        m_events = PlayerStepEvents{};
         return false;
     }
+
+    // Cleared first, so every edge below describes this step and nothing older.
+    m_events = PlayerStepEvents{};
 
     const float axis = Graphics::clampValue(input.moveAxis, -1.0f, 1.0f);
     if (std::fabs(axis) > 0.01f) {
@@ -110,6 +123,7 @@ bool Player::update(const TileMap& map, const PlayerInput& input, float dt)
         m_jumpBuffer      = 0.0f;
         m_coyoteTimer     = 0.0f;
         m_dashTimer       = 0.0f;
+        m_events.jumped   = true;
     } else if (m_jumpBuffer > 0.0f && m_coyoteTimer <= 0.0f && !onGround) {
         // The press is still worth holding on to for a landing inside the
         // buffer window, so the timer is left to run down rather than cleared.
@@ -127,6 +141,7 @@ bool Player::update(const TileMap& map, const PlayerInput& input, float dt)
         m_dashTimer     = m_tuning.dashTime;
         m_dashCooldown  = m_tuning.dashCooldown + m_tuning.dashTime;
         m_body.velocity.x = m_facing * m_tuning.dashSpeed;
+        m_events.dashed    = true;
     }
 
     // --- vertical -----------------------------------------------------------
@@ -147,9 +162,25 @@ bool Player::update(const TileMap& map, const PlayerInput& input, float dt)
             // Landing refreshes the coyote window, so bouncing off a floor
             // immediately does not need the button pressed again.
             m_coyoteTimer = m_tuning.coyoteTime;
+            // The impact speed is captured before gravity stops adding to it,
+            // because after the landing it is zero and everything sounds soft.
+            m_events.landed   = true;
+            m_events.landSpeed = std::fabs(m_body.velocity.y);
         }
     } else if (wasGrounded) {
         m_coyoteTimer = m_tuning.coyoteTime;
+    }
+    m_events.grounded = m_body.onGround;
+
+    // Footsteps are counted in distance, not time. A walk cycle tied to a clock
+    // slides its feet at low speed and scrabbles at high; one tied to ground
+    // covered puts the sound where the step actually happened.
+    if (m_body.onGround) {
+        m_strideDistance += std::fabs(m_body.velocity.x) * dt;
+    }
+    if (m_strideDistance >= kStrideLength) {
+        m_strideDistance = 0.0f;
+        m_events.footstep = m_body.onGround && std::fabs(m_body.velocity.x) > 20.0f;
     }
 
     // Falling out of the world is always fatal, whatever the era.
@@ -161,6 +192,33 @@ bool Player::update(const TileMap& map, const PlayerInput& input, float dt)
 
     updateChrono(dt);
     return m_health > 0.0f;
+}
+
+float Player::attackProgress() const noexcept
+{
+    // Walked backwards through the phases, accumulating the time already spent.
+    // Idle is 0 by definition, which is what lets the caller use 0 as "not
+    // swinging" without a second flag.
+    const PlayerTuning& t = m_tuning;
+    switch (m_attack.phase) {
+        case AttackPhase::Idle:
+            return 0.0f;
+        case AttackPhase::Windup:
+            return 1.0f - Graphics::clampValue(m_attack.timer / std::max(0.001f, t.attackWindup), 0.0f, 1.0f);
+        case AttackPhase::Active: {
+            const float total = t.attackWindup + t.attackActive;
+            const float done  = t.attackWindup - Graphics::clampValue(
+                                                        m_attack.timer / std::max(0.001f, t.attackActive), 0.0f, 1.0f);
+            return Graphics::clampValue(done / std::max(0.001f, total), 0.0f, 1.0f);
+        }
+        case AttackPhase::Recover: {
+            const float total = t.attackWindup + t.attackActive + t.attackRecover;
+            const float done  = t.attackWindup + t.attackActive - Graphics::clampValue(
+                     m_attack.timer / std::max(0.001f, t.attackRecover), 0.0f, 1.0f);
+            return Graphics::clampValue(done / std::max(0.001f, total), 0.0f, 1.0f);
+        }
+    }
+    return 0.0f;
 }
 
 void Player::updateChrono(float dt)
@@ -175,6 +233,7 @@ void Player::updateAttack(const PlayerInput& input, float dt)
             if (input.attackPressed) {
                 m_attack.phase = AttackPhase::Windup;
                 m_attack.timer = m_tuning.attackWindup;
+                m_events.attacked = true;
             }
             break;
 
@@ -183,6 +242,10 @@ void Player::updateAttack(const PlayerInput& input, float dt)
             if (m_attack.timer <= 0.0f) {
                 m_attack.phase = AttackPhase::Active;
                 m_attack.timer = m_tuning.attackActive;
+                // The window opening is its own edge. This is the frame the swing
+                // becomes dangerous, and both the hit spark and the hit sound hang
+                // off it rather than off the press.
+                m_events.swingConnected = true;
             }
             break;
 
@@ -212,6 +275,7 @@ bool Player::takeDamage(float amount, Vec2 from)
 
     m_health = std::max(0.0f, m_health - amount);
     m_invulnTimer = m_tuning.invulnTime;
+    m_events.hurt = true;
 
     // Knockback always points away from the source. Dashing cancels it, which
     // gives the dash a defensive use as well as a mobility one.
