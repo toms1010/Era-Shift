@@ -244,7 +244,7 @@ The architecture is built for the systems that come next, not for the systems
 that exist:
 
 * **Phase 2–3** — `Player`, `Camera2D`, collision and the `Era` enum graduate
-  out of the test scene into real modules.
+  out of the gameplay scene into real modules — which is what Phase 2 did.
 * **Phase 4** — `TimelineManager` and `ParadoxManager` are pure `Core` logic
   with no rendering dependency, so they are unit-testable from the start.
 * **Phase 7** — the save system serialises the same `ConfigStore` type the

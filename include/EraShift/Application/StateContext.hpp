@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <string_view>
 
 namespace EraShift {
@@ -63,6 +64,14 @@ struct StateContext {
     /// Build identification shown on the title screen and in the overlay.
     std::string_view buildLabel = "Development Build";
     std::string_view version    = "0.0.0";
+
+    /// Level file to load. Empty means the shipped region, which is what the
+    /// state falls back to when the file is missing or malformed.
+    ///
+    /// Content rather than a service, alongside the build label: the states
+    /// cannot reach the engine, and reaching the game facade to ask it what
+    /// level to load would be a back door round the state machine.
+    std::filesystem::path levelPath;
 
     /// A context is usable once the log and the renderer exist.
     [[nodiscard]] bool valid() const noexcept

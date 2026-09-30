@@ -136,6 +136,20 @@ public:
     [[nodiscard]] const Camera2D& camera() const noexcept { return m_camera; }
     /// Detaches the camera so subsequent draws are in screen space (UI).
     void setCameraEnabled(bool enabled) noexcept { m_cameraEnabled = enabled; }
+    [[nodiscard]] bool cameraEnabled() const noexcept { return m_cameraEnabled; }
+
+    /// The transform every world-space draw call goes through.
+    ///
+    /// Exposed because the game has to place things in world coordinates that
+    /// it measures itself (the camera bounds, the reachability of a ledge), and
+    /// having two definitions of "world to screen" is how a world-space UI
+    /// element ends up in the wrong place.
+    ///
+    /// With the camera detached this is the identity, so UI code can use it
+    /// unconditionally.
+    [[nodiscard]] Vec2 toScreen(const Vec2& world) const noexcept;
+    /// The uniform scale factor currently applied to world geometry.
+    [[nodiscard]] float worldScale() const noexcept;
 
     // --- drawing ------------------------------------------------------------
     void clear(Color color);

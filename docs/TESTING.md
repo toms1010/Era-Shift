@@ -14,8 +14,9 @@ suite runs in a container, over SSH, and in CI.
 
 | Binary | Tests | Contents |
 | --- | --- | --- |
-| `erashift_tests_unit` | 76 cases | Maths, logging, config, timing, game loop, state machine, font |
+| `erashift_tests_unit` | 94 cases | Maths, logging, config, timing, game loop, state machine, font |
 | `erashift_tests_integration` | 10 cases | Full state flow, config round trips and migrations |
+| `erashift_tests_gameplay` | 110 cases | The whole simulation: eras, tile collision, physics, the player, enemies, the world, level data and saves |
 
 ```bash
 ./build/debug/erashift_tests_unit --success              # verbose

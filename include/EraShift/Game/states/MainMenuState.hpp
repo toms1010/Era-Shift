@@ -71,9 +71,39 @@ struct PanelLayout {
                                       Graphics::TextRenderer& text);
 
 /// A selectable entry in a menu list.
+///
+/// Constructors rather than aggregate initialisation, because the three- and
+/// four-field forms mean different things and an aggregate would happily accept
+/// `{"ROW", "caption", true}` as a three-element list of the wrong fields.
 struct MenuItem {
+    MenuItem() = default;
+
+    MenuItem(std::string itemLabel, std::string itemDetail, bool itemEnabled = true)
+        : label(std::move(itemLabel)),
+          detail(std::move(itemDetail)),
+          enabled(itemEnabled)
+    {
+    }
+
+    MenuItem(std::string itemLabel, std::string itemDetail, std::string itemValue,
+             bool itemEnabled = true)
+        : label(std::move(itemLabel)),
+          detail(std::move(itemDetail)),
+          value(std::move(itemValue)),
+          enabled(itemEnabled)
+    {
+    }
+
     std::string label;
+    /// Caption shown once, centred, under the list, for the highlighted entry.
     std::string detail;
+    /// Right-aligned value shown on the row itself: "ON", "100%", "Left Shift".
+    ///
+    /// Kept separate from `detail` because the two answer different questions -
+    /// "what does this do" versus "what is it set to" - and a settings screen
+    /// where the current value is not on the row is a settings screen the player
+    /// has to change things to find out about.
+    std::string value;
     bool        enabled = true;
 };
 

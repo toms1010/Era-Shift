@@ -105,6 +105,9 @@ private:
     float m_time        = 0.0f;
     float m_hurtFlash   = 0.0f;
     float m_shiftFlash  = 0.0f;
+    /// Counts down after the run ends, so the player sees what happened before
+    /// the results screen replaces the world.
+    float m_outcomeDelay = 0.0f;
     bool  m_ready       = false;
 
     /// HUD typography, built once from the scale so the bars, the objective and

@@ -7,6 +7,8 @@
 #include "EraShift/Graphics/TextRenderer.hpp"
 #include "EraShift/Graphics/Math.hpp"
 
+#include "EraShift/Input/InputManager.hpp"
+
 #include <string>
 #include <vector>
 
@@ -48,9 +50,31 @@ private:
     /// Which page of options is showing.
     enum class Page { General, Graphics, Audio, Controls };
 
+    /// What the controls page is waiting for. Idle otherwise.
+    enum class Rebind {
+        None,
+        Waiting,
+        Cancelled,
+    };
+
     void buildItems(StateContext& ctx);
+    /// The controls page's rows, built from the live bindings.
+    [[nodiscard]] std::vector<MenuItem> controlItems(StateContext& ctx) const;
     void adjust(StateContext& ctx, int direction);
     void setPage(Page page, StateContext& ctx);
+    /// True when this menu label is an adjustable option rather than a page link
+    /// or a back button.
+    [[nodiscard]] bool isAdjustable(const std::string& label) const;
+
+    /// Handles the controls page: showing the bindings, and capturing a new
+    /// one when the player asks for it.
+    void updateRebinding(StateContext& ctx);
+    /// Writes a new binding back into the controls config table, so it survives
+    /// a restart.
+    void persistBinding(StateContext& ctx, Input::Action action,
+                        const Input::InputBinding& binding);
+    /// Actions offered on the controls page, in the order they are listed.
+    [[nodiscard]] static const std::vector<Input::Action>& controlActions();
 
     MenuList   m_menu;
     MenuStyles m_styles;
@@ -68,6 +92,9 @@ private:
     int   m_musicVolume  = 70;
     int   m_sfxVolume    = 90;
     int   m_uiScale      = 100;
+
+    Rebind m_rebind = Rebind::None;
+    Input::Action m_rebindTarget = Input::Action::Count;
 };
 
 } // namespace EraShift::Game

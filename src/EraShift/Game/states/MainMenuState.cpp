@@ -329,6 +329,21 @@ void MenuList::render(Renderer2D& renderer, Graphics::TextRenderer& text, const 
         // labels pinned to the left of a wide panel look stranded.
         style.align = TextAlign::Center;
 
+        // How much of the row the label owns. With a value present the label is
+        // centred in what is left, not in the row, so everything measured from
+        // the label has to use the same box or the selection ends up bracketing
+        // empty space.
+        const float pad    = styles.scale.px(20.0f);
+        const float innerX = row.x + pad;
+        const float innerW = row.w - pad * 2.0f;
+        float valueWidth   = 0.0f;
+        if (!item.value.empty()) {
+            TextStyle valueStyle = style;
+            valueWidth = text.measure(item.value, valueStyle).x + styles.scale.px(16.0f);
+        }
+        const float labelBoxW = innerW - valueWidth;
+        const float labelCentre = innerX + labelBoxW * 0.5f;
+
         // The selection is a full-width fill, accent-coloured bold text, and a
         // pair of chevrons bracketing the label. The chevrons keep the selection
         // readable without relying on colour alone, and are placed from the
@@ -339,14 +354,26 @@ void MenuList::render(Renderer2D& renderer, Graphics::TextRenderer& text, const 
             const float size      = styles.scale.px(4.0f);
             const float offset    = labelWidth * 0.5f + gap + size * 0.5f;
             for (const float dir : {-1.0f, 1.0f}) {
-                drawChevron(renderer, row.center().x + dir * offset, row.center().y, size, dir,
+                drawChevron(renderer, labelCentre + dir * offset, row.center().y, size, dir,
                             Palette::Accent);
             }
         }
 
-        const float pad = styles.scale.px(20.0f);
-        text.drawInRect(renderer, Rect{row.x + pad, row.y, row.w - pad * 2.0f, row.h},
-                        item.label, style);
+        if (item.value.empty()) {
+            text.drawInRect(renderer, Rect{innerX, row.y, innerW, row.h}, item.label, style);
+        } else {
+            // The label is centred in what is left once the value's width is
+            // reserved, so a row reads as two balanced columns rather than the
+            // value shoved to the edge and the label stranded on the other side.
+            TextStyle valueStyle = style;
+            valueStyle.color     = selected ? Palette::TextPrimary : Palette::TextDim;
+            valueStyle.bold      = false;
+            valueStyle.shadow    = style.shadow;
+
+            text.drawInRect(renderer, Rect{innerX, row.y, labelBoxW, row.h}, item.label, style);
+            text.drawInRect(renderer, Rect{innerX + labelBoxW, row.y, valueWidth, row.h},
+                            item.value, valueStyle);
+        }
 
         // The detail is deliberately not drawn here. Right-aligning a caption
         // next to a short label leaves a wide, ragged gap; it is shown once,
@@ -711,6 +738,12 @@ void MainMenuState::render(StateContext& ctx, double alpha)
     text.drawInRect(renderer, Rect{layout.hints.x, layout.hints.y + layout.hints.h * 0.5f,
                                    layout.hints.w, layout.hints.h * 0.5f},
                     kHintRow2, m_styles.hint);
+
+    if (ctx.stats != nullptr) {
+        // Nothing is simulated here, so the counter says so rather than leaving
+        // the last gameplay frame's number on screen.
+        ctx.stats->setEntityCount(0);
+    }
 
     // The debug overlay works in every state, including this one, because it is
     // the tool used to diagnose the main menu.

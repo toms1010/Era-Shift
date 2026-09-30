@@ -17,6 +17,7 @@ add_library(erashift_core STATIC
     EraShift/Core/GameState.cpp
     EraShift/Core/Config.cpp
     EraShift/Core/SignalHandler.cpp
+    EraShift/Core/DemoDriver.cpp
     EraShift/Core/SaveGame.cpp
     EraShift/Graphics/Math.cpp
     EraShift/Graphics/Color.cpp

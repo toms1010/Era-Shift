@@ -5,10 +5,11 @@ that changes across three eras** (Past, Present, Future).
 
 > *The world is one world, but time changes its state.*
 
-**Current status: Phase 1 — Engine Foundation.** The window opens, the title
-screen renders, the main menu is navigable, and a test scene demonstrates
-movement, the camera, era shifting, pause and settings. Gameplay systems
-(player, timeline, combat, AI) are not implemented yet.
+**Current status: Phase 2 — Playable vertical slice.** The Ancient Forest is
+complete from spawn to the Ancient Gate: era-dependent terrain, three enemies
+that exist in different eras, melee combat, three era seals, hazards, pickups,
+a save file, and the full set of menus and overlays. Audio is still not
+implemented.
 
 ---
 
@@ -24,19 +25,57 @@ cmake --build --preset debug
 
 # 3. Run
 ./build/debug/EraShift
+
+# 4. Tests (headless, no display needed)
+ctest --preset debug --output-on-failure
 ```
+
+### Command line
+
+| Option | Purpose |
+| --- | --- |
+| `--frames <n>` | Quit after n frames. 0 means no limit. |
+| `--headless` | Dummy video driver, for CI and containers. |
+| `--screenshot <png>` | Write a PNG of the window. |
+| `--screenshot-frame <n>` | Which frame to capture (default 30). |
+| `--start-state <s>` | Open on `playing`, `settings`, `credits` or `paused`. |
+| `--level <file>` | Load a specific level instead of the shipped one. |
+| `--demo` | Replace input with the built-in attract script. |
+| `--content <dir>` | Load assets and data from elsewhere. |
+| `--set key=value` | Override any configuration value. |
+| `--log-level`, `--log-file` | Logging. |
+
+`--start-state`, `--level` and `--demo` exist so every screen can be captured and
+smoke-tested without playing through to it.
 
 Then:
 
 | Key | Action |
 | --- | --- |
-| `W` `A` `S` `D` / arrows | Move |
-| `Space` | Jump |
-| `E` | Interact / confirm |
-| `Esc` | Pause |
+| `A` `D` / arrows | Move |
+| `Space` | Jump (hold for height) |
+| `Left Shift` | Dash (brief invulnerability) |
+| `Left Mouse` | Attack |
+| `E` | Interact / take a seal / confirm |
 | `Q` | Era Shift (the signature mechanic) |
+| `Esc` | Pause |
 | `F3` | Debug overlay |
 | `F12` | Screenshot |
+
+## How to play
+
+The Ancient Gate will not open until all three era seals are recovered, and
+each seal only yields while the world is in *its* era. The terrain is written
+the same way: the first chasm is bridged by crumbling stone that only exists in
+the Past, the second by a structure that still stands in the Present, the third
+by crystal that has not grown yet in the Future. So the level is a sequence of
+era switches rather than a corridor — walk until the ground runs out, then
+change time.
+
+Shifting costs chrono energy, which regenerates and is refilled by the blue
+cells. Wardens only exist in the Past and wisps only in the Future, and neither
+can be hit while it is not in the world; shifting out is a way to escape one,
+and shifting in is the only way to fight it.
 
 See [`docs/BUILD.md`](docs/BUILD.md) for build options and
 [`docs/CONTROLS.md`](docs/CONTROLS.md) for the full list.
@@ -114,7 +153,7 @@ include/EraShift/     Public headers, mirroring src/
   Graphics/           Window, renderer, textures, text, maths, colour
   Input/              Keyboard, mouse, action bindings
   Debug/              Performance counters, overlay
-  Game/states/        Title screen, test scene, pause, settings
+  Game/states/        Title screen, gameplay, results, credits, pause, settings
 src/EraShift/         Implementations
 tests/                unit/ integration/
 assets/               Sprites, audio, fonts
@@ -164,16 +203,21 @@ layer.
 | Document | Contents |
 | --- | --- |
 | [docs/BUILD.md](docs/BUILD.md) | Dependencies, presets, troubleshooting |
+| [docs/CONTROLS.md](docs/CONTROLS.md) | Controls and rebinding |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layering, ownership, the game loop |
 | [docs/TESTING.md](docs/TESTING.md) | Test strategy, sanitizers |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Profiling, budgets |
 | [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md) | Engine subsystem designs |
+| [docs/GAME_DESIGN.md](docs/GAME_DESIGN.md) | The loop, the resources, the enemies, the combat |
+| [docs/ERA_SYSTEM.md](docs/ERA_SYSTEM.md) | How one world is three worlds |
 | [docs/CRASH_ANALYSIS.md](docs/CRASH_ANALYSIS.md) | Post-mortem of the Phase 1 SIGSEGV |
 | [CHANGELOG.md](CHANGELOG.md) | What changed and when |
 
-Game design documents (`GAME_DESIGN.md`, `ERA_SYSTEM.md`, `TIMELINE_SYSTEM.md`,
-and the rest) are written phase by phase as the systems they describe are
-implemented, so they stay true rather than aspirational.
+`docs/GAME_DESIGN.md` and `docs/ERA_SYSTEM.md` describe the game as it is now
+implemented, so they stay true rather than aspirational. `TIMELINE_SYSTEM.md`
+is deferred: the era cycle is complete, but the persistence rules a full
+timeline system needs are not designed yet, and a document describing them
+would be fiction.
 
 ---
 

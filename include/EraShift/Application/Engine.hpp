@@ -11,6 +11,7 @@
 #pragma once
 
 #include "EraShift/Core/Config.hpp"
+#include "EraShift/Core/DemoDriver.hpp"
 #include "EraShift/Core/GameLoop.hpp"
 #include "EraShift/Core/GameState.hpp"
 #include "EraShift/Core/Log.hpp"
@@ -48,10 +49,19 @@ public:
 
     /// Creates the window and every subsystem. Returns false and fills `errorOut`
     /// on failure; the Engine is left safely destructible.
-    bool initialise(const Core::ConfigStore& config,
+    /// `config` is kept, not just read: the states use it to find the save
+    /// directory, to persist rebinds and to resolve the UI scale. Handing the
+    /// engine a bare store leaves it owning an *unloaded* ConfigManager, and
+    /// every one of those writes then lands somewhere relative to whatever
+    /// directory the game happened to be launched from.
+    bool initialise(Core::ConfigManager& config,
                     const std::filesystem::path& contentRoot,
                     const std::string& projectRoot,
                     std::string& errorOut);
+
+    /// Level file to load, overriding `data/levels/ancient_forest.json`.
+    /// Empty means the shipped region.
+    void setLevelPath(std::filesystem::path path) { m_levelPath = std::move(path); }
 
     /// Releases everything, in reverse order of construction.
     void shutdown() noexcept;
@@ -61,6 +71,7 @@ public:
 
     /// Requests a clean shutdown at the end of the current frame.
     void requestExit() noexcept;
+
 
     /// Quits automatically once this many frames have been presented. Zero
     /// disables the limit. Used by the headless smoke test.
@@ -74,6 +85,16 @@ public:
     /// ever showing the main menu. Must be set before `run()`.
     void setStartState(std::string state) { m_startState = std::move(state); }
     [[nodiscard]] const std::string& startState() const noexcept { return m_startState; }
+
+    /// Writes the next presented frame to `path`, replacing any pending request.
+    void requestScreenshot(std::filesystem::path path) { m_screenshotPath = std::move(path); }
+
+    /// Replaces real input with the built-in attract script.
+    ///
+    /// For the attract loop on the title screen and for automated visual
+    /// capture, both of which need the game to be playing itself.
+    void setDemo(bool enabled) { m_demo = enabled ? Core::DemoDriver::attract() : Core::DemoDriver{}; }
+    [[nodiscard]] bool demoEnabled() const noexcept { return m_demo.active(); }
 
     /// Writes the next presented frame to `path` as a PNG. Used by the
     /// automated visual smoke test.
@@ -106,17 +127,24 @@ public:
 
     [[nodiscard]] const std::string& buildLabel() const noexcept { return m_buildLabel; }
     [[nodiscard]] bool isDebugBuild() const noexcept { return m_debugBuild; }
-    [[nodiscard]] Core::ConfigManager& config() noexcept { return m_config; }
+    [[nodiscard]] Core::ConfigManager& config() noexcept;
 
 private:
     void pumpEvents(double frameDelta);
     void update(double fixedDelta);
     void render(double frameDelta, double alpha);
+    /// Advances the demo script by one fixed step and feeds it to the input
+    /// system.
+    void pumpDemo();
     void paceFrame();
     bool saveScreenshot(const std::filesystem::path& path);
 
+    double                      m_updateSeconds = 0.0;
+
+    Core::DemoDriver            m_demo;
+    std::uint64_t               m_demoStep = 0;
     Core::Logger                m_log;
-    Core::ConfigManager         m_config{m_log};
+    Core::ConfigManager*        m_config = nullptr;
     Core::SystemClock           m_clock;
     Core::GameLoop              m_gameLoop;
     Core::StateMachine          m_states;
@@ -144,6 +172,9 @@ private:
 
     /// Name of the screen to start on. Empty means the normal title screen.
     std::string m_startState;
+
+    /// Overrides which level file the game loads.
+    std::filesystem::path m_levelPath;
 
     unsigned long m_frameLimit = 0;
     unsigned long m_framesPresented = 0;

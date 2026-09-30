@@ -19,6 +19,7 @@ std::string_view stateName(GameState state) noexcept
         case GameState::QuestLog:  return "QuestLog";
         case GameState::Loading:   return "Loading";
         case GameState::GameOver:  return "GameOver";
+        case GameState::Credits:   return "Credits";
     }
     return "Unknown";
 }

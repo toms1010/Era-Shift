@@ -118,7 +118,10 @@ TEST_CASE("a jump leaves the ground and comes back")
     input.jumpPressed = false;
     f.run(90, input);
     CHECK(f.player.body().onGround);
-    CHECK(f.player.body().bottom() == doctest::Approx(kFloorY));
+    // Contact is resolved in half-pixel back-outs, so the body rests within a
+    // pixel of the floor rather than exactly on it. Anything tighter would be
+    // testing the back-out step size, not the controller.
+    CHECK(f.player.body().bottom() == doctest::Approx(kFloorY).epsilon(0.01f));
 }
 
 TEST_CASE("releasing jump early cuts the rise, which is what makes it controllable")
@@ -148,35 +151,69 @@ TEST_CASE("releasing jump early cuts the rise, which is what makes it controllab
 
 TEST_CASE("coyote time lets a jump land shortly after walking off a ledge")
 {
+    // A ledge that ends at column 19.
     TileMap map;
     map.resize(40, 12);
-    for (int x = 20; x < 40; ++x) {
+    for (int x = 0; x < 20; ++x) {
         map.set(x, kFloorRow, Tile::of(TileKind::Solid));
     }
 
     Player player;
-    player.reset(Vec2{9.0f * TileMap::kTileSize, kFloorY - 44.0f}, Era::Present);
-    for (int i = 0; i < 8; ++i) {
+    // Close enough to the edge that a second of walking goes over it.
+    player.reset(Vec2{17.0f * TileMap::kTileSize, 0.0f}, Era::Present);
+    for (int i = 0; i < 30; ++i) {
         player.update(map, PlayerInput{}, kStep);
     }
-    CHECK(player.body().onGround);
+    REQUIRE(player.body().onGround);
 
-    // Walk off the right-hand edge of the floor.
+    // Walk off the right-hand end.
     PlayerInput walk = held(1.0f);
-    for (int i = 0; i < 40; ++i) {
+    for (int i = 0; i < 60 && player.body().onGround; ++i) {
         player.update(map, walk, kStep);
     }
-    CHECK_FALSE(player.body().onGround);
-    const float xAtLedge = player.body().position.x;
-    static_cast<void>(xAtLedge);
+    REQUIRE_FALSE(player.body().onGround);
 
-    // A jump pressed within the coyote window still fires.
+    // A jump pressed inside the coyote window still fires.
     PlayerInput jump;
     jump.jumpPressed = true;
     jump.jumpHeld    = true;
     const float before = player.body().velocity.y;
     player.update(map, jump, kStep);
-    CHECK(player.body().velocity.y < before);
+    CHECK(player.body().velocity.y < before - 100.0f);
+}
+
+TEST_CASE("coyote time expires, so a jump long after the ledge does not")
+{
+    TileMap map;
+    map.resize(40, 12);
+    for (int x = 0; x < 20; ++x) {
+        map.set(x, kFloorRow, Tile::of(TileKind::Solid));
+    }
+
+    Player player;
+    player.reset(Vec2{17.0f * TileMap::kTileSize, 0.0f}, Era::Present);
+    for (int i = 0; i < 30; ++i) {
+        player.update(map, PlayerInput{}, kStep);
+    }
+    REQUIRE(player.body().onGround);
+    PlayerInput walk = held(1.0f);
+    for (int i = 0; i < 60 && player.body().onGround; ++i) {
+        player.update(map, walk, kStep);
+    }
+    REQUIRE_FALSE(player.body().onGround);
+
+    // Fall well past the window.
+    for (int i = 0; i < 30; ++i) {
+        player.update(map, PlayerInput{}, kStep);
+    }
+
+    PlayerInput jump;
+    jump.jumpPressed = true;
+    jump.jumpHeld    = true;
+    const float before = player.body().velocity.y;
+    player.update(map, jump, kStep);
+    // Still accelerating downwards: the jump was refused.
+    CHECK(player.body().velocity.y >= before);
 }
 
 TEST_CASE("a jump pressed just before landing is remembered and fires on touchdown")
@@ -223,11 +260,12 @@ TEST_CASE("the dash covers ground fast, suspends gravity and then goes on cooldo
     CHECK(f.player.body().velocity.x > f.player.tuning().moveSpeed);
 
     const float startX = f.player.body().position.x;
-    f.run(6, held(0.0f));
+    f.run(9, held(0.0f));   // the dash lasts 0.16s, about ten steps
     const float dashDistance = f.player.body().position.x - startX;
+    // 620 px/s for 0.16s is about 99px; friction takes a little off the end.
     CHECK(dashDistance > 80.0f);
 
-    f.run(30, held(0.0f));
+    f.run(20, held(0.0f));
     CHECK_FALSE(f.player.dashing());
 
     // Immediately afterwards a second dash is refused.
@@ -323,7 +361,7 @@ TEST_CASE("knockback pushes the player away from where the hit came from")
 TEST_CASE("health cannot go below zero and cannot be raised past the maximum")
 {
     Fixture f;
-    for (int i = 0; i < 20; ++i) {
+    for (int i = 0; i < 20 && f.player.alive(); ++i) {
         f.player.takeDamage(1.0f, Vec2{});
         f.run(80, PlayerInput{});
     }
@@ -331,8 +369,10 @@ TEST_CASE("health cannot go below zero and cannot be raised past the maximum")
     CHECK(f.player.health() == doctest::Approx(0.0f));
     CHECK_FALSE(f.player.takeDamage(1.0f, Vec2{}));
 
+    // Healing must not resurrect.
     f.player.heal(100.0f);
     CHECK(f.player.health() == doctest::Approx(0.0f));
+    CHECK_FALSE(f.player.alive());
 
     f.player.restore(Vec2{160.0f, kFloorY - 44.0f}, Era::Present, 1.0f, 50.0f);
     f.player.heal(100.0f);

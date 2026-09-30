@@ -141,6 +141,11 @@ public:
     // --- queries ------------------------------------------------------------
 
     [[nodiscard]] const Level& level() const noexcept { return m_level; }
+
+    /// False until `load` has been called. An unloaded world has no map and a
+    /// player with no health, so simulating it would report a defeat the player
+    /// never earned.
+    [[nodiscard]] bool loaded() const noexcept { return m_loaded; }
     /// Direct access for restoring a save. The const overloads are what
     /// everything else should be using.
     [[nodiscard]] Player& mutablePlayer() noexcept { return m_player; }
@@ -197,6 +202,7 @@ private:
     std::vector<Pickup> m_pickups;
     std::vector<Seal>   m_seals;
 
+    bool    m_loaded = false;
     Era     m_previousEra = Era::Present;
     Outcome m_outcome     = Outcome::Running;
     RunStats m_stats;

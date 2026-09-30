@@ -155,7 +155,6 @@ bool SaveGame::fromJson(std::string_view json, SaveGame& out, std::string& error
 SaveManager::SaveManager(std::filesystem::path directory, Logger& log)
     : m_directory(std::move(directory)), m_log(&log)
 {
-    refresh();
 }
 
 std::filesystem::path SaveManager::slotPath() const
@@ -163,11 +162,10 @@ std::filesystem::path SaveManager::slotPath() const
     return m_directory / kSlotFile;
 }
 
-bool SaveManager::refresh()
+bool SaveManager::hasSave() const
 {
     std::error_code ec;
-    m_hasSave = std::filesystem::is_regular_file(slotPath(), ec) && !ec;
-    return m_hasSave;
+    return std::filesystem::is_regular_file(slotPath(), ec) && !ec;
 }
 
 bool SaveManager::load(SaveGame& out) const

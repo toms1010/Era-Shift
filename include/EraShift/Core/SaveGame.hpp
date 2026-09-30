@@ -57,11 +57,13 @@ public:
     [[nodiscard]] const std::filesystem::path& directory() const noexcept { return m_directory; }
     [[nodiscard]] std::filesystem::path slotPath() const;
 
-    /// True when a save exists and parses. Used to enable CONTINUE, so it has
-    /// to be cheap and has to not spam the log on every call.
-    [[nodiscard]] bool hasSave() const noexcept { return m_hasSave; }
-    /// Re-checks the slot on disk.
-    bool refresh();
+    /// True when a save file exists on disk.
+    ///
+    /// Queried rather than cached. A cached flag read "no save" for a whole
+    /// session after the first write, which is exactly the window in which the
+    /// player would most want CONTINUE - and one `stat` on a menu the player is
+    /// looking at is not worth optimising away.
+    [[nodiscard]] bool hasSave() const;
 
     bool load(SaveGame& out) const;
     bool store(const SaveGame& game) const;
@@ -70,7 +72,6 @@ public:
 private:
     std::filesystem::path m_directory;
     Logger*               m_log = nullptr;
-    bool                  m_hasSave = false;
 };
 
 } // namespace EraShift::Core

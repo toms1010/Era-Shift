@@ -5,9 +5,10 @@
 // actions ("jump", "interact", "shiftEra") so rebinding is a data change rather
 // than a code change.
 //
-// Edge detection (`pressed`, `released`) is computed by comparing the previous
-// frame's snapshot, so it stays correct no matter how many times a query is
-// made during a frame.
+// Edge detection (`pressed`, `released`) is computed once, when the event is
+// ingested, and stored in the frame's state. Queries are therefore free and
+// correct however many times they are made during a frame - and a query made
+// from two different places cannot disagree about the same press.
 
 #pragma once
 
@@ -226,7 +227,6 @@ private:
 
     std::array<ActionBinding, kActionCount> m_bindings{};
     InputState m_current;
-    InputState m_previous;
     float m_viewportWidth  = 1.0f;
     float m_viewportHeight = 1.0f;
 };

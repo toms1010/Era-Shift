@@ -109,6 +109,7 @@ public:
     /// still invulnerable), which is what makes i-frames observable in tests.
     bool takeDamage(float amount, Vec2 from);
 
+    /// Restores health, up to the maximum. Ignored once dead.
     void heal(float amount);
     void refillChrono();
 

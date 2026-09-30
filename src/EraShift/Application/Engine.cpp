@@ -42,6 +42,12 @@ std::string describeSubsystems(SDL_InitFlags flags)
 
 } // namespace
 
+Core::ConfigManager& Engine::config() noexcept
+{
+    static Core::ConfigManager fallback(m_log);
+    return m_config != nullptr ? *m_config : fallback;
+}
+
 Engine::Engine() = default;
 
 Engine::~Engine()
@@ -49,7 +55,7 @@ Engine::~Engine()
     shutdown();
 }
 
-bool Engine::initialise(const ConfigStore& config,
+bool Engine::initialise(Core::ConfigManager& configManager,
                         const std::filesystem::path& contentRoot,
                         const std::string& projectRoot,
                         std::string& errorOut)
@@ -58,6 +64,8 @@ bool Engine::initialise(const ConfigStore& config,
         return true;
     }
     m_projectRoot = projectRoot;
+    m_config      = &configManager;
+    const Core::ConfigStore& config = configManager.store();
 
 #if defined(NDEBUG)
     m_debugBuild = false;
@@ -110,10 +118,13 @@ bool Engine::initialise(const ConfigStore& config,
     m_log.info("Engine", "SDL initialised ({})", describeSubsystems(kRequiredSubsystems));
 
     // SDL3_image 3.4 links its codecs directly and detects support at runtime,
-    // so there is nothing to initialise. Probe the formats the game ships.
-    m_log.info("Engine", "SDL3_image ready (png={} jpg={} svg={})",
-               IMG_isPNG(nullptr) || true, IMG_isJPG(nullptr) || true,
-               IMG_isSVG(nullptr) || true);
+    // so there is nothing to initialise. The capability functions take a stream
+    // to sniff; passing null reports "unsupported" for every format, which is
+    // how a previous version of this line ended up logging a hard-coded `true`
+    // and reporting codecs the build does not have.
+    m_log.info("Engine", "SDL3_image ready (compiled against {}.{}.{}, runtime {})",
+               SDL_IMAGE_MAJOR_VERSION, SDL_IMAGE_MINOR_VERSION, SDL_IMAGE_MICRO_VERSION,
+               IMG_Version());
 
     if (!TTF_Init()) {
         // Fonts are optional because the engine has a built-in bitmap font.
@@ -178,6 +189,19 @@ bool Engine::initialise(const ConfigStore& config,
     m_subscriptions.push_back(m_eventBus.subscribe(
         Application::EventType::WindowClosed, [this](const Application::Event&) { requestExit(); }));
 
+    // The F12 key asks for a screenshot here rather than reaching into the
+    // engine from gameplay code.
+    m_subscriptions.push_back(m_eventBus.subscribe(
+        Application::EventType::ScreenshotRequested, [this](const Application::Event& event) {
+            if (event.path.empty()) {
+                return;
+            }
+            // Taken on the next presented frame, so the capture is a complete
+            // frame rather than whatever was half-drawn when the key was hit.
+            requestScreenshot(event.path);
+            m_log.info("Engine", "screenshot queued for {}", event.path.string());
+        }));
+
     m_overlay.setLogSink(m_memoryLog.get());
     m_overlay.setVisible(config.getBool("debug", "showStats", false));
     m_stats.reset();
@@ -195,7 +219,14 @@ bool Engine::initialise(const ConfigStore& config,
         config.clampInt("engine", "fixedTicksPerSecond", 60, 20, 240, m_log));
     m_gameLoop.setConfig(loopConfig);
     m_gameLoop.setEventFn([this](double dt) { pumpEvents(dt); });
-    m_gameLoop.setUpdateFn([this](double dt) { update(dt); });
+    m_gameLoop.setUpdateFn([this](double dt) {
+        const double start = m_clock.seconds();
+        update(dt);
+        // Accumulated rather than assigned: a frame can run several fixed
+        // steps, and the overlay should report the whole frame's simulation
+        // cost, not the last one.
+        m_updateSeconds += m_clock.seconds() - start;
+    });
     m_gameLoop.setRenderFn([this](double dt, double alpha) { render(dt, alpha); });
 
     m_initialised = true;
@@ -215,12 +246,14 @@ void Engine::rebuildContext() noexcept
     m_context.overlay   = &m_overlay;
     m_context.events    = &m_eventBus;
     m_context.clock     = &m_clock;
-    m_context.config    = &m_config;
+    m_context.config    = m_config;
+    m_context.window    = &m_window;
     m_context.window    = &m_window;
     m_context.text      = m_text.get();
 
     m_context.buildLabel = m_buildLabel;
     m_context.version    = ERASHIFT_VERSION;
+    m_context.levelPath  = m_levelPath;
 }
 
 void Engine::pumpEvents(double frameDelta)
@@ -231,18 +264,35 @@ void Engine::pumpEvents(double frameDelta)
     // survive; endFrame() latches the result once, at the end of the frame.
     m_input.beginFrame();
 
-    bool quit = false;
     if (m_eventPump != nullptr) {
-        m_eventPump->pumpFromSDL(quit);
+        m_eventPump->pumpFromSDL();
     }
+
+    pumpDemo();
+}
+
+void Engine::pumpDemo()
+{
+    if (!m_demo.active()) {
+        return;
+    }
+
+    // One script step per fixed simulation step, not per rendered frame: the
+    // script then replays identically whatever the display refresh rate is.
+    m_demo.apply(m_input, m_demoStep);
+    ++m_demoStep;
 }
 
 void Engine::update(double fixedDelta)
 {
+    m_updateSeconds = 0.0;
+
+    // Called once per frame with the *frame's* total, not once per fixed step,
+    // so the figure the overlay reports is the cost of a frame rather than the
+    // cost of the last slice of it.
     if (m_game != nullptr) {
         m_game->updateGlobalInput(m_context);
     }
-
     m_states.update(fixedDelta);
 }
 
@@ -252,6 +302,7 @@ void Engine::render(double frameDelta, double alpha)
     frame.bind(m_clock);
     frame.reset();
 
+    const double renderStart = m_clock.seconds();
     m_renderer2D.beginFrame();
 
     // The engine owns the frame background. A state draws on top of it but
@@ -260,13 +311,13 @@ void Engine::render(double frameDelta, double alpha)
     m_renderer2D.clear(m_baseColor);
     m_states.render(alpha);
     m_renderer2D.endFrame();
+    const double renderSeconds = m_clock.seconds() - renderStart;
 
     // Latch input state once per presented frame.
     m_input.endFrame();
 
     m_stats.setDrawCalls(m_renderer2D.drawCalls().value());
-    m_stats.setEntityCount(0);
-    m_stats.sample(frameDelta, frame.elapsed(), 0.0, 0.0);
+    m_stats.sample(frameDelta, frame.elapsed(), m_updateSeconds, renderSeconds);
 
     m_window.present();
 
@@ -343,7 +394,7 @@ void Engine::run()
 
     m_gameLoop.resync(m_clock.seconds());
     m_frameBudgetSeconds = 1.0 / static_cast<double>(
-        m_config.store().getInt("graphics", "targetFps", 60));
+        m_config != nullptr ? m_config->store().getInt("graphics", "targetFps", 60) : 60);
     m_log.info("Engine", "entering the main loop at a {} FPS budget", 1.0 / m_frameBudgetSeconds);
 
     while (!m_gameLoop.stopRequested() && !m_quitRequested) {

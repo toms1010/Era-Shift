@@ -40,7 +40,7 @@ private:
 /// The credits screen. Reached from the main menu.
 class CreditsState final : public Core::IGameState {
 public:
-    explicit CreditsState(Core::GameState id = Core::GameState::QuestLog);
+    explicit CreditsState(Core::GameState id = Core::GameState::Credits);
 
     void onEnter(StateContext& ctx) override;
     void update(StateContext& ctx, double fixedDelta) override;

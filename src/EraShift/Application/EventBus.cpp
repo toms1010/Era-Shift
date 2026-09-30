@@ -357,7 +357,7 @@ std::size_t EventPump::pump(SDL_Event* events, int count)
     return dispatched;
 }
 
-std::size_t EventPump::pumpFromSDL(bool& quitRequested)
+std::size_t EventPump::pumpFromSDL()
 {
     SDL_Event events[64];
     // Drain the queue so a burst of input (a key held through a frame hitch) is
@@ -371,7 +371,6 @@ std::size_t EventPump::pumpFromSDL(bool& quitRequested)
     } while (count > 0 && total < 512);
 
     const std::size_t dispatched = pump(events, total);
-    static_cast<void>(quitRequested);
     return dispatched;
 }
 

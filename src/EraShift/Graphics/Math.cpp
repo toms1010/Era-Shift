@@ -53,6 +53,9 @@ float dampFactor(float halfLife, double deltaSeconds) noexcept
 
 float dampAngle(float halfLife, double deltaSeconds) noexcept
 {
+    // The exponential part is the same as any other value; the short-way-round
+    // correction belongs to whatever is interpolating the angle, not to the
+    // factor, so this deliberately does not pretend to know about angles.
     return dampFactor(halfLife, deltaSeconds);
 }
 

@@ -228,6 +228,31 @@ void Renderer2D::clear(Color color)
     SDL_RenderClear(m_renderer);
 }
 
+float Renderer2D::worldScale() const noexcept
+{
+    if (!m_cameraEnabled) {
+        return 1.0f;
+    }
+    return std::clamp(m_camera.zoom(), kMinZoom, kMaxZoom);
+}
+
+Vec2 Renderer2D::toScreen(const Vec2& world) const noexcept
+{
+    if (!m_cameraEnabled) {
+        return world;
+    }
+    const Camera2D& cam   = m_camera;
+    const float zoom      = std::clamp(cam.zoom(), kMinZoom, kMaxZoom);
+    const Vec2  centre    = cam.stablePosition();
+    const float halfWidth  = static_cast<float>(cam.viewportWidth()) * 0.5f;
+    const float halfHeight = static_cast<float>(cam.viewportHeight()) * 0.5f;
+
+    // Both spaces have y growing downwards - SDL's logical presentation is
+    // top-left origin - so this is a plain scale-and-offset, not a flip.
+    return Vec2{(world.x - centre.x) * zoom + halfWidth,
+                (world.y - centre.y) * zoom + halfHeight};
+}
+
 void Renderer2D::drawRect(const Rect& rect, Color color, bool filled, float thickness)
 {
     if (m_renderer == nullptr || rect.isEmpty()) {
@@ -243,6 +268,25 @@ void Renderer2D::drawRect(const Rect& rect, Color color, bool filled, float thic
     }
     ++m_drawCalls;
     SDL_SetRenderDrawColor(m_renderer, color.r, color.g, color.b, color.a);
+
+    if (m_cameraEnabled) {
+        // A world rect becomes a screen rect. An axis-aligned rectangle stays
+        // axis-aligned under this transform, so nothing more is needed than
+        // repositioning and rescaling.
+        const float zoom = worldScale();
+        const Vec2  topLeft = toScreen(Vec2{rect.x, rect.y + rect.h});
+        const SDL_FRect fr{topLeft.x, topLeft.y, rect.w * zoom, rect.h * zoom};
+        if (fr.w <= 0.0f || fr.h <= 0.0f) {
+            return;
+        }
+        if (filled) {
+            SDL_RenderFillRect(m_renderer, &fr);
+        } else {
+            SDL_RenderRect(m_renderer, &fr);
+        }
+        static_cast<void>(thickness);
+        return;
+    }
 
     // Snap to whole pixels before filling. SDL's GPU renderer draws a fill as
     // a quad with alpha blending, so a rect whose edges land mid-pixel is
@@ -300,7 +344,9 @@ void Renderer2D::drawLine(const Vec2& a, const Vec2& b, Color color, float thick
     }
     ++m_drawCalls;
     SDL_SetRenderDrawColor(m_renderer, color.r, color.g, color.b, color.a);
-    SDL_RenderLine(m_renderer, a.x, a.y, b.x, b.y);
+    const Vec2 from = toScreen(a);
+    const Vec2 to   = toScreen(b);
+    SDL_RenderLine(m_renderer, from.x, from.y, to.x, to.y);
     static_cast<void>(thickness);
 }
 
@@ -309,15 +355,24 @@ void Renderer2D::drawTriangle(const Vec2& a, const Vec2& b, const Vec2& c, Color
     if (m_renderer == nullptr) {
         return;
     }
+    // A geometry submission cannot be expressed as a recorded command, so a
+    // batch in progress has to be flushed rather than silently skipped: ending
+    // the batch here keeps the recorded geometry in the right order.
+    if (m_batching) {
+        flushInternal();
+    }
     ++m_drawCalls;
     const SDL_FColor tint{static_cast<float>(color.r) / 255.0f,
                           static_cast<float>(color.g) / 255.0f,
                           static_cast<float>(color.b) / 255.0f,
                           static_cast<float>(color.a) / 255.0f};
+    const Vec2 pa = toScreen(a);
+    const Vec2 pb = toScreen(b);
+    const Vec2 pc = toScreen(c);
     const SDL_Vertex vertices[3] = {
-        {{a.x, a.y}, tint, {0.0f, 0.0f}},
-        {{b.x, b.y}, tint, {0.0f, 0.0f}},
-        {{c.x, c.y}, tint, {0.0f, 0.0f}},
+        {{pa.x, pa.y}, tint, {0.0f, 0.0f}},
+        {{pb.x, pb.y}, tint, {0.0f, 0.0f}},
+        {{pc.x, pc.y}, tint, {0.0f, 0.0f}},
     };
     SDL_RenderGeometry(m_renderer, nullptr, vertices, 3, nullptr, 0);
 }
@@ -346,6 +401,11 @@ void Renderer2D::drawTexture(const Texture& texture, const Rect& dst, const Rect
     ++m_drawCalls;
 
     SDL_FRect dstRect{dst.x, dst.y, dst.w, dst.h};
+    if (m_cameraEnabled) {
+        const float zoom     = worldScale();
+        const Vec2  topLeft  = toScreen(dst.position());
+        dstRect = SDL_FRect{topLeft.x, topLeft.y, dst.w * zoom, dst.h * zoom};
+    }
     SDL_FRect srcRect{src.x, src.y, src.w, src.h};
     if (srcRect.w <= 0.0f || srcRect.h <= 0.0f) {
         srcRect = SDL_FRect{0.0f, 0.0f, static_cast<float>(texture.width()),
@@ -353,31 +413,6 @@ void Renderer2D::drawTexture(const Texture& texture, const Rect& dst, const Rect
     }
 
     const SDL_FlipMode flip = static_cast<SDL_FlipMode>((flipX ? 1 : 0) | (flipY ? 2 : 0));
-
-    if (m_cameraEnabled) {
-        const Camera2D& cam = m_camera;
-        const float zoom = std::clamp(cam.zoom(), kMinZoom, kMaxZoom);
-        const Vec2  camPos = cam.stablePosition();
-        const float cx = static_cast<float>(cam.viewportWidth()) * 0.5f;
-        const float cy = static_cast<float>(cam.viewportHeight()) * 0.5f;
-
-        // World space -> clip space. SDL_RenderTexture uses a bottom-left origin
-        // while the world uses a top-left one, hence the y flip.
-        SDL_FRect clip{
-            (dstRect.x + dstRect.w * 0.5f - camPos.x) * zoom + cx - dstRect.w * zoom * 0.5f,
-            (camPos.y - dstRect.y - dstRect.h * 0.5f) * zoom + cy - dstRect.h * zoom * 0.5f,
-            dstRect.w * zoom,
-            dstRect.h * zoom
-        };
-
-        if (rotation == 0.0f && flip == SDL_FLIP_NONE) {
-            SDL_RenderTexture(m_renderer, texture.handle(), &srcRect, &clip);
-            return;
-        }
-        SDL_RenderTextureRotated(m_renderer, texture.handle(), &srcRect, &clip,
-                                 -rotation, nullptr, flip);
-        return;
-    }
 
     if (rotation == 0.0f && flip == SDL_FLIP_NONE) {
         SDL_RenderTexture(m_renderer, texture.handle(), &srcRect, &dstRect);
@@ -455,6 +490,9 @@ void Renderer2D::drawCircle(const Vec2& center, float radius, Color color, int s
         return;
     }
     segments = std::clamp(segments, 3, 127);
+    if (m_batching) {
+        flushInternal();
+    }
     ++m_drawCalls;
 
     // One triangle fan: a centre vertex followed by the rim, submitted as a
@@ -464,13 +502,16 @@ void Renderer2D::drawCircle(const Vec2& center, float radius, Color color, int s
                           static_cast<float>(color.b) / 255.0f,
                           static_cast<float>(color.a) / 255.0f};
 
+    const Vec2 screenCentre = toScreen(center);
+    const float screenRadius = radius * worldScale();
+
     std::array<SDL_Vertex, 128> ring{};
-    ring[0] = SDL_Vertex{{center.x, center.y}, tint, {0.0f, 0.0f}};
+    ring[0] = SDL_Vertex{{screenCentre.x, screenCentre.y}, tint, {0.0f, 0.0f}};
     for (int i = 0; i < segments; ++i) {
         const float angle = (static_cast<float>(i) / static_cast<float>(segments)) * 6.2831853f;
         ring[static_cast<std::size_t>(i) + 1] =
-            SDL_Vertex{{center.x + std::cos(angle) * radius,
-                        center.y + std::sin(angle) * radius}, tint, {0.0f, 0.0f}};
+            SDL_Vertex{{screenCentre.x + std::cos(angle) * screenRadius,
+                        screenCentre.y + std::sin(angle) * screenRadius}, tint, {0.0f, 0.0f}};
     }
     SDL_RenderGeometry(m_renderer, nullptr, ring.data(), segments + 1, nullptr, 0);
 }

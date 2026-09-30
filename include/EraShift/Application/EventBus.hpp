@@ -11,6 +11,7 @@
 #include "EraShift/Input/InputManager.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -39,6 +40,7 @@ enum class EventType : std::uint16_t {
     MouseButtonPressed,
     MouseButtonReleased,
     MouseWheel,
+    ScreenshotRequested,
 };
 
 struct Event {
@@ -59,6 +61,8 @@ struct Event {
     int  height = 0;
 
     std::string text;
+    /// Filesystem path, for ScreenshotRequested.
+    std::filesystem::path path;
 
     [[nodiscard]] bool isValid() const noexcept { return type != EventType::None; }
 };
@@ -120,7 +124,13 @@ public:
     std::size_t pump(SDL_Event* events, int count);
 
     /// Pulls events from SDL itself. Used by the standard application loop.
-    std::size_t pumpFromSDL(bool& quitRequested);
+    ///
+    /// Quitting arrives on the bus like everything else, so there is no
+    /// out-parameter for it: the previous one was discarded by every caller, so
+    /// anything relying on it would silently never quit.
+    ///
+    /// @return number of events dispatched.
+    std::size_t pumpFromSDL();
 
     void setViewportSize(int width, int height) noexcept;
 

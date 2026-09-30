@@ -229,6 +229,12 @@ bool Player::takeDamage(float amount, Vec2 from)
 
 void Player::heal(float amount)
 {
+    // No healing a dead player. The world stops simulating input once the run
+    // is lost, so this is mostly belt-and-braces - but a healing pickup that
+    // could revive a corpse is a rule nobody intended.
+    if (!alive()) {
+        return;
+    }
     m_health = std::min(m_tuning.maxHealth, m_health + std::max(0.0f, amount));
 }
 

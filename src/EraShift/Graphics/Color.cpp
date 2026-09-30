@@ -1,5 +1,7 @@
 #include "EraShift/Graphics/Color.hpp"
 
+#include <cstdio>
+
 #include <ostream>
 
 namespace EraShift::Graphics {

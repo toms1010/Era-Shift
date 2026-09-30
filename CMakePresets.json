@@ -113,6 +113,13 @@
       }
     },
     {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
       "name": "ubsan",
       "configurePreset": "ubsan",
       "output": {

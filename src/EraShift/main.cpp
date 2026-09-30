@@ -43,6 +43,8 @@ void printUsage(const char* executable)
     "  --start-state <s>   Open on a screen other than the title screen:\n"
     "                      playing | settings | credits | paused. A developer\n"
     "                      and screenshot aid, not part of the game.\n"
+    "  --demo              Replace input with the built-in attract script.\n"
+    "                      Used for the attract loop and for visual capture.\n"
         "  --screenshot <png>  Write a PNG of the window to <png>.\n"
         "  --screenshot-frame <n>  Take the screenshot on frame <n> (default 30).\n"
         "  --help, -h          Show this message\n"
@@ -62,7 +64,9 @@ int main(int argc, char* argv[])
     std::string logFilePath;
     std::string logLevelName;
     std::filesystem::path screenshotPath;
+    std::filesystem::path levelPath;
     std::string startState;
+    bool demo = false;
     long frameLimit = 0;          ///< 0 means "run until quit".
     long screenshotFrame = 30;
 
@@ -119,6 +123,12 @@ int main(int argc, char* argv[])
             contentOverride = value;
             continue;
         }
+        if (arg == "--level") {
+            const char* value = takeValue("--level");
+            if (value == nullptr) return usageError("--level requires a value");
+            levelPath = value;
+            continue;
+        }
         if (arg == "--log-file") {
             const char* value = takeValue("--log-file");
             if (value == nullptr) return usageError("--log-file requires a value");
@@ -162,6 +172,10 @@ int main(int argc, char* argv[])
             const char* value = takeValue("--start-state");
             if (value == nullptr) return usageError("--start-state requires a value");
             startState = value;
+            continue;
+        }
+        if (arg == "--demo") {
+            demo = true;
             continue;
         }
         if (arg == "--headless") {
@@ -230,9 +244,19 @@ int main(int argc, char* argv[])
     if (!startState.empty()) {
         engine.setStartState(startState);
     }
+    if (!levelPath.empty()) {
+        engine.setLevelPath(levelPath);
+    }
+    if (demo) {
+        engine.setDemo(true);
+        // A demo that sat on the title screen would never show the game.
+        if (startState.empty()) {
+            engine.setStartState("playing");
+        }
+    }
 
     try {
-        if (!engine.initialise(config.store(), contentRoot, projectRoot.string(), error)) {
+        if (!engine.initialise(config, contentRoot, projectRoot.string(), error)) {
             log.fatal("main", "engine initialisation failed: {}", error);
             std::fprintf(stderr, "error: %s\n", error.c_str());
             engine.shutdown();

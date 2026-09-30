@@ -19,7 +19,11 @@ constexpr float kChronoCellAmount = 30.0f;
 constexpr float kHazardDamage = 1.0f;
 constexpr float kHazardCooldown = 0.7f;
 /// Distance at which a seal can be taken by interacting.
-constexpr float kSealReach = 52.0f;
+///
+/// Wide enough to take from the floor beneath it, which is how a player will
+/// almost always approach one: the pillar is decoration and the interaction is
+/// the seal.
+constexpr float kSealReach = 76.0f;
 /// Paradox awarded for each kind of event, shown on the results screen.
 constexpr float kParadoxPerShift = 12.0f;
 constexpr float kParadoxPerSeal  = 60.0f;
@@ -66,8 +70,9 @@ std::vector<EventRecord> World::takeEvents()
 
 void World::load(const Level& level)
 {
-    m_level = level;
-    m_map   = level.buildMap();
+    m_level  = level;
+    m_map    = level.buildMap();
+    m_loaded = true;
 
     m_enemies.clear();
     m_pickups.clear();
@@ -165,6 +170,7 @@ void World::restart()
         seal.collected = false;
     }
 
+    m_loaded        = true;
     m_previousEra   = Era::Present;
     m_outcome       = Outcome::Running;
     m_stats         = RunStats{};
@@ -265,7 +271,7 @@ void World::update(const PlayerInput& input, const WorldCommands& commands, floa
     // mean anything that happened earlier in the step, or in an earlier step
     // that the caller had not yet polled, is silently discarded.
 
-    if (m_outcome != Outcome::Running || dt <= 0.0f || !std::isfinite(dt)) {
+    if (!m_loaded || m_outcome != Outcome::Running || dt <= 0.0f || !std::isfinite(dt)) {
         return;
     }
 

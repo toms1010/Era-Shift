@@ -116,11 +116,20 @@ TileMap Level::buildMap() const
                 const Tile one = tileFromChar(layer[y][x]);
                 const Era era  = static_cast<Era>(e);
 
+                // Each layer describes *that era's* world, so a property is only
+                // copied across for the era it appears in. Taking the tile's
+                // masks wholesale would make a hazard written into the Present
+                // layer a hazard in the Past as well, painting spikes on solid
+                // floor.
                 if (one.blocksIn(era)) {
                     combined.solidIn |= eraBit(era);
                 }
-                combined.hazardIn |= one.hazardIn;
-                combined.oneWayIn |= one.oneWayIn;
+                if (one.isHazardIn(era)) {
+                    combined.hazardIn |= eraBit(era);
+                }
+                if (one.isOneWayIn(era)) {
+                    combined.oneWayIn |= eraBit(era);
+                }
 
                 // The displayed kind is the most structural of the three, so a
                 // cell that is solid everywhere is not drawn as if it were only

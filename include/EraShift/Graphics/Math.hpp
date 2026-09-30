@@ -62,7 +62,10 @@ constexpr bool operator!=(const Vec2& a, const Vec2& b) noexcept { return !(a ==
 /// A value of 0 gives instant snapping.
 [[nodiscard]] float dampFactor(float halfLife, double deltaSeconds) noexcept;
 
-/// Angle-aware damp, used by the camera so it never overshoots a waypoint.
+/// Damping factor for an angular value, wrapping at a full turn.
+///
+/// Unlike `dampFactor` this takes the short way round: a camera at 350 degrees
+/// approaching 10 degrees damps through 360, not backwards through 180.
 [[nodiscard]] float dampAngle(float halfLife, double deltaSeconds) noexcept;
 
 /// Axis-aligned rectangle defined by its top-left corner and size.

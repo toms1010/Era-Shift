@@ -294,7 +294,8 @@ void InputManager::beginFrame() noexcept
 
 void InputManager::endFrame() noexcept
 {
-    m_previous = m_current;
+    // Nothing to latch: edges were computed when the events arrived. This is the
+    // hook that clears the per-frame edges and deltas.
 }
 
 void InputManager::setFocused(bool focused) noexcept

@@ -11,7 +11,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <filesystem>
 
 namespace EraShift::Game {
@@ -40,6 +39,9 @@ namespace {
 constexpr float kToastLifetime = 2.2f;
 /// Distance at which the interact prompt appears.
 constexpr float kInteractRange = 96.0f;
+/// How long the finished world stays on screen before the results appear.
+constexpr float kOutcomeDelay = 1.4f;
+
 /// Camera look-ahead in the direction of travel, in world units.
 constexpr float kLookAhead = 56.0f;
 constexpr float kCameraHalfLife = 0.085f;
@@ -118,6 +120,16 @@ Color bodyColourFor(EnemyKind kind, const EraTheme& theme)
     return Palette::Warning;
 }
 
+/// True when there is open space directly above a cell, so its top face is a
+/// surface rather than the inside of a wall.
+///
+/// Without this every buried row is outlined as if it were a ledge, and a floor
+/// six rows deep reads as six separate shelves.
+bool exposedAbove(const Game::TileMap& map, int x, int y, Game::Era era)
+{
+    return !map.at(x, y - 1).blocksIn(era);
+}
+
 /// Fills a bar and returns the ratio actually drawn.
 float drawBar(Renderer2D& renderer, const Rect& bar, float ratio, Color fill, Color back)
 {
@@ -174,7 +186,9 @@ void PlayingState::syncLevel(StateContext& ctx)
 {
     // The data file is the source of truth. If it is missing or malformed the
     // built-in level is used instead, so a broken checkout still starts.
-    const std::filesystem::path path = "data/levels/ancient_forest.json";
+    const std::filesystem::path path =
+        ctx.levelPath.empty() ? std::filesystem::path{"data/levels/ancient_forest.json"}
+                              : ctx.levelPath;
     Game::Level level;
     std::string error;
 
@@ -198,6 +212,7 @@ void PlayingState::onEnter(StateContext& ctx)
     m_time        = 0.0f;
     m_hurtFlash   = 0.0f;
     m_shiftFlash  = 0.0f;
+    m_outcomeDelay = kOutcomeDelay;
     m_toasts.clear();
     m_toastTimer  = 0.0f;
 
@@ -377,13 +392,20 @@ void PlayingState::update(StateContext& ctx, double fixedDelta)
 
     // --- outcomes -----------------------------------------------------------
     if (m_world.outcome() != Game::Outcome::Running) {
-        if (ctx.input->wasPressed(Action::Interact) || ctx.input->wasPressed(Action::Jump)) {
+        // The world keeps rendering behind the results screen, so hold it for a
+        // moment: cutting straight to a panel the instant the player dies takes
+        // away the last frame of what killed them. A keypress skips the wait.
+        m_outcomeDelay -= dt;
+        const bool confirmed = ctx.input->wasPressed(Action::Interact) ||
+                               ctx.input->wasPressed(Action::Jump);
+        if (confirmed || m_outcomeDelay <= 0.0f) {
             ctx.states->push(std::make_shared<ResultState>(Core::GameState::GameOver,
                                                            m_world.outcome(),
                                                            m_world.stats()));
         }
         return;
     }
+    m_outcomeDelay = kOutcomeDelay;
 
     m_world.update(input, commands, dt);
     m_currentPlayer = m_world.player().body().position;
@@ -446,6 +468,9 @@ void PlayingState::drawBackdrop(const StateContext& ctx, const Rect& area) const
     Renderer2D& renderer = *ctx.renderer;
     const Game::World& world = m_world;
 
+    // Screen space.
+    renderer.setCameraEnabled(false);
+
     // Everything below is translucent: the glow, the motes and the horizon all
     // depend on it. Without this the "motes" render as opaque orange squares
     // scattered across the sky.
@@ -496,6 +521,10 @@ void PlayingState::drawParallax(const StateContext& ctx, const Rect& area) const
 {
     Renderer2D& renderer = *ctx.renderer;
     const Camera2D& camera = renderer.camera();
+
+    // Screen space: the layers are positioned from the camera by hand, so the
+    // transform must be off or they are drawn twice over.
+    renderer.setCameraEnabled(false);
     const EraTheme theme = blendThemes(themeFor(m_world.previousEra()), themeFor(m_world.era()),
                                        Graphics::clampValue(m_world.eraBlend(), 0.0f, 1.0f));
 
@@ -512,10 +541,15 @@ void PlayingState::drawParallax(const StateContext& ctx, const Rect& area) const
     // Amplitudes are large relative to the viewport on purpose: a ridge that
     // only rises a few pixels does not read as terrain, it reads as a slightly
     // different shade of background.
+    //
+    // The baselines sit high enough that the ridges form a band of distant
+    // landscape behind the play area. Pushed lower they fill the bottom of the
+    // frame with the same value as the tiles in front of them, and the level
+    // stops being legible as a silhouette.
     constexpr Layer kLayers[] = {
-        {0.12f, 130.0f, 1100.0f, 0.56f, 0x40},
-        {0.28f, 170.0f, 760.0f, 0.66f, 0x60},
-        {0.50f, 200.0f, 520.0f, 0.78f, 0x85},
+        {0.12f, 110.0f, 1100.0f, 0.40f, 0x38},
+        {0.26f, 150.0f, 760.0f, 0.48f, 0x50},
+        {0.46f, 180.0f, 520.0f, 0.56f, 0x66},
     };
 
     renderer.setBlendMode(BlendMode::Alpha);
@@ -545,6 +579,11 @@ void PlayingState::drawTiles(const StateContext& ctx, float blend) const
     const Game::TileMap& map = m_world.map();
     const Camera2D& camera  = renderer.camera();
 
+    // World space. Every pass states its own camera and blend mode rather than
+    // inheriting whatever the previous one happened to leave: relying on that
+    // is how the tile layer ends up drawn in screen coordinates.
+    renderer.setCameraEnabled(true);
+
     const EraTheme from = blendThemes(themeFor(m_world.previousEra()),
                                       themeFor(m_world.era()),
                                       Graphics::clampValue(blend, 0.0f, 1.0f));
@@ -559,80 +598,115 @@ void PlayingState::drawTiles(const StateContext& ctx, float blend) const
     const int y1 = std::min(map.rows() - 1, map.cellY(view.bottom()) + 1);
 
     renderer.setBlendMode(BlendMode::Alpha);
+
+    // Solid tiles are merged into horizontal runs before being drawn.
+    //
+    // A level is overwhelmingly floor, and a floor drawn cell by cell is ~900
+    // draw calls for what is really a handful of rectangles. Merging only
+    // *identical* cells (same era membership, same kind class, same exposure)
+    // keeps every visual difference intact while collapsing the bulk of it.
+    const Era era = m_world.era();
+    const Era eraFrom = m_world.previousEra();
+
     for (int y = y0; y <= y1; ++y) {
-        for (int x = x0; x <= x1; ++x) {
+        int x = x0;
+        while (x <= x1) {
             const Tile tile = map.at(x, y);
-            const Rect cell = map.cellRect(x, y);
+            const bool hazard = tile.isHazardIn(era);
+            const bool goal   = tile.kind == TileKind::Goal;
+            const bool oneWay = tile.isOneWayIn(era) && tile.blocksIn(era);
+            const bool solid  = !hazard && !goal && !oneWay && tile.blocksIn(era);
 
-            switch (tile.kind) {
-                case TileKind::Empty:
-                    continue;
+            if (tile.empty() || (!hazard && !goal && !oneWay && !solid)) {
+                ++x;
+                continue;
+            }
 
-                case TileKind::Goal: {
-                    // The gate pulses so it is findable across a wide level.
-                    const float pulse =
-                        0.55f + 0.45f * std::sin(static_cast<float>(m_time) * 3.0f);
-                    renderer.drawRect(cell, to.accent.withAlpha(static_cast<std::uint8_t>(70 + 90 * pulse)));
-                    renderer.drawRectOutline(cell, Palette::TextPrimary.withAlpha(0xC0), 3.0f);
-                    continue;
-                }
+            // How far does an identical run extend? Exposure has to match too,
+            // or the merged block would draw a lit top edge across cells that
+            // are buried.
+            const bool exposed = solid && exposedAbove(map, x, y, era);
+            const bool inFrom  = solid && tile.blocksIn(eraFrom);
 
-                case TileKind::Hazard:
-                    // Hatches, not spikes: they read as dangerous without
-                    // borrowing a colour that belongs to the HUD.
-                    renderer.drawRect(cell, to.hazard.withAlpha(0xCC));
-                    for (int i = 0; i < 3; ++i) {
-                        const float t = static_cast<float>(i) / 3.0f;
-                        renderer.drawLine({cell.x + cell.w * t, cell.bottom() - 3.0f},
-                                          {cell.x + cell.w * (t + 0.22f), cell.y + 3.0f},
-                                          Palette::TextPrimary.withAlpha(0x90), 2.0f);
-                    }
-                    continue;
-
-                case TileKind::Platform:
-                    renderer.drawRect(Rect{cell.x, cell.y, cell.w, 8.0f}, to.oneWay);
-                    continue;
-
-                default:
+            int run = 1;
+            while (x + run <= x1) {
+                const Tile next = map.at(x + run, y);
+                if (next.empty() || next.isHazardIn(era) != hazard ||
+                    (next.kind == TileKind::Goal) != goal ||
+                    (next.isOneWayIn(era) && next.blocksIn(era)) != oneWay ||
+                    next.blocksIn(era) != solid ||
+                    (solid && exposedAbove(map, x + run, y, era) != exposed) ||
+                    (solid && next.blocksIn(eraFrom) != inFrom)) {
                     break;
-            }
-
-            // Era-dependent geometry is drawn twice, once per era, with the
-            // outgoing era fading out. Tiles that exist in both eras end up
-            // solid the whole time; tiles that exist in only one fade, which is
-            // what makes a shift legible rather than a hard pop.
-            const bool inFrom = tile.blocksIn(m_world.previousEra());
-            const bool inTo   = tile.blocksIn(m_world.era());
-            if (!inFrom && !inTo) {
-                continue;
-            }
-
-            const float t = Graphics::clampValue(blend, 0.0f, 1.0f);
-            if (inFrom && inTo) {
-                renderer.drawRect(cell, from.solid);
-                renderer.drawRect(Rect{cell.x, cell.y, cell.w, 3.0f}, from.solidEdge.withAlpha(0x90));
-                // Subtle interior speckle so a large floor is not a flat slab.
-                if (((x * 7 + y * 13) % 5) == 0) {
-                    renderer.drawRect(Rect{cell.x + 6.0f, cell.y + 10.0f, cell.w - 12.0f, 4.0f},
-                                      from.solid.scaled(1.25f));
                 }
-                continue;
+                ++run;
             }
 
-            if (inFrom) {
-                const auto alpha = static_cast<std::uint8_t>(255.0f * (1.0f - t));
-                renderer.drawRect(cell, from.solid.withAlpha(alpha));
-                renderer.drawRect(Rect{cell.x, cell.y, cell.w, 3.0f},
-                                  from.solidEdge.withAlpha(static_cast<std::uint8_t>(alpha * 0.6f)));
-                continue;
+            const float left  = static_cast<float>(x) * kTile;
+            const float top   = static_cast<float>(y) * kTile;
+            const Rect   block{left, top, kTile * static_cast<float>(run), kTile};
+
+            if (goal) {
+                // The gate pulses so it is findable across a wide level.
+                const float pulse =
+                    0.55f + 0.45f * std::sin(static_cast<float>(m_time) * 3.0f);
+                renderer.drawRect(block,
+                                  to.accent.withAlpha(static_cast<std::uint8_t>(70 + 90 * pulse)));
+                renderer.drawRectOutline(block, Palette::TextPrimary.withAlpha(0xC0), 3.0f);
+            } else if (hazard) {
+                // Hatches, not spikes: they read as dangerous without borrowing
+                // a colour that belongs to the HUD.
+                renderer.drawRect(block, to.hazard.withAlpha(0xCC));
+                for (int i = 0; i < run * 3; ++i) {
+                    const float t = static_cast<float>(i) / 3.0f;
+                    renderer.drawLine({block.x + block.w * t, block.bottom() - 3.0f},
+                                      {block.x + block.w * (t + 0.22f / static_cast<float>(run)),
+                                       block.y + 3.0f},
+                                      Palette::TextPrimary.withAlpha(0x90), 2.0f);
+                }
+            } else if (oneWay) {
+                renderer.drawRect(Rect{block.x, block.y, block.w, 8.0f}, to.oneWay);
+            } else {
+                const float t = Graphics::clampValue(blend, 0.0f, 1.0f);
+                // A tile present in both eras stays fully opaque the whole
+                // time; one present in only one fades in or out with the shift.
+                const Color body =
+                    inFrom ? (tile.blocksIn(era)
+                                  ? from.solid
+                                  : from.solid.withAlpha(
+                                        static_cast<std::uint8_t>(255.0f * (1.0f - t))))
+                           : to.solid.withAlpha(static_cast<std::uint8_t>(255.0f * t));
+                renderer.drawRect(block, body);
+
+                if (exposed) {
+                    const auto edgeAlpha = static_cast<std::uint8_t>(0xA0 * (body.a / 255.0f));
+                    renderer.drawRect(
+                        Rect{block.x, block.y, block.w, 3.0f},
+                        (inFrom ? from.solidEdge : to.solidEdge).withAlpha(edgeAlpha));
+                    // A lip just under the surface, so the top of a wall reads as
+                    // an edge rather than a change of colour.
+                    renderer.drawRect(Rect{block.x, block.y + 3.0f, block.w, 4.0f},
+                                      body.scaled(1.18f));
+                }
+
+                // Interior speckle so a large floor is not a flat slab. Applied
+                // per cell so the texture does not change with the run length.
+                if (solid) {
+                    for (int i = 0; i < run; ++i) {
+                        if ((((x + i) * 7 + y * 13) % 5) != 0) {
+                            continue;
+                        }
+                        renderer.drawRect(Rect{left + kTile * static_cast<float>(i) + 6.0f,
+                                               top + 10.0f, kTile - 12.0f, 4.0f},
+                                          body.scaled(1.25f));
+                    }
+                }
             }
 
-            const auto alpha = static_cast<std::uint8_t>(255.0f * t);
-            renderer.drawRect(cell, to.solid.withAlpha(alpha));
-            renderer.drawRect(Rect{cell.x, cell.y, cell.w, 3.0f},
-                              to.solidEdge.withAlpha(static_cast<std::uint8_t>(alpha * 0.6f)));
+            x += run;
         }
     }
+
     renderer.setBlendMode(BlendMode::None);
 }
 
@@ -675,8 +749,9 @@ void PlayingState::drawSeals(const StateContext& ctx, float blend) const
     renderer.setBlendMode(BlendMode::Alpha);
     renderer.setCameraEnabled(true);
 
-    const Vec2 playerCentre = m_world.player().body().center();
-
+    // The interaction prompt lives in the HUD, once, for the nearest seal.
+    // Drawing it here as well put two prompts on screen at once and, with two
+    // seals close together, printed them on top of each other.
     for (const Game::Seal& seal : m_world.seals()) {
         if (seal.collected) {
             continue;
@@ -703,26 +778,8 @@ void PlayingState::drawSeals(const StateContext& ctx, float blend) const
         renderer.drawRect(core, sealTheme.accent.withAlpha(
                                    static_cast<std::uint8_t>((0x60 + 0xA0 * pulse) * alpha / 255.0f)));
         renderer.drawRectOutline(core, Palette::TextPrimary.withAlpha(alpha), 1.0f);
-
-        // Prompt when the player is close enough to interact.
-        const float distance = std::sqrt((seal.position.x - playerCentre.x) *
-                                             (seal.position.x - playerCentre.x) +
-                                         (seal.position.y - playerCentre.y) *
-                                             (seal.position.y - playerCentre.y));
-        if (distance <= seal.reach) {
-            Graphics::TextRenderer& text = *ctx.text;
-            TextStyle prompt;
-            prompt.pixelSize = 15;
-            prompt.color     = here ? Palette::TextPrimary : Palette::TextDim;
-            prompt.align     = TextAlign::Center;
-            prompt.shadow    = Color{0, 0, 0, 0xC0};
-            const std::string label =
-                here ? std::string("E  -  ") + seal.label
-                     : std::string("SHIFT TO ") + std::string(eraName(seal.era));
-            const Rect where{pillar.center().x - 110.0f, pillar.y - 34.0f, 220.0f, 20.0f};
-            text.drawInRect(renderer, where, label, prompt);
-        }
     }
+
     renderer.setBlendMode(BlendMode::None);
 }
 
@@ -853,6 +910,31 @@ void PlayingState::drawHud(const StateContext& ctx, const Rect& area) const
     const UiScale scale = currentUiScale(ctx);
     const TextStyle& label = m_labelStyle;
     const float pad = scale.px(18.0f);
+
+    // --- scrims -------------------------------------------------------------
+    // The three eras have wildly different brightnesses - a sunlit Past sky and
+    // a near-black Future one - and the HUD is the same dim grey in all of
+    // them. A soft gradient top and bottom keeps the text legible over any of
+    // them without putting a hard-edged box on screen.
+    {
+        constexpr int kStrips = 12;
+        const float topH = scale.px(112.0f);
+        for (int i = 0; i < kStrips; ++i) {
+            const float f = 1.0f - static_cast<float>(i) / static_cast<float>(kStrips);
+            const Rect strip{area.x, area.y + topH * static_cast<float>(i) /
+                                               static_cast<float>(kStrips),
+                             area.w, topH / static_cast<float>(kStrips) + 1.0f};
+            renderer.drawRect(strip, Color{0, 0, 0, static_cast<std::uint8_t>(f * 150.0f)});
+        }
+
+        const float bottomH = scale.px(84.0f);
+        for (int i = 0; i < kStrips; ++i) {
+            const float f = static_cast<float>(i) / static_cast<float>(kStrips - 1);
+            const Rect strip{area.x, area.bottom() - bottomH * static_cast<float>(i + 1),
+                             area.w, bottomH / static_cast<float>(kStrips) + 1.0f};
+            renderer.drawRect(strip, Color{0, 0, 0, static_cast<std::uint8_t>(f * f * 170.0f)});
+        }
+    }
 
     // --- damage and shift vignettes ----------------------------------------
     // A red edge pulse on damage and an era-coloured wash on a shift. Both are
@@ -1076,8 +1158,8 @@ void PlayingState::render(StateContext& ctx, double alpha)
     const float blend       = Graphics::clampValue(m_world.eraBlend(), 0.0f, 1.0f);
 
     drawBackdrop(ctx, area);
-    if (!std::getenv("ES_NOPARALLAX")) drawParallax(ctx, area);
-    if (!std::getenv("ES_NOTILES")) drawTiles(ctx, blend);
+    drawParallax(ctx, area);
+    drawTiles(ctx, blend);
     drawSeals(ctx, blend);
     drawPickups(ctx);
     drawEnemies(ctx);
@@ -1085,6 +1167,14 @@ void PlayingState::render(StateContext& ctx, double alpha)
 
     drawHud(ctx, area);
     drawToasts(ctx, area);
+
+    if (ctx.stats != nullptr) {
+        // The overlay's Entities row is the simulation's to report: only the
+        // state knows what is alive, and a counter owned by the engine would
+        // have to be told, which is exactly this.
+        ctx.stats->setEntityCount(1 + m_world.enemies().size() + m_world.pickups().size() +
+                                  m_world.seals().size());
+    }
 
     if (ctx.overlay != nullptr && ctx.stats != nullptr) {
         renderer.setBlendMode(BlendMode::Alpha);

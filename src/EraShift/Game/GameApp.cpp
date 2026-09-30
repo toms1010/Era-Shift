@@ -3,10 +3,12 @@
 #include "EraShift/Game/states/MainMenuState.hpp"
 #include "EraShift/Game/states/PausedState.hpp"
 #include "EraShift/Game/states/PlayingState.hpp"
+#include "EraShift/Core/SaveGame.hpp"
 #include "EraShift/Game/states/ResultState.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <string_view>
 
 namespace EraShift::Game {
@@ -77,7 +79,7 @@ void GameApp::shutdown() noexcept
 
 void GameApp::updateGlobalInput(StateContext& context)
 {
-    if (context.input == nullptr || context.overlay == nullptr) {
+    if (context.input == nullptr) {
         return;
     }
 

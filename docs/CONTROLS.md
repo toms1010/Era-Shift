@@ -46,12 +46,16 @@ Key names are matched case- and separator-insensitively, so `"left shift"`,
 `"Left_Shift"` and `"LEFT SHIFT"` are all the same key. A warning is logged for
 an unrecognised binding and the default is kept.
 
-A live rebinding UI is planned for Phase 8.
+Bindings are live-editable: Settings -> Controls, select a row, press Enter,
+then press the key or mouse button you want. Escape cancels. Changes are
+written to the controls section of the user config and survive a restart.
+`F3` and `F12` are deliberately not rebindable, so the overlay and a screenshot
+can always be reached.
 
 ## In-game
 
 | Key | Result |
 | --- | --- |
-| `Q` in the test scene | Shift era (costs chrono energy) |
+| `Q` | Shift era (costs chrono energy) |
 | `Esc` | Pause menu |
 | `F3` | Debug overlay (FPS, frame time, CPU, draw calls, memory, state stack) |

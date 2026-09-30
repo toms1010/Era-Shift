@@ -33,123 +33,126 @@ std::filesystem::path shippedLevelPath()
            "ancient_forest.json";
 }
 
-/// True when a body of the player's size could occupy this cell.
-bool fits(const TileMap& map, int x, int y, Era era)
+// The reachability model works in *foot rows*, not cell rows.
+//
+// A player is 28x44 in a 32px cell, so it never fits inside one cell and
+// "which cell is the player in" is not a meaningful question. What is
+// meaningful is where their feet are: a body standing on a solid cell `s` has
+// its feet at `s * 32`, and that integer is the row the model walks over.
+
+constexpr float kBodyW = 28.0f;
+constexpr float kBodyH = 44.0f;
+
+/// True when a body with its feet in row `footRow` would fit, in `era`.
+bool fits(const TileMap& map, int x, int footRow, Era era)
 {
-    // The player is 28x44 in a 32px cell, so it occupies its own cell and pokes
-    // a few pixels into the one below.
-    return !map.rectBlocked(Rect{static_cast<float>(x) * TileMap::kTileSize,
-                                 static_cast<float>(y) * TileMap::kTileSize, 28.0f, 44.0f},
-                            era);
+    const Rect rect{static_cast<float>(x) * TileMap::kTileSize,
+                    static_cast<float>(footRow) * TileMap::kTileSize - kBodyH, kBodyW, kBodyH};
+    return !map.rectBlocked(rect, era);
 }
 
-/// True when a body can come to rest with its feet in this cell.
+/// True when row `footRow` at column `x` is something the body can stand on.
 ///
-/// Tolerant by up to two cells below, because entities are placed on a whole
-/// tile boundary while bodies are 44px tall in a 32px cell: a placement one
-/// third of a tile high simply settles under gravity in the first frame. The
-/// tolerance cannot invent a platform - a ledge two cells up is still
-/// unreachable - it only stops the model from disagreeing with the physics over
-/// where a body ends up resting.
-bool supported(const TileMap& map, int x, int y, Era era)
+/// One-way platforms count: they are solid, they are simply only solid from
+/// above, and a body resting on one has its feet exactly at that row.
+bool supported(const TileMap& map, int x, int footRow, Era era)
 {
-    const float left = static_cast<float>(x) * TileMap::kTileSize;
-    for (int drop = 0; drop <= 2; ++drop) {
-        const float feet = static_cast<float>(y + drop) * TileMap::kTileSize;
-        const Rect probe{left, feet, 28.0f, 6.0f};
-        if (map.rectBlocked(probe, era)) {
-            return true;
+    return map.at(x, footRow).blocksIn(era);
+}
+
+/// Every (column, foot row) the player can get to.
+///
+/// Three deliberate liberties, each of which makes the check generous rather
+/// than strict:
+///
+///   * The player can be in any era at any moment - a shift costs energy but
+///     otherwise goes anywhere - so a cell is traversable if *any* era allows
+///     it.
+///   * Enemies are ignored. This proves the geometry has a path, not that the
+///     path is safe; that is a design question, not a data question.
+///   * Jumps are modelled as a 2-tile rise across up to 3 tiles, which is what
+///     the controller's tuning actually clears. Slightly steeper or wider would
+///     be a false negative; anything the model accepts is a real jump.
+///
+/// If this model cannot reach the goal, no route exists at all.
+std::set<std::pair<int, int>> reachable(const TileMap& map, int spawnX, int spawnY)
+{
+    constexpr int kMaxRise = 2;
+    constexpr int kMaxGap  = 3;
+    // A fall costs nothing (there is no fall damage), so a body may drop any
+    // distance inside the level.
+    constexpr int kMaxDrop = 8;
+
+    std::set<std::pair<int, int>> seen;
+    std::deque<std::pair<int, int>> queue;
+
+    const auto push = [&](int x, int footRow) {
+        const auto key = std::make_pair(x, footRow);
+        if (seen.count(key) != 0) {
+            return;
         }
-        if (map.oneWayLanding(Rect{left, static_cast<float>(y + drop) * TileMap::kTileSize,
-                                   28.0f, 44.0f},
-                              feet - 1.0f, era)) {
+        seen.insert(key);
+        queue.push_back(key);
+    };
+
+    // The spawn is given as a cell row; a body placed there has its feet in
+    // that row or the two below it, depending on how it settles.
+    for (const Era era : {Era::Past, Era::Present, Era::Future}) {
+        for (int footRow = spawnY; footRow <= spawnY + 2; ++footRow) {
+            if (fits(map, spawnX, footRow, era) && supported(map, spawnX, footRow, era)) {
+                push(spawnX, footRow);
+            }
+        }
+    }
+
+    while (!queue.empty()) {
+        const auto [x, footRow] = queue.front();
+        queue.pop_front();
+
+        for (const Era era : {Era::Past, Era::Present, Era::Future}) {
+            if (!fits(map, x, footRow, era)) {
+                continue;
+            }
+            for (int dx = -kMaxGap; dx <= kMaxGap; ++dx) {
+                const int nx = x + dx;
+                if (nx < 0 || nx >= map.columns()) {
+                    continue;
+                }
+                for (int rise = -kMaxRise; rise <= kMaxDrop; ++rise) {
+                    const int nfoot = footRow - rise;
+                    if (nfoot < 0 || nfoot >= map.rows()) {
+                        continue;
+                    }
+                    if (fits(map, nx, nfoot, era) && supported(map, nx, nfoot, era)) {
+                        push(nx, nfoot);
+                    }
+                }
+            }
+        }
+    }
+
+    return seen;
+}
+
+/// True when anything standing at `cellRow` or just below it is reachable.
+///
+/// Placements are on a whole-tile boundary while bodies are 44px tall, so an
+/// entity's own row and the row it settles onto differ. Two rows of slack is
+/// generous enough for the snapping and cannot invent a platform.
+bool standingNear(const std::set<std::pair<int, int>>& standing, int x, int cellRow)
+{
+    for (int footRow = cellRow; footRow <= cellRow + 2; ++footRow) {
+        if (standing.count({x, footRow}) > 0) {
             return true;
         }
     }
     return false;
 }
 
-/// Every cell the player can stand in, over the union of the three eras.
-///
-/// The player can shift eras at any moment, so for reachability purposes a cell
-/// counts if any of the three eras allows it. Enemies are ignored: the point is
-/// to prove the geometry has a path, not that the path is safe.
-std::set<std::pair<int, int>> reachableStanding(const TileMap& map, EraMask& erasOut,
-                                                int spawnX, int spawnY)
+/// True when a body with its feet in this cell would fit, in `era`.
+bool bodyFits(const TileMap& map, int x, int cellRow, Era era)
 {
-    constexpr int kMaxRise = 2;    // tiles a jump clears from a standing start
-    constexpr int kMaxGap  = 3;    // tiles of horizontal gap a jump covers
-
-    std::set<std::pair<int, int>> visited;
-    std::deque<std::pair<int, int>> queue;
-    erasOut = 0;
-
-    const auto push = [&](int x, int y, EraMask era) {
-        const auto key = std::make_pair(x, y);
-        if (visited.count(key) != 0) {
-            return;
-        }
-        visited.insert(key);
-        queue.push_back(key);
-        erasOut |= era;
-    };
-
-    // The spawn may be standing on a platform in one era only.
-    for (const Era era : {Era::Past, Era::Present, Era::Future}) {
-        if (fits(map, spawnX, spawnY, era)) {
-            push(spawnX, spawnY, eraBit(era));
-        }
-    }
-
-    while (!queue.empty()) {
-        const auto [x, y] = queue.front();
-        queue.pop_front();
-
-        for (const Era era : {Era::Past, Era::Present, Era::Future}) {
-            if (!fits(map, x, y, era)) {
-                continue;
-            }
-
-            // Walk along the floor.
-            for (const int dx : {-1, 1}) {
-                const int nx = x + dx;
-                if (fits(map, nx, y, era) && supported(map, nx, y, era)) {
-                    push(nx, y, eraBit(era));
-                }
-            }
-
-            // Step up onto something one or two tiles higher.
-            for (const int rise : {1, kMaxRise}) {
-                for (const int dx : {-1, 0, 1}) {
-                    const int nx = x + dx;
-                    if (fits(map, nx, y - rise, era) && supported(map, nx, y - rise, era)) {
-                        push(nx, y - rise, eraBit(era));
-                    }
-                }
-            }
-
-            // Jump across a gap.
-            for (const int dx : {-kMaxGap, kMaxGap}) {
-                for (const int rise : {0, 1}) {
-                    const int nx = x + dx;
-                    if (fits(map, nx, y - rise, era) && supported(map, nx, y - rise, era)) {
-                        push(nx, y - rise, eraBit(era));
-                    }
-                }
-            }
-
-            // Fall. This is what links an upper shelf to the floor below it.
-            int ny = y + 1;
-            while (ny < map.rows() && fits(map, x, ny, era) && !supported(map, x, ny, era)) {
-                ny += 1;
-            }
-            if (ny < map.rows() && fits(map, x, ny, era)) {
-                push(x, ny, eraBit(era));
-            }
-        }
-    }
-
-    return visited;
+    return fits(map, x, cellRow + 2, era);
 }
 
 } // namespace
@@ -207,6 +210,56 @@ TEST_CASE("every era layer is a full, rectangular grid")
     }
 }
 
+TEST_CASE("a cell is only as hazardous as the era that says so")
+{
+    // Three cells at the same position: solid stone in the Past, a pit in the
+    // Present and the Future.
+    Level level;
+    level.id = "eras";
+    level.pastRows    = {"...", "###", "###"};
+    level.presentRows = {"...", "^##", "###"};
+    level.futureRows  = {"...", "^##", "###"};
+
+    PlacedEntity spawn;
+    spawn.kind = EntityKind::PlayerSpawn;
+    level.entities.push_back(spawn);
+
+    const TileMap map = level.buildMap();
+    const Tile cell = map.at(0, 1);
+
+    CHECK(cell.blocksIn(Era::Past));
+    CHECK_FALSE(cell.isHazardIn(Era::Past));
+    // And the pit is not solid, so the player falls into it rather than
+    // walking over a hazard they cannot see.
+    CHECK_FALSE(cell.blocksIn(Era::Present));
+    CHECK(cell.isHazardIn(Era::Present));
+    CHECK_FALSE(cell.blocksIn(Era::Future));
+    CHECK(cell.isHazardIn(Era::Future));
+}
+
+TEST_CASE("a one-way platform in one era does not become one in another")
+{
+    Level level;
+    level.id = "platform";
+    level.pastRows    = {"...", "...", "###"};
+    level.presentRows = {"...", "=..", "###"};
+    level.futureRows  = {"...", "=..", "###"};
+
+    PlacedEntity spawn;
+    spawn.kind = EntityKind::PlayerSpawn;
+    level.entities.push_back(spawn);
+
+    const TileMap map = level.buildMap();
+    const Tile cell = map.at(0, 1);
+
+    CHECK(cell.isOneWayIn(Era::Present));
+    CHECK(cell.isOneWayIn(Era::Future));
+    // In the Past that cell is open air, so a player rising through it must not
+    // be caught by a platform that does not exist there.
+    CHECK_FALSE(cell.blocksIn(Era::Past));
+    CHECK_FALSE(cell.isOneWayIn(Era::Past));
+}
+
 TEST_CASE("the three eras are genuinely different worlds")
 {
     Level level;
@@ -247,8 +300,14 @@ TEST_CASE("the player spawn is standing on something in every era")
 
     const TileMap map = level.buildMap();
     for (const Era era : {Era::Past, Era::Present, Era::Future}) {
-        CHECK(fits(map, spawn->x, spawn->y, era));
-        CHECK(supported(map, spawn->x, spawn->y, era));
+        CHECK(bodyFits(map, spawn->x, spawn->y, era));
+        // There has to be floor within a cell of the spawn in every era, or the
+        // player starts by falling - or by dying.
+        bool nearFloor = false;
+        for (int row = spawn->y; row <= spawn->y + 2; ++row) {
+            nearFloor = nearFloor || supported(map, spawn->x, row, era);
+        }
+        CHECK_MESSAGE(nearFloor, "the player spawn has no floor in this era");
     }
 }
 
@@ -262,8 +321,7 @@ TEST_CASE("the gate can be reached from the spawn")
     const PlacedEntity* spawn = level.find(EntityKind::PlayerSpawn);
     REQUIRE(spawn != nullptr);
 
-    EraMask eras = 0;
-    const auto standing = reachableStanding(map, eras, spawn->x, spawn->y);
+    const auto standing = reachable(map, spawn->x, spawn->y);
     REQUIRE_FALSE(standing.empty());
 
     // Find the gate.
@@ -274,9 +332,9 @@ TEST_CASE("the gate can be reached from the spawn")
                 foundGoal = true;
                 // The cell above the marker, or the marker itself, must be
                 // somewhere the player can actually stand or walk through.
-                const bool reachable = standing.count({x, y}) > 0 ||
-                                       standing.count({x, y - 1}) > 0;
-                CHECK_MESSAGE(reachable, "the gate is not reachable from the spawn");
+                // The marker cell itself, or the cell it is standing on.
+                const bool reachesGate = standingNear(standing, x, y);
+                CHECK_MESSAGE(reachesGate, "the gate is not reachable from the spawn");
             }
         }
     }
@@ -293,21 +351,22 @@ TEST_CASE("every seal is reachable")
     const PlacedEntity* spawn = level.find(EntityKind::PlayerSpawn);
     REQUIRE(spawn != nullptr);
 
-    EraMask eras = 0;
-    const auto standing = reachableStanding(map, eras, spawn->x, spawn->y);
+    const auto standing = reachable(map, spawn->x, spawn->y);
 
     for (const PlacedEntity& entity : level.entities) {
         if (entity.kind != EntityKind::Seal) {
             continue;
         }
-        const bool here   = standing.count({entity.x, entity.y}) > 0;
-        const bool below  = standing.count({entity.x, entity.y + 1}) > 0;
-        const bool beside = standing.count({entity.x - 1, entity.y}) > 0 ||
-                            standing.count({entity.x + 1, entity.y}) > 0;
-        const bool reachable = here || below || beside;
+        // A seal's row is its base, so standing level with it is reachable if
+        // anything adjacent is: the reach check is generous in every direction
+        // because the interaction has a radius anyway.
+        const bool here = standingNear(standing, entity.x, entity.y);
+        const bool beside = standingNear(standing, entity.x + 1, entity.y) ||
+                            standingNear(standing, entity.x - 1, entity.y);
+        const bool canReach = here || beside;
         const std::string where = "seal at (" + std::to_string(entity.x) + ", " +
                                   std::to_string(entity.y) + ") cannot be reached";
-        CHECK_MESSAGE(reachable, where);
+        CHECK_MESSAGE(canReach, where);
     }
 }
 
@@ -321,8 +380,7 @@ TEST_CASE("every pickup and enemy sits on or next to reachable ground")
     const PlacedEntity* spawn = level.find(EntityKind::PlayerSpawn);
     REQUIRE(spawn != nullptr);
 
-    EraMask eras = 0;
-    const auto standing = reachableStanding(map, eras, spawn->x, spawn->y);
+    const auto standing = reachable(map, spawn->x, spawn->y);
 
     for (const PlacedEntity& entity : level.entities) {
         if (entity.kind == EntityKind::PlayerSpawn) {
@@ -331,15 +389,13 @@ TEST_CASE("every pickup and enemy sits on or next to reachable ground")
         // A wisp hovers, so it does not need anything under it.
         const bool hovering = entity.kind == EntityKind::Enemy &&
                               tuningFor(entity.enemy).flies;
-        const bool reachable = standing.count({entity.x, entity.y}) > 0 ||
-                               standing.count({entity.x, entity.y + 1}) > 0 ||
-                               standing.count({entity.x - 1, entity.y}) > 0 ||
-                               standing.count({entity.x + 1, entity.y}) > 0;
-        if (!hovering) {
-            const std::string where = "entity at (" + std::to_string(entity.x) + ", " +
-                                      std::to_string(entity.y) + ") is out of reach";
-            CHECK_MESSAGE(reachable, where);
+        if (hovering) {
+            continue;
         }
+        const bool reachable = standingNear(standing, entity.x, entity.y);
+        const std::string where = "entity at (" + std::to_string(entity.x) + ", " +
+                                  std::to_string(entity.y) + ") is out of reach";
+        CHECK_MESSAGE(reachable, where);
     }
 }
 
@@ -357,7 +413,7 @@ TEST_CASE("no cell in the shipped level traps the player inside solid geometry")
             for (const Era era : {Era::Past, Era::Present, Era::Future}) {
                 const Tile above = map.at(x, y - 1);
                 const Tile below = map.at(x, y + 1);
-                if (!fits(map, x, y, era)) {
+                if (!bodyFits(map, x, y, era)) {
                     continue;
                 }
                 const bool roofed = above.blocksIn(era) && !above.isOneWayIn(era);
@@ -379,10 +435,9 @@ TEST_CASE("the built-in fallback level is playable on its own terms")
     const TileMap map = level.buildMap();
     REQUIRE(level.find(EntityKind::PlayerSpawn) != nullptr);
 
-    EraMask eras = 0;
     const auto standing =
-        reachableStanding(map, eras, level.find(EntityKind::PlayerSpawn)->x,
-                          level.find(EntityKind::PlayerSpawn)->y);
+        reachable(map, level.find(EntityKind::PlayerSpawn)->x,
+                  level.find(EntityKind::PlayerSpawn)->y);
     REQUIRE_FALSE(standing.empty());
 
     bool foundGoal = false;
@@ -390,9 +445,8 @@ TEST_CASE("the built-in fallback level is playable on its own terms")
         for (int x = 0; x < map.columns() && !foundGoal; ++x) {
             if (map.at(x, y).kind == TileKind::Goal) {
                 foundGoal = true;
-                const bool reachable = standing.count({x, y}) > 0 ||
-                                       standing.count({x, y - 1}) > 0;
-                CHECK_MESSAGE(reachable, "the fallback level's gate is unreachable");
+                const bool reachesGate = standingNear(standing, x, y);
+                CHECK_MESSAGE(reachesGate, "the fallback level's gate is unreachable");
             }
         }
     }

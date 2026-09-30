@@ -204,7 +204,6 @@ TEST_CASE("erasing a save makes CONTINUE unavailable again")
     CHECK(manager.hasSave());
 
     CHECK(manager.erase());
-    CHECK_FALSE(manager.refresh());
     CHECK_FALSE(manager.hasSave());
 }
 

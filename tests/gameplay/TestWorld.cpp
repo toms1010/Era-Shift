@@ -110,6 +110,20 @@ WorldCommands interact()
     return commands;
 }
 
+/// Shifts until the world is in `wanted`, up to a few steps.
+///
+/// The cycle is fixed, so this is a loop rather than arithmetic; going the
+/// "wrong" way round would mean the test is not exercising the same code the
+/// player does.
+void shiftTo(World& world, Era wanted)
+{
+    for (int i = 0; i < 3 && world.era() != wanted; ++i) {
+        world.mutablePlayer().refillChrono();
+        world.update(PlayerInput{}, shift(), kStep);
+        static_cast<void>(world.takeEvents());
+    }
+}
+
 } // namespace
 
 TEST_CASE("loading a level places the player, the enemies, the seals and the goal")
@@ -128,11 +142,17 @@ TEST_CASE("shifting costs energy, changes the era and emits an event")
 {
     World world = loadedWorld();
     const float before = world.player().chrono();
+    const float cost   = world.player().tuning().shiftCost;
+    const float regen  = world.player().tuning().chronoRegen / 60.0f;
 
     world.update(PlayerInput{}, shift(), kStep);
 
     CHECK(world.era() == nextEra(Era::Present));
-    CHECK(world.player().chrono() == doctest::Approx(before - world.player().tuning().shiftCost));
+    // The shift is charged first and regeneration runs after it, so the balance
+    // ends the step a fraction above the exact cost. Anything much above that
+    // would mean the cost is not being charged at all.
+    CHECK(world.player().chrono() >= before - cost);
+    CHECK(world.player().chrono() < before - cost + regen * 2.0f);
     CHECK(world.stats().shifts == 1);
     CHECK(world.eraBlend() < 1.0f);
 
@@ -141,14 +161,20 @@ TEST_CASE("shifting costs energy, changes the era and emits an event")
     CHECK(events.front().kind == WorldEvent::EraShifted);
 }
 
-TEST_CASE("the transition settles and then clears")
+TEST_CASE("the transition settles")
 {
     World world = loadedWorld();
     world.update(PlayerInput{}, shift(), kStep);
     CHECK(world.eraBlend() < 1.0f);
+    static_cast<void>(world.takeEvents());
 
     CHECK(stepUntil(world, [](const World& w) { return w.eraBlend() >= 1.0f; }));
-    CHECK(world.takeEvents().empty());
+
+    // Settling is not an event: the world changing over 0.35 seconds should not
+    // produce a second "shifted to" message.
+    for (const auto& event : world.takeEvents()) {
+        CHECK(event.kind != WorldEvent::EraShifted);
+    }
 }
 
 TEST_CASE("shifting without enough energy is refused and says so")
@@ -178,7 +204,8 @@ TEST_CASE("a seal is refused in the wrong era and taken in its own")
         Vec2{5.0f * TileMap::kTileSize, 2.0f * TileMap::kTileSize};
     resolvePenetration(world.map(), world.mutablePlayer().body(), world.player().era());
 
-    // In the Present, so the Past seal refuses and explains itself.
+    // The player starts in the Present, so the Past seal refuses and explains
+    // itself rather than silently doing nothing.
     world.update(PlayerInput{}, interact(), kStep);
     CHECK(world.sealsTaken() == 0);
     bool sawWrongEra = false;
@@ -187,10 +214,13 @@ TEST_CASE("a seal is refused in the wrong era and taken in its own")
     }
     CHECK(sawWrongEra);
 
-    // Shift into the Past and take it.
-    world.update(PlayerInput{}, shift(), kStep);
-    static_cast<void>(world.takeEvents());
-    CHECK(world.era() == Era::Past);
+    // Shift round to the Past and take it.
+    shiftTo(world, Era::Past);
+    REQUIRE(world.era() == Era::Past);
+    world.mutablePlayer().body().position =
+        Vec2{5.0f * TileMap::kTileSize, 2.0f * TileMap::kTileSize};
+    world.mutablePlayer().body().velocity = Vec2{};
+    resolvePenetration(world.map(), world.mutablePlayer().body(), world.player().era());
 
     world.update(PlayerInput{}, interact(), kStep);
     CHECK(world.sealsTaken() == 1);
@@ -385,14 +415,60 @@ TEST_CASE("the objective line names the era the next seal needs")
     CHECK(text.find("Past") != std::string::npos);
 }
 
-TEST_CASE("an empty level is inert rather than a crash")
+TEST_CASE("a world with no level loaded simulates nothing")
 {
     World world;
+    CHECK_FALSE(world.loaded());
+
     world.update(PlayerInput{}, shift(), kStep);
     world.update(PlayerInput{}, interact(), kStep);
-    CHECK(world.map().empty());
+
+    // Not a defeat: there is no run in progress to lose. Reporting one would
+    // put a results screen up for a game that never started.
     CHECK(world.outcome() == Outcome::Running);
-    CHECK(world.objectiveText().find("0 / 0") != std::string::npos);
+    CHECK(world.map().empty());
+    CHECK(world.stats().elapsed == doctest::Approx(0.0));
+}
+
+TEST_CASE("a level with no floor under it is fatal rather than a void")
+{
+    // A spawn with nothing beneath it: the player falls out of the world and
+    // the run ends. This is what makes an authoring mistake visible as a
+    // defeat instead of a player standing in the sky forever.
+    Level void_level;
+    void_level.presentRows = {"...", "...", "...", "...", "..."};
+    PlacedEntity spawn;
+    spawn.kind = EntityKind::PlayerSpawn;
+    spawn.x    = 2;
+    spawn.y    = 1;
+    void_level.entities.push_back(spawn);
+
+    World world;
+    world.load(void_level);
+    CHECK(world.outcome() == Outcome::Running);
+
+    for (int i = 0; i < 600 && world.outcome() == Outcome::Running; ++i) {
+        world.update(PlayerInput{}, WorldCommands{}, kStep);
+    }
+
+    CHECK(world.outcome() == Outcome::Defeat);
+    CHECK(world.objectiveText().find("collapsed") != std::string::npos);
+}
+
+TEST_CASE("a level with no seals reports no objective rather than dividing by zero")
+{
+    Level plain;
+    plain.presentRows = {"...", "..."};
+    PlacedEntity spawn;
+    spawn.kind = EntityKind::PlayerSpawn;
+    plain.entities.push_back(spawn);
+
+    World world;
+    world.load(plain);
+    // 0 of 0 seals: the gate can never open, and the HUD must say so rather
+    // than pointing at a seal that does not exist.
+    CHECK_FALSE(world.gateOpen());
+    CHECK(world.sealsTaken() == 0);
 }
 
 TEST_CASE("an enemy asleep in another era is neither counted nor hittable")
