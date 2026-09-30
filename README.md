@@ -8,6 +8,11 @@ A 2D action-adventure built on a single world that changes across three eras —
 the Past, the Present and the Future — where changing time is both your movement
 ability and your only defence.
 
+![An era shift in flight: expanding shockwave rings, debris sparks, a screen flash and a camera punch](docs/screenshots/era-shift.png)
+
+*An era shift caught mid-flight — expanding shockwave rings, debris sparks, a
+screen flash and a camera punch, all triggered by one simulation event.*
+
 </div>
 
 > *The world is one world, but time changes its state.*
@@ -28,7 +33,7 @@ than an omission.
 ## Contents
 
 - [Quick start](#quick-start) · [Controls](#controls) · [How to play](#how-to-play)
-- [Architecture](#architecture) — the two diagrams
+- [Screenshots](#screenshots) · [Architecture](#architecture) — the two diagrams
 - [What is in the box](#what-is-in-the-box) — audio, animation, effects
 - [Project layout](#project-layout) · [Documentation](#documentation)
 - [Build configurations](#build-configurations) · [Testing](#testing)
@@ -124,6 +129,64 @@ Each shift and each kill adds **paradox**, and paradox is the run's own pressure
 It does not stop you playing; it changes how the game *feels* — the music loses
 its footing, the screen starts to tear, the edges of the world close in. See
 [Paradox](#paradox).
+
+---
+
+## Screenshots
+
+Every image here is a real frame from the build, captured with the game's own
+`--screenshot` flag. Nothing is mocked up.
+
+### The three eras, one world
+
+The same view of the Ancient Forest in two of its three time states. The terrain
+is the same grid — what is solid, what is a hazard and what glows is all era
+data, so the level is a sequence of era switches rather than a corridor.
+
+| Future | Present |
+| --- | --- |
+| ![Future era: purple palette, cyan embers rising, crystal platforms](docs/screenshots/era-future.png) | ![Present era: grey palette, drifting dust, standing structures](docs/screenshots/era-present.png) |
+| **Future.** Whole-tone palette, embers rising from below, crystal that has not grown yet. The only era where the ground is *added* rather than taken away. | **Present.** Natural-minor palette, near-weightless dust. The era that is supposed to look like ours, and the only one whose scale actually resolves. |
+
+### Paradox at Collapse
+
+![Paradox Collapse: red gauge, glitch bars, heavy vignette](docs/screenshots/paradox-collapse.png)
+
+Paradox is the run's accumulation of shifting and killing, and it is the only
+number in the game that changes how it *feels* rather than how it plays. At the
+top tier the gauge reads `COLLAPSE`, the music loses its footing, the picture
+tears in horizontal bands, and the edges of the world close in. The centre of the
+screen stays clear on purpose — a game you cannot see is not tense, it is broken.
+The objective line stays legible for the same reason.
+
+### The title screen
+
+![Title screen](docs/screenshots/title.png)
+
+<details>
+<summary>How to regenerate these</summary>
+
+Every image above is a real frame, produced by the same flag documented above.
+Nothing is drawn by hand, so they cannot drift out of date the way a mock-up
+would.
+
+```bash
+# A gameplay frame
+./build/release/EraShift --headless --demo --frames 340 \
+    --start-state Playing \
+    --screenshot docs/screenshots/era-future.png --screenshot-frame 80
+
+# The title screen
+./build/release/EraShift --headless --frames 120 \
+    --screenshot docs/screenshots/title.png --screenshot-frame 45
+```
+
+`--demo` replaces input with the built-in attract script, which is why the run is
+reproducible: the same frame number gives the same picture. `SDL_AUDIODRIVER=dummy`
+if the machine has no sound device, since the game will otherwise log a warning
+on start-up.
+
+</details>
 
 ---
 
@@ -342,6 +405,7 @@ data/levels/            Data-driven content (JSON)
 config/                 Layered JSON configuration
 scripts/                Dependency bootstrap, crash harness, font generator
 docs/                   Architecture and design documents
+  screenshots/          Real captured frames, referenced by this file
 ```
 
 `erashift_core` contains **no SDL dependency at all**. That is not tidiness — it

@@ -331,6 +331,24 @@ audio and the renderer read. One number driving two systems is why they stay in
 step: a player who hears the music destabilise sees the edges close in at the same
 moment, and the causal link is legible.
 
+## Seeing it working
+
+The effects described here are all in one screenshot, and it is a real frame —
+`--demo` makes the run reproducible, so the same frame number always gives the
+same picture.
+
+```bash
+./build/release/EraShift --headless --demo --frames 340 \
+    --start-state Playing \
+    --screenshot /tmp/shift.png --screenshot-frame 55
+```
+
+Frame 55 of the attract script catches a shift at its peak: the three shockwave
+rings from `emitShiftBurst`, the debris sparks, the white `m_flash` wash, the
+camera punch, and the charge aura the player is still standing in. Frame 80 shows
+the same run a moment later with the shift rings around the player and the
+Future's embers rising through them.
+
 ## Testing
 
 | System | File | Cases |
