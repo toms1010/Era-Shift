@@ -414,6 +414,116 @@ per-launch noise. A warning that repeats forever trains people to skip the log.
 
 ---
 
+## 🟠 BUG-016 · The BUG-013 fix leaked 77.6 kB per one-shot
+
+**Severity**: High · **Status**: Fixed · **Introduced by** the BUG-013 fix
+
+**Symptom** Memory climbing for as long as the game ran. Measured: RSS 16 MB →
+404 MB over 5000 one-shots, a steady 77.6 kB per sound. At a few footsteps a
+second that is over 100 MB an hour of ordinary play, and a few attack and pickup
+sounds on top.
+
+**Root cause** BUG-013 was fixed by replacing `MIX_SetTrackIOStream` with an
+explicitly-formatted `SDL_AudioStream`, which is what gave the mixer a format to
+work with. The old `SDL_IOStream` had been created with `closeio = true`, so
+SDL_mixer closed it for us and there was nothing to leak. `MIX_SetTrackAudioStream`
+does **not** take ownership: the stream must outlive the track's use of it and has
+to be destroyed by whoever created it. `SDL_DestroyAudioStream` was reached only
+on the two error paths, so every successful play leaked a stream.
+
+Worth stating plainly: this bug was created by the fix for BUG-013, and neither
+the test suite nor ASan caught it. It is not a use-after-free and not a buffer
+overrun — it is memory that is simply never handed back — so the sanitizers are
+structurally incapable of seeing it. Only RSS over time shows it.
+
+**Fix** The channel owns its stream (`Channel::stream`) and frees the previous one
+when it takes a new input. The ordering matters and got it wrong first: stopping
+the track and freeing its stream *before* attaching the replacement segfaulted,
+because `MIX_StopTrack` is not synchronised with the audio thread. Replacing the
+track's input is the documented moment the old stream is no longer needed, so the
+free happens immediately after `MIX_SetTrackAudioStream` returns. At shutdown the
+streams are destroyed *after* `MIX_DestroyMixer`, for the same reason.
+
+**Regression test** `tests/input/TestAudio.cpp` — *"a long run of one-shots stays
+bounded and does not starve the beds"* fires 5000 sounds and asserts the pool
+stays within six voices, no `put` failures accumulate, and both beds are still
+playing afterwards. RSS is deliberately not asserted, being far too
+allocator-dependent to be stable. `scripts/check_audio_leaks.sh` does the
+measurement out of band, with a no-one-shot control to separate a real leak from
+undrained stream backlog.
+
+**Verification** Paced at real time, growth is flat: 400 one-shots → 3112 kB,
+1200 one-shots → 3092 kB. Unpaged, 4000 one-shots add 2852 kB over a no-one-shot
+control, against 310 MB before the fix.
+
+---
+
+## 🔵 BUG-017 · The mix reaches full scale with no headroom
+
+**Severity**: Low · **Status**: Open, documented rather than changed
+
+**Symptom** Over three 20-second gameplay captures at the PulseAudio sink, 0, 0
+and 2 samples reached full scale. Peak −0.0, −1.7 and 0.0 dBFS, RMS −16.6 dBFS.
+
+**Cause** Not a bug in any one sound. Every synth stays inside ±1.0 — the tests
+assert it per effect — but the mixer *sums* music, ambience and a one-shot at
+their bus gains, and at the default 0.8 master those peaks can add to slightly
+over full scale. There is no limiter in the chain.
+
+**Why it is not fixed** Two samples in twenty seconds is about 20 microseconds of
+full-scale audio, which is at the edge of audibility, and the obvious fix is to
+pull the bed gains down. The beds are currently at a measured −16.6 dBFS RMS with
+peaks just touching 0, which is a good place to be; trimming them would make the
+game quieter to fix something nobody can hear. Flagged instead so the level
+budget is a decision rather than an accident. The fix, if wanted, is a few tenths
+of a dB of trim on `music.gain` / `ambience.gain` in
+`AudioManager::pushBeds`, and it should be re-measured afterwards.
+
+A DC offset of +0.0039 (−48 dBFS) is present in the same captures. Small enough to
+be inaudible and low enough that it is not worth chasing without a measurement
+that says it matters.
+
+---
+
+## Investigated, measured, and *not* bugs
+
+Recorded so nobody re-investigates them. Each of these looked like a defect and
+was measured rather than assumed.
+
+**Era transitions do not click.** A phase-continuous oscillator whose frequency
+changes discontinuously *should* click, and the era is an enum switched inside
+`MusicSynth::render` while only `brightness` is eased. Measured across a
+Present → Future boundary in single-sample renders: step across the seam 0.0570
+versus 0.0604 for a run with no era change at all — the transition is *quieter*
+than steady state. No click.
+
+**Music state transitions do not click.** Exploring → Combat measured a 3.8x
+larger step than a steady Exploring, which looked conclusive until the probe was
+found to be comparing a sparse state against a dense one: a busier mix
+legitimately has larger sample-to-sample steps. Re-measured properly — the step
+across the transition against the step in the same state once settled — gives
+0.50x, 0.99x, 1.00x and 1.01x for four transitions. No click.
+
+**Stealing a one-shot channel does not click.** A 1.6-second `GateOpened` fired
+repeatedly into a six-deep pool, so the oldest voice is always cut mid-note. Max
+step 0.036 against 0.022 for the same sound without stealing, zero clipped
+samples in 153,600, pool never exceeded six voices. The edges are already faded.
+
+**Bed recovery does not leak.** `ensureBedsPlaying()` re-issues `MIX_PlayTrack` on
+the *existing* track and stream rather than building new ones, so a watchdog
+restart cannot leak. Checked because a watchdog that re-allocated per restart
+would have the same 77.6 kB problem as BUG-016.
+
+**Tempo is now eased, which was not a bug fix.** `MusicSynth` derived
+`secondsPerStep` from `params.tempo` independently in both `advance()` and
+`render()` — two clocks reading one value, which is fine until the value changes
+and then they disagree about where the bar is. Both now read a smoothed `m_tempo`.
+This matches the documented intent that parameters interpolate, and the
+transition measurements above confirm it did not regress anything, but it is a
+consistency cleanup rather than a repair of an observed click.
+
+---
+
 ## Checked, and *not* found
 
 Recorded to show what was looked at, not to pad the list.

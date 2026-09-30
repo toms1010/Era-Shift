@@ -30,6 +30,25 @@ measurement error rather than a wiring one. The sub-buses are now per-track gain
 which can be verified: buses at 0 → digital silence, SFX only → −13.7 dBFS, music
 only → −15.7 dBFS, all up → −10.9 dBFS.
 
+**The BUG-013 fix leaked 77.6 kB per one-shot (BUG-016, high).** Fixing the
+silent one-shots meant replacing `MIX_SetTrackIOStream` with an explicitly
+formatted `SDL_AudioStream`, and unlike the `closeio = true` IOStream it
+replaced, `MIX_SetTrackAudioStream` does not take ownership. Every successful play
+leaked a stream: 16 MB → 404 MB over 5000 sounds, over 100 MB an hour of play.
+The channel now owns its stream and frees the previous one when it takes a new
+input, after the new input is attached rather than before — freeing it first
+segfaults, because `MIX_StopTrack` is not synchronised with the audio thread.
+Measured with `scripts/check_audio_leaks.sh`. Neither the test suite nor any
+sanitizer could have caught this: it is memory never handed back, not a
+use-after-free or an overrun.
+
+**A sink suspend/resume is survived.** Suspending the default PipeWire sink for
+three seconds mid-gameplay no longer crashes, wedges, or loses audio: both beds
+were still playing afterwards with 2381 blocks fed and zero put failures. Worth
+being precise about what this did and did not prove — the monitor kept receiving
+during the suspend, so this verified crash-resistance, not recovery from genuine
+stream starvation. That path is covered by the automated starvation tests instead.
+
 **A dead control warned on every launch (BUG-015, low).** `Aim`, `Inventory`, `Map`
 and `QuestLog` were removed as unimplemented actions, but saved settings still
 contained their bindings and the file is never rewritten, so four warnings

@@ -165,11 +165,14 @@ void MusicSynth::advance(float seconds, const MusicParams& params) noexcept
     const float rate = std::min(1.0f, seconds * 3.0f);
     m_intensity += (params.intensity - m_intensity) * rate;
     m_eraBlend   += (params.eraBlend - m_eraBlend) * rate;
+    m_tempo     += (std::max(20.0f, params.tempo) - m_tempo) * rate;
 
     const EraScale target = scaleFor(params.era);
     m_brightness += (target.brightness - m_brightness) * rate;
 
-    const float secondsPerStep = 60.0f / std::max(20.0f, params.tempo) * 0.5f;
+    // The eased tempo, not the requested one: this is the clock that decides when
+    // the next note fires, and moving it instantly is what used to click.
+    const float secondsPerStep = 60.0f / std::max(20.0f, m_tempo) * 0.5f;
     m_time += seconds;
     while (m_time >= secondsPerStep) {
         m_time -= secondsPerStep;
@@ -192,7 +195,10 @@ void MusicSynth::render(MusicParams params, int frames, SampleBuffer& out)
     advance(seconds, params);
 
     const EraScale scale = scaleFor(params.era);
-    const float secondsPerStep = 60.0f / std::max(20.0f, params.tempo) * 0.5f;
+    // The same eased clock `advance` just ran, rather than a second one derived
+    // from the raw parameter. Two clocks reading the same value is fine until
+    // the value changes, and then they disagree about where the bar is.
+    const float secondsPerStep = 60.0f / std::max(20.0f, m_tempo) * 0.5f;
     const float intensity = Graphics::clampValue(m_intensity, 0.0f, 1.0f);
     const float instability = Graphics::clampValue(params.instability, 0.0f, 1.0f);
 

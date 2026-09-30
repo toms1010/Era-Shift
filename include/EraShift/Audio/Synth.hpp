@@ -120,6 +120,14 @@ private:
     void advance(float seconds, const MusicParams& params) noexcept;
 
     float  m_time       = 0.0f;
+    /// The tempo the step clock actually runs at, eased toward `params.tempo`.
+    ///
+    /// Held as state rather than read from the parameters because tempo *is* the
+    /// step clock's period: using the raw parameter moved the clock the instant
+    /// combat began, which re-phased the arpeggio mid-note and produced an
+    /// audible tick. Easing it means the arpeggio keeps its place in the bar and
+    /// the intensity change is heard as a glide instead.
+    float  m_tempo      = 96.0f;
     float  m_intensity  = 0.0f;
     float  m_brightness = 1.0f;
     float  m_eraBlend   = 1.0f;
