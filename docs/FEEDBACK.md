@@ -122,6 +122,34 @@ When every channel is still sounding, the oldest is stolen rather than the new
 sound being dropped — a fresh hit is more informative than the tail of an old
 one. A dropped footstep is inaudible; a dropped hit is a missing hit.
 
+### Beds never stop
+
+A mixer track reading a stream that has run dry reaches the end of it and stops.
+Both beds are started once, against a stream with nothing in it, so the first
+synthesised block arrives a frame or two *after* the track has already ended.
+
+This is worth spelling out because it is the least findable bug in the project.
+When it was present:
+
+- the synthesiser produced good audio, peak 0.29 per block
+- every `SDL_PutAudioStreamData` returned true
+- the log said `audio: started on pulseaudio at 48000 Hz`
+- `pactl list sink-inputs` showed an uncorked `EraShift` stream
+
+and the game was silent. Every diagnostic agreed with every other one and all of
+them were describing a stream going nowhere.
+
+So the streams are primed with a quarter second of silence, and
+`ensureBedsPlaying()` restarts either bed that has stopped. The watchdog is the
+real fix rather than the prime, because the ways a bed stops are not exotic: a
+PipeWire sink suspends when idle, a Bluetooth headset appearing rewires the
+device, a pause stops feeding the streams. All of them should be invisible.
+
+`-DERASHIFT_AUDIO_TRACE` reports the track's own `MIX_TrackPlaying` and the stream
+backlog. It is off by default and costs nothing when off. It is kept because the
+only symptom a player can report is "it's quiet" — the one thing every log line
+was contradicting.
+
 ### Failing soft
 
 Audio is never part of `kRequiredSubsystems`. A machine with no sound card, a

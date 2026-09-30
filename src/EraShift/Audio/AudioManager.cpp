@@ -51,14 +51,28 @@ SDL_AudioStream* makeStream(int sampleRate)
     return SDL_CreateAudioStream(&spec, &spec);
 }
 
-void startLooping(void* track)
+/// Fills a stream with a moment of silence so a looping track has something to
+/// be playing. The synthesiser's first real block arrives on the first update,
+/// which is roughly 100ms after start-up; without this the track ends in the
+/// meantime.
+void primeStream(SDL_AudioStream* stream, int sampleRate)
+{
+    constexpr int kPrimeFrames = 480;   ///< 10ms at 48kHz.
+    const std::vector<float> silence(static_cast<std::size_t>(kPrimeFrames) * 2, 0.0f);
+    SDL_PutAudioStreamData(stream, silence.data(),
+                           static_cast<int>(silence.size() * sizeof(float)));
+    static_cast<void>(sampleRate);
+}
+
+bool startLooping(void* track)
 {
     SDL_PropertiesID props = SDL_CreateProperties();
     // -1 means forever, which is what a synthesised bed is: it never "ends", it
     // just changes.
     SDL_SetNumberProperty(props, MIX_PROP_PLAY_LOOPS_NUMBER, -1);
-    MIX_PlayTrack(static_cast<MIX_Track*>(track), props);
+    const bool started = MIX_PlayTrack(static_cast<MIX_Track*>(track), props);
     SDL_DestroyProperties(props);
+    return started;
 }
 
 constexpr std::size_t kSfxCount = static_cast<std::size_t>(Sfx::Victory) + 1;
@@ -169,8 +183,40 @@ bool AudioManager::createBeds()
     MIX_TagTrack(static_cast<MIX_Track*>(m_musicTrack), kTagMusic);
     MIX_TagTrack(static_cast<MIX_Track*>(m_ambienceTrack), kTagAmbience);
 
-    startLooping(m_musicTrack);
-    startLooping(m_ambienceTrack);
+    // Prime both streams *before* starting the tracks.
+    //
+    // This is the whole bug. A track playing a stream that has no data in it yet
+    // reads that as end-of-stream: the track starts, immediately reaches the end,
+    // and stops. Nothing ever restarts it, so the bed is silent for the rest of
+    // the session while every log line cheerfully reports a healthy mixer. The
+    // first `pushBeds` call arrives about 100ms later, by which point the track
+    // is already gone and the data just accumulates in the stream.
+    //
+    // The symptom is indistinguishable from "the game is quiet", which is why it
+    // took a trace of the track's own state to find rather than any amount of
+    // listening.
+    primeStream(static_cast<SDL_AudioStream*>(m_musicStream), m_sampleRate);
+    primeStream(static_cast<SDL_AudioStream*>(m_ambienceStream), m_sampleRate);
+
+#ifdef ERASHIFT_AUDIO_TRACE
+    const bool musicStarted = startLooping(m_musicTrack);
+    const bool ambienceStarted = startLooping(m_ambienceTrack);
+#else
+    // Not checked: `ensureBedsPlaying` restarts a bed the moment it stops, which
+    // covers a failure here without needing a branch at start-up.
+    static_cast<void>(startLooping(m_musicTrack));
+    static_cast<void>(startLooping(m_ambienceTrack));
+#endif
+
+#ifdef ERASHIFT_AUDIO_TRACE
+    if (m_log) {
+        m_log->info("audio-trace", "createBeds: musicStarted={} ambienceStarted={} "
+                                   "playing={} paused={} err={}",
+                    musicStarted, ambienceStarted,
+                    MIX_TrackPlaying(static_cast<MIX_Track*>(m_musicTrack)),
+                    MIX_TrackPaused(static_cast<MIX_Track*>(m_musicTrack)), SDL_GetError());
+    }
+#endif
     return true;
 }
 
@@ -354,6 +400,16 @@ void AudioManager::pushBeds(float dt)
     music.era = m_era;
     music.eraBlend = 1.0f;
     music.instability = m_tension;
+    // The synthesiser's own level, before the mixer's buses.
+    //
+    // Measured output before this was -24.5dBFS RMS, which is roughly 20dB below
+    // where a game should sit: audible on a laptop, gone on a phone speaker or
+    // anything with a volume limiter. The attenuation was in two places at once -
+    // a 0.5 synth gain *and* the 0.65 music bus - so the bed arrived at about a
+    // quarter of full scale. The synth side is raised here so that the two stages
+    // together land near -6dBFS peak; the bus volumes stay where the user set
+    // them, because those are the ones the player controls.
+    music.gain = 0.95f;
     switch (m_musicState) {
         case MusicState::Exploring: music.intensity = 0.0f; music.tempo = 84.0f; break;
         case MusicState::Alert:     music.intensity = 0.35f; music.tempo = 96.0f; break;
@@ -367,16 +423,204 @@ void AudioManager::pushBeds(float dt)
     ambience.era = m_era;
     ambience.eraBlend = 1.0f;
     ambience.instability = m_tension * 0.7f;
+    // Left at 1.0: the synth scales itself to a sensible absolute level, so this
+    // stays a clean user control. The *bus* gain (0.55 by default) is what makes
+    // ambience sit under the music, which is the right place for that decision.
+    ambience.gain = 1.0f;
 
     m_music.render(music, frames, m_musicBlock);
     m_ambience.render(ambience, frames, m_ambienceBlock);
 
+    // Peak of what is about to be fed, kept for diagnostics. Computing it is cheap
+    // next to the synthesis and it is the difference between "the bed is quiet"
+    // and "the bed is producing nothing at all", which look identical from
+    // outside.
+    //
+    // Peak *hold*, decaying, rather than the peak of the last block. A single
+    // 16ms window of wind is near-silence most of the time, so reporting it
+    // directly made a perfectly working ambience bed read as 0.035 - which reads
+    // as broken and sends you looking for a fault that is not there. The hold
+    // jumps instantly and falls slowly, so it tracks the loudest recent moment
+    // and only decays if the bed really has gone quiet.
+    m_lastMusicPeak    = peakHold(m_lastMusicPeak, peakOf(m_musicBlock), dt);
+    m_lastAmbiencePeak = peakHold(m_lastAmbiencePeak, peakOf(m_ambienceBlock), dt);
+    ++m_blocksFed;
+
+#ifdef ERASHIFT_AUDIO_TRACE
+    if (m_traceCounter++ % 60 == 0) {
+        float pk = 0.0f;
+        for (float v : m_musicBlock) { pk = std::max(pk, std::fabs(v)); }
+        float pa = 0.0f;
+        for (float v : m_ambienceBlock) { pa = std::max(pa, std::fabs(v)); }
+        if (m_log) {
+            m_log->info("audio-trace", "frames={} musicPeak={:.4f} ambPeak={:.4f} "
+                                       "state={} era={} tension={:.2f} beds={} muted={}",
+                        frames, pk, pa, static_cast<int>(m_musicState), static_cast<int>(m_era),
+                        m_tension, m_bedsPlaying, m_muted);
+        }
+    }
+#endif
+
     const int musicBytes = static_cast<int>(m_musicBlock.size() * sizeof(float));
     const int ambienceBytes = static_cast<int>(m_ambienceBlock.size() * sizeof(float));
-    SDL_PutAudioStreamData(static_cast<SDL_AudioStream*>(m_musicStream),
-                           m_musicBlock.data(), musicBytes);
-    SDL_PutAudioStreamData(static_cast<SDL_AudioStream*>(m_ambienceStream),
-                           m_ambienceBlock.data(), ambienceBytes);
+    if (!SDL_PutAudioStreamData(static_cast<SDL_AudioStream*>(m_musicStream),
+                                m_musicBlock.data(), musicBytes) ||
+        !SDL_PutAudioStreamData(static_cast<SDL_AudioStream*>(m_ambienceStream),
+                                m_ambienceBlock.data(), ambienceBytes)) {
+        // Warned once rather than every frame: a stream that has stopped accepting
+        // data will do so on every step from here on, and sixty identical lines a
+        // second buries everything else in the log. The watchdog below restarts
+        // the track regardless, so this is a diagnosis rather than a repair.
+        ++m_putFailures;
+        if (!m_reportedStreamFailure && m_log != nullptr) {
+            m_reportedStreamFailure = true;
+            m_log->warn("audio", "could not feed a bed stream: {}", SDL_GetError());
+        }
+    }
+
+#ifdef ERASHIFT_AUDIO_TRACE
+    if (m_traceCounter % 60 == 1) {
+        const int backlog =
+            SDL_GetAudioStreamAvailable(static_cast<SDL_AudioStream*>(m_musicStream));
+        const bool playing =
+            m_musicTrack != nullptr && MIX_TrackPlaying(static_cast<MIX_Track*>(m_musicTrack));
+        if (m_log) {
+            m_log->info("audio-trace", "backlog={}B playing={} mixerGain={}", backlog, playing,
+                        m_muted ? 0.0f : m_masterVolume);
+        }
+    }
+#endif
+
+    ensureBedsPlaying();
+}
+
+float AudioManager::peakHold(float held, float current, float dt) noexcept
+{
+    // Instant attack, ~1.5s release. Long enough that one loud transient stays
+    // visible, short enough that a bed which has genuinely stopped reading as
+    // dead within a couple of seconds.
+    constexpr float kReleasePerSecond = 0.8f;
+    held -= held * kReleasePerSecond * dt;
+    return (current > held) ? current : held;
+}
+
+float AudioManager::peakOf(const SampleBuffer& buffer) noexcept
+{
+    float high = 0.0f;
+    for (const float sample : buffer) {
+        high = std::max(high, std::fabs(sample));
+    }
+    return high;
+}
+
+AudioManager::Diagnostics AudioManager::diagnostics() const noexcept
+{
+    Diagnostics d;
+    d.available  = m_available;
+    d.audible    = audible();
+    d.muted      = m_muted;
+    d.bedsWanted = m_bedsPlaying;
+    d.busVolume  = m_busVolume;
+    d.masterVolume = m_masterVolume;
+    d.lastMusicPeak    = m_lastMusicPeak;
+    d.lastAmbiencePeak = m_lastAmbiencePeak;
+    d.blocksFed   = m_blocksFed;
+    d.putFailures = m_putFailures;
+
+    if (m_musicTrack != nullptr) {
+        d.musicPlaying = MIX_TrackPlaying(static_cast<MIX_Track*>(m_musicTrack));
+    }
+    if (m_ambienceTrack != nullptr) {
+        d.ambiencePlaying = MIX_TrackPlaying(static_cast<MIX_Track*>(m_ambienceTrack));
+    }
+    if (m_musicStream != nullptr) {
+        d.musicBacklogBytes =
+            SDL_GetAudioStreamAvailable(static_cast<SDL_AudioStream*>(m_musicStream));
+    }
+    if (m_ambienceStream != nullptr) {
+        d.ambienceBacklogBytes =
+            SDL_GetAudioStreamAvailable(static_cast<SDL_AudioStream*>(m_ambienceStream));
+    }
+    for (const Channel& channel : m_channels) {
+        if (channel.track != nullptr && MIX_TrackPlaying(static_cast<MIX_Track*>(channel.track))) {
+            ++d.sfxVoices;
+        }
+    }
+    return d;
+}
+
+std::string AudioManager::describe() const
+{
+    const Diagnostics d = diagnostics();
+    std::string out;
+    out += "driver      : " + std::string(m_driverName) + "\n";
+    out += std::string("available   : ") + (d.available ? "yes" : "no") + "\n";
+    out += std::string("audible     : ") + (d.audible ? "yes" : "no") +
+           (d.muted ? "  (muted)" : "") + "\n";
+    out += "buses       : master " + std::to_string(d.masterVolume) + "  music " +
+           std::to_string(d.busVolume[static_cast<std::size_t>(Bus::Music)]) + "  ambience " +
+           std::to_string(d.busVolume[static_cast<std::size_t>(Bus::Ambience)]) + "  sfx " +
+           std::to_string(d.busVolume[static_cast<std::size_t>(Bus::Sfx)]) + "\n";
+    out += "music       : " + std::string(d.musicPlaying ? "playing" : "STOPPED") +
+           "  peak " + std::to_string(d.lastMusicPeak) + "  backlog " +
+           std::to_string(d.musicBacklogBytes) + "B\n";
+    out += "ambience    : " + std::string(d.ambiencePlaying ? "playing" : "STOPPED") +
+           "  peak " + std::to_string(d.lastAmbiencePeak) + "  backlog " +
+           std::to_string(d.ambienceBacklogBytes) + "B\n";
+    out += "sfx voices  : " + std::to_string(d.sfxVoices) + "/" +
+           std::to_string(kSfxChannels) + "\n";
+    out += "blocks fed  : " + std::to_string(d.blocksFed) + "  put failures " +
+           std::to_string(d.putFailures) + "\n";
+    return out;
+}
+
+void AudioManager::setBusPercent(Bus bus, int percent) noexcept
+{
+    // A percentage straight out of a config file or a slider: anything outside
+    // 0..100 is clamped, and `clampValue` resolves a NaN to 0 rather than letting
+    // it through, because a NaN gain poisons every sample it multiplies.
+    setBusVolume(bus, static_cast<float>(Graphics::clampValue(percent, 0, 100)) / 100.0f);
+}
+
+void AudioManager::setMasterPercent(int percent) noexcept
+{
+    setMasterVolume(static_cast<float>(Graphics::clampValue(percent, 0, 100)) / 100.0f);
+}
+
+void AudioManager::ensureBedsPlaying()
+{
+    // A bed must never stop, for any reason.
+    //
+    // The first version played each bed once at start-up and trusted it to run
+    // forever. It did not: a track reading a stream that has run dry reaches the
+    // end and stops, and nothing restarted it. The symptom was indistinguishable
+    // from "the game is quiet" - the mixer reported itself healthy, every buffer
+    // was non-empty, and the log said audio had started.
+    //
+    // This is not only about the start-up race. A PipeWire sink suspends when
+    // idle, a Bluetooth headset appearing rewires the device, and a pause stops
+    // feeding the streams entirely. Any of those ends a track, and every one of
+    // them should be invisible to the player. A restart is cheap and idempotent:
+    // the track resumes reading the stream from where the stream's read cursor
+    // already is.
+    const auto heal = [this](void* track) {
+        if (track == nullptr) {
+            return;
+        }
+        MIX_Track* t = static_cast<MIX_Track*>(track);
+        if (MIX_TrackPlaying(t)) {
+            return;
+        }
+        // Paused is deliberate - that is what setBedsPlaying(false) does - so a
+        // paused bed is left exactly as it is.
+        if (MIX_TrackPaused(t)) {
+            return;
+        }
+        startLooping(track);
+    };
+    heal(m_musicTrack);
+    heal(m_ambienceTrack);
+
 }
 
 void AudioManager::update(float dt, Era era, MusicState state, float tension)

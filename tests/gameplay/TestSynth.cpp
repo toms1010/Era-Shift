@@ -154,6 +154,85 @@ TEST_CASE("every one-shot renders sound and none of them clip")
     }
 }
 
+TEST_CASE("no one-shot has a step at either end")
+{
+    // A one-shot that starts at full amplitude, or stops the instant its length
+    // runs out, has a discontinuity at that edge - and a discontinuity is a click.
+    // Twenty sounds, two ends each, and during combat they fire often enough to
+    // measure: 17 transients a second in a capture of the attract script.
+    //
+    // The bug predates the fix that revealed it. The mix was 20dB too quiet for
+    // the clicks to be audible, so raising the level exposed a second defect that
+    // had been there the whole time.
+    for (int i = 0; i <= static_cast<int>(Sfx::Victory); ++i) {
+        const auto sfx = static_cast<Sfx>(i);
+        CAPTURE(toString(sfx));
+        SampleBuffer buffer;
+        renderSfx(sfx, kSampleRate, buffer);
+        REQUIRE(buffer.size() > 8);
+
+        // The first and last samples must be at or near zero, or the buffer has a
+        // step at that end.
+        const float first = std::max(std::fabs(buffer.front()), std::fabs(buffer[1]));
+        const float last  = std::max(std::fabs(buffer.back()), std::fabs(buffer[buffer.size() - 2]));
+        CHECK(first < 0.01f);
+        CHECK(last < 0.01f);
+
+        // And the interior must still be loud, or the fade has eaten the sound.
+        CHECK(peak(buffer) > 0.05f);
+    }
+}
+
+TEST_CASE("the edge fade leaves the middle of a one-shot alone")
+{
+    // The fade must be a boundary treatment, not a volume reduction. A UI blip is
+    // 120ms long, so a 12ms release must not swallow it.
+    SampleBuffer buffer;
+    renderSfx(Sfx::UiMove, kSampleRate, buffer);
+    const std::size_t frames = buffer.size() / 2;
+    REQUIRE(frames > 1000);
+
+    // Where is the loudest sample? For a boundary treatment it must be well
+    // inside the buffer, never in a fade.
+    std::size_t loudest = 0;
+    float body = 0.0f;
+    for (std::size_t i = 0; i < frames; ++i) {
+        const float v = std::fabs(buffer[i * 2]);
+        if (v > body) {
+            body = v;
+            loudest = i;
+        }
+    }
+    // The peak must land immediately *after* the attack ramp, not inside it. That
+    // is the precise statement of "the fade is a boundary treatment": the fade
+    // ends and the sound is at full level, with the two meeting.
+    //
+    // UiMove is a 120ms blip whose exponential decay makes its loudest moment
+    // early, so the peak sits just past the ramp rather than in the middle.
+    constexpr std::size_t kAttackSamples = 72;   ///< 1.5ms at 48kHz, as implemented.
+    CHECK(body > 0.05f);
+    CHECK(loudest >= kAttackSamples);
+    CHECK(loudest < kAttackSamples * 4);
+    CHECK(loudest < frames / 2);
+}
+
+TEST_CASE("applyEdgeFades is a no-op on degenerate input")
+{
+    // Reached with a zero sample rate and with nothing to fade; neither may
+    // divide by zero or read out of bounds.
+    SampleBuffer empty;
+    applyEdgeFades(empty, kSampleRate);
+    CHECK(empty.empty());
+
+    SampleBuffer tiny(2, 0.5f);   // one frame
+    applyEdgeFades(tiny, kSampleRate);
+    CHECK(std::fabs(tiny[0]) < 1.0f);
+
+    SampleBuffer zeroRate(64, 0.5f);
+    applyEdgeFades(zeroRate, 0);
+    CHECK(std::fabs(zeroRate[0]) <= 0.5f);
+}
+
 TEST_CASE("one-shots are actually different from each other")
 {
     // Two sounds that are byte-identical mean a copy-paste in the switch, which

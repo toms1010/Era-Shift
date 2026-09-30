@@ -129,8 +129,17 @@ public:
     /// out-parameter for it: the previous one was discarded by every caller, so
     /// anything relying on it would silently never quit.
     ///
+    /// Events are drained in chunks and dispatched as they are read, so nothing
+    /// is dropped and the fixed-size buffer is never overrun. See the
+    /// implementation for what went wrong before.
+    ///
     /// @return number of events dispatched.
     std::size_t pumpFromSDL();
+
+    /// Most events processed in one call. A burst over this is left queued for
+    /// the next frame rather than being processed late, which would make the
+    /// oldest input in the burst arrive last.
+    static constexpr int kMaxEventsPerPump = 512;
 
     void setViewportSize(int width, int height) noexcept;
 

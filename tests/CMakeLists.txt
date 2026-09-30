@@ -53,6 +53,20 @@ function(erashift_add_test name)
     )
     add_test(NAME ${name} COMMAND ${name})
     set_tests_properties(${name} PROPERTIES TIMEOUT 120)
+
+    # Under TSan, point it at the suppression list. Set here rather than in a test
+    # preset because `${sourceDir}` is not expanded in a preset's environment
+    # block, so a preset pointing at tsan.supp silently does nothing - which is
+    # the worst way for a suppression to fail, because the suite still runs.
+    #
+    # See tsan.supp for what is being suppressed and why. The game's own audio
+    # and input paths are deliberately not suppressed, so a real race in either
+    # would still be reported.
+    if(ERASHIFT_ENABLE_TSAN)
+        set_tests_properties(${name} PROPERTIES ENVIRONMENT
+            "TSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tsan.supp:print_suppressions=1:halt_on_error=0"
+        )
+    endif()
 endfunction()
 
 # The unit suite links the engine as well as the core: TestBitmapFont exercises
@@ -79,6 +93,23 @@ erashift_add_test(erashift_tests_integration
         integration/TestMain.cpp
         integration/TestStateFlow.cpp
         integration/TestConfigRoundTrip.cpp
+)
+
+# The event pump and the audio manager are the two boundaries where SDL types
+# become the game's own, so they necessarily live in erashift_engine. It gets its own binary rather than
+# joining an existing one, because joining the gameplay suite would break the
+# rule that the gameplay suite links only erashift_core - and that rule is what
+# proves the whole simulation is testable with no SDL at all.
+#
+# It still needs no display: EventPump::pump takes events as an argument, so the
+# tests construct SDL_Event values directly and never call SDL_Init.
+erashift_add_test(erashift_tests_platform
+    SOURCES
+        input/TestMain.cpp
+        input/TestEventPump.cpp
+        input/TestAudio.cpp
+    LIBS
+        erashift_engine
 )
 
 # The gameplay suite links only erashift_core. If any of it needs SDL the split

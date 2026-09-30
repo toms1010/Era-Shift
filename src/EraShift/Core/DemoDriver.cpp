@@ -137,7 +137,10 @@ void DemoDriver::apply(Input::InputManager& input, std::uint64_t step)
         if (it->control == DemoEvent::Control::Key) {
             input.onKeyUp(it->key);
         } else {
-            input.onMouseButtonUp(it->mouse);
+            // The demo aims at real menu rows, so it has a real position to
+            // report. Passing the same position on the way down and on the way
+            // up is what keeps the cursor where the script put it.
+            input.onMouseButtonUp(it->mouse, it->screenX, it->screenY);
         }
         it = m_held.erase(it);
     }
@@ -148,9 +151,9 @@ void DemoDriver::apply(Input::InputManager& input, std::uint64_t step)
         }
         if (event.control == DemoEvent::Control::Mouse) {
             if (event.down) {
-                input.onMouseButtonDown(event.mouse);
+                input.onMouseButtonDown(event.mouse, event.screenX, event.screenY);
             } else {
-                input.onMouseButtonUp(event.mouse);
+                input.onMouseButtonUp(event.mouse, event.screenX, event.screenY);
             }
             continue;
         }

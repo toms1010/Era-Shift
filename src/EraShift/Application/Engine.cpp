@@ -142,19 +142,24 @@ bool Engine::initialise(Core::ConfigManager& configManager,
         const bool audioEnabled = config.getBool("audio", "enabled", true);
         const int mixRate = config.clampInt("audio", "mixRate", Audio::kSampleRate, 8000, 192000, m_log);
         if (m_audio.initialise(audioEnabled, mixRate, &m_log)) {
-            // The bus gains are the user-facing volumes, on a 0..100 scale.
-            const auto asFraction = [](int percent) noexcept {
-                return Graphics::clampValue(static_cast<float>(percent) / 100.0f, 0.0f, 1.0f);
-            };
-            m_audio.setMasterVolume(asFraction(config.clampInt("audio", "masterVolume", 80, 0, 100, m_log)));
-            m_audio.setBusVolume(Audio::Bus::Music,
-                                 asFraction(config.clampInt("audio", "musicVolume", 65, 0, 100, m_log)));
-            m_audio.setBusVolume(Audio::Bus::Ambience,
-                                 asFraction(config.clampInt("audio", "ambienceVolume", 55, 0, 100, m_log)));
-            m_audio.setBusVolume(Audio::Bus::Sfx,
-                                 asFraction(config.clampInt("audio", "sfxVolume", 85, 0, 100, m_log)));
+            // Through the percent setters rather than a local conversion, so that
+            // this is the *only* place a volume enters the system and therefore
+            // the only place that has to reject a malformed one. A NaN gain
+            // poisons every sample it multiplies, so the whole output would go
+            // silent or turn to noise - a much worse failure than "too quiet".
+            m_audio.setMasterPercent(config.clampInt("audio", "masterVolume", 80, 0, 100, m_log));
+            m_audio.setBusPercent(Audio::Bus::Music,
+                                   config.clampInt("audio", "musicVolume", 65, 0, 100, m_log));
+            m_audio.setBusPercent(Audio::Bus::Ambience,
+                                   config.clampInt("audio", "ambienceVolume", 55, 0, 100, m_log));
+            m_audio.setBusPercent(Audio::Bus::Sfx,
+                                   config.clampInt("audio", "sfxVolume", 85, 0, 100, m_log));
+            m_log.info("audio", "started on {} at {} Hz", m_audio.driverName(), m_audio.sampleRate());
+            if (m_audioDebug) {
+                m_log.info("audio", "start-up state:\n{}", m_audio.describe());
+            }
         } else if (audioEnabled) {
-            m_log.warn("Engine", "continuing without audio");
+            m_log.warn("Engine", "continuing without audio: {}", "no audio device");
         }
     }
 
@@ -286,8 +291,10 @@ void Engine::pumpEvents(double frameDelta)
 {
     static_cast<void>(frameDelta);
 
-    // Edges are cleared before the events are drained so this frame's presses
-    // survive; endFrame() latches the result once, at the end of the frame.
+    // `beginFrame` clears the per-frame edges, then the events for this frame are
+    // drained into the state that the update steps will read. The edges are
+    // therefore readable for the whole frame, however many fixed update steps it
+    // contains - a press is never seen by only one of them.
     m_input.beginFrame();
 
     if (m_eventPump != nullptr) {
@@ -483,6 +490,9 @@ void Engine::shutdown() noexcept
 
     // Audio before SDL_Quit: the mixer holds device and stream handles that
     // belong to the subsystem it is being shut down with.
+    if (m_audio.available()) {
+        m_log.info("audio", "final state:\n{}", m_audio.describe());
+    }
     m_audio.shutdown();
 
     TTF_Quit();

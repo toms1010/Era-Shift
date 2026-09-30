@@ -151,6 +151,9 @@ void MusicSynth::reset() noexcept
     m_step = 0;
     m_tremolo = 0.0f;
     m_leadPhase = 0.0f;
+    m_padFilter  = 0.0f;
+    m_leadFilter = 0.0f;
+    m_bassPhase  = 0.0f;
     m_padPhase[0] = m_padPhase[1] = m_padPhase[2] = 0.0f;
 }
 
@@ -209,8 +212,12 @@ void MusicSynth::render(MusicParams params, int frames, SampleBuffer& out)
     m_leadTarget = static_cast<float>(scale.root + scale.degrees[leadStep % scale.degreeCount]) +
                    ((leadStep / scale.degreeCount) % 2) * 12.0f;
 
-    LowPass padFilter;
-    LowPass leadFilter;
+    // The filter states are members, deliberately. As locals they were rebuilt
+    // from zero on every call, which is a one-pole filter that re-attacks instead
+    // of filters: a step discontinuity at every block boundary (a click, once per
+    // fixed step, ~60/s) plus a bright, pumping pad that was never actually
+    // filtered. The ambience filters were members all along, which is exactly why
+    // the ambience never clicked and the music did.
     const float rate = static_cast<float>(kSampleRate);
 
     for (int i = 0; i < frames; ++i) {
@@ -221,7 +228,8 @@ void MusicSynth::render(MusicParams params, int frames, SampleBuffer& out)
             m_padPhase[static_cast<std::size_t>(voice)] += frequency / rate;
             const float raw = waveform(Voice::Wave::Triangle, m_padPhase[static_cast<std::size_t>(voice)],
                                        static_cast<std::uint32_t>(i));
-            pad += padFilter.process(raw, padCut);
+            m_padFilter += (raw - m_padFilter) * padCut;
+            pad += m_padFilter;
         }
         pad /= 3.0f;
 
@@ -232,9 +240,15 @@ void MusicSynth::render(MusicParams params, int frames, SampleBuffer& out)
             m_leadPhase += frequency / rate;
             // Short envelope per eighth so notes articulate instead of blurring.
             const float local = leadPhase - std::floor(leadPhase);
-            const float env = (0.35f + 0.65f * intensity) * std::max(0.0f, 1.0f - local);
+            // A note that starts at full amplitude is a step, which is a click.
+            // Ramping the first few percent of the note costs nothing and is the
+            // difference between an arpeggio and a string of ticks.
+            const float attack = Graphics::clampValue(local / 0.04f, 0.0f, 1.0f);
+            const float env = (0.35f + 0.65f * intensity) * attack *
+                              std::max(0.0f, 1.0f - local);
             const float raw = waveform(Voice::Wave::Saw, m_leadPhase, static_cast<std::uint32_t>(i));
-            lead = leadFilter.process(raw, leadCut) * env;
+            m_leadFilter += (raw - m_leadFilter) * leadCut;
+            lead = m_leadFilter * env;
         }
 
         // --- temporal instability --------------------------------------------
@@ -242,10 +256,13 @@ void MusicSynth::render(MusicParams params, int frames, SampleBuffer& out)
         const float wobble =
             1.0f + instability * 0.35f * std::sin(kTwoPi * static_cast<float>(m_tremolo));
 
-        // A low bass note under everything, so combat has weight.
+        // A low bass note under everything, so combat has weight. Its phase is
+        // accumulated rather than read from `m_time`, which is the *beat* clock
+        // and is deliberately wrapped every step: feeding that to an oscillator
+        // made the note jump discontinuously a few times a second.
         const float bassFreq = noteFrequency(static_cast<int>(std::lround(m_padTarget[0] - 12.0f)));
-        const float bass = std::sin(kTwoPi * bassFreq * static_cast<float>(m_time)) *
-                           (0.10f + 0.18f * intensity);
+        m_bassPhase += bassFreq / rate;
+        const float bass = std::sin(kTwoPi * m_bassPhase) * (0.10f + 0.18f * intensity);
 
         const float mix = (pad * 0.55f + lead * 0.30f + bass) * params.gain * wobble;
 
@@ -361,7 +378,17 @@ void AmbienceSynth::render(AmbienceParams params, int frames, SampleBuffer& out)
                 ? 0.25f
                 : 1.0f;
 
-        const float mix = (wind * swell + tone) * params.gain * drop;
+        // Output scale, applied before the user's gain so the gain stays a clean
+        // 0..1 control.
+        //
+        // The bed is a difference of two heavily-filtered noise signals, so its
+        // natural amplitude is small: measured peak 0.18, about -15dBFS. Under
+        // the music bus that lands near -28dBFS at the sink, which is not quiet
+        // music, it is inaudible. Scaling here rather than raising `gain` keeps
+        // the clamp inside `render` out of the way - `gain` at 2.5 would hit the
+        // +/-1 clamp and turn gusts into distortion.
+        constexpr float kOutputScale = 2.6f;
+        const float mix = (wind * swell + tone) * kOutputScale * params.gain * drop;
         out[static_cast<std::size_t>(i) * 2] += mix;
         out[static_cast<std::size_t>(i) * 2 + 1] += mix * (1.0f - instability * 0.1f);
     }
@@ -556,6 +583,63 @@ void renderSfx(Sfx sfx, int sampleRate, SampleBuffer& out)
 
     for (float& sample : out) {
         sample = Graphics::clampValue(sample * 0.85f, -1.0f, 1.0f);
+    }
+
+    applyEdgeFades(out, sampleRate);
+}
+
+void applyEdgeFades(SampleBuffer& buffer, int sampleRate)
+{
+    // Every one-shot starts at full amplitude and stops the instant its length
+    // runs out, so both ends are a step discontinuity - which is a click. Twenty
+    // sounds times two ends, and during combat the demo fires them often enough
+    // to measure: 17 transients a second in a capture, none of which came from
+    // the music or ambience beds.
+    //
+    // They were inaudible while the whole mix sat 20dB too low, which is exactly
+    // the trap: fixing the level exposed a defect that had been there all along.
+    // It is worth knowing that fixing an unrelated thing can unmask a second bug
+    // that was previously hidden by the first.
+    //
+    // A single fade over the whole buffer, rather than a per-voice envelope, so
+    // that every sound gets click-free edges however it happens to be built.
+    // Attack is short (a percussive hit must still read as a hit); release is
+    // longer (a truncated tail is the more audible of the two). Both are capped as
+    // a fraction of the length so the 120ms UI blip is not mostly fade.
+    const std::size_t frames = buffer.size() / 2;
+    if (frames == 0 || sampleRate <= 0) {
+        return;
+    }
+    constexpr float kAttackSeconds  = 0.0015f;   ///< 1.5ms
+    constexpr float kReleaseSeconds = 0.012f;    ///< 12ms
+    constexpr float kMaxEdgeFraction = 0.25f;    ///< Never fade more than a quarter.
+
+    const auto framesFor = [&](float seconds) {
+        const auto count = static_cast<std::size_t>(seconds * static_cast<float>(sampleRate));
+        const auto cap = static_cast<std::size_t>(static_cast<float>(frames) * kMaxEdgeFraction);
+        return std::min(std::max<std::size_t>(count, 1), std::max<std::size_t>(cap, 1));
+    };
+
+    const std::size_t attack = framesFor(kAttackSeconds);
+    const std::size_t release = framesFor(kReleaseSeconds);
+
+    for (std::size_t i = 0; i < frames; ++i) {
+        float gain = 1.0f;
+        if (i < attack) {
+            // Smoothstep rather than a linear ramp: a linear ramp still has a
+            // slope discontinuity at each end, which is a smaller click.
+            const float t = static_cast<float>(i) / static_cast<float>(attack);
+            gain *= t * t * (3.0f - 2.0f * t);
+        }
+        const std::size_t fromEnd = frames - 1 - i;
+        if (fromEnd < release) {
+            const float t = static_cast<float>(fromEnd) / static_cast<float>(release);
+            gain *= t * t * (3.0f - 2.0f * t);
+        }
+        if (gain < 1.0f) {
+            buffer[i * 2] *= gain;
+            buffer[i * 2 + 1] *= gain;
+        }
     }
 }
 

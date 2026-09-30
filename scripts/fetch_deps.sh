@@ -142,15 +142,58 @@ build_sdl() {
     cmake --install "${bld}" > "${bld}/install.log" 2>&1
 }
 
-# Audio backends: ALSA/pipewire dev headers are frequently absent on minimal
-# installs, so we probe for them and only enable what is actually available.
+# Audio backends.
+#
+# ALSA and PulseAudio are probed *independently*, and they have to be. They used
+# to be gated on each other, with ALSA as the gate, on the reasonable-sounding
+# assumption that a machine with one has the other. That is false of exactly the
+# machines this matters on: a PipeWire desktop - which is most Linux desktops
+# now - serves audio over the PulseAudio protocol and frequently has no ALSA
+# development headers at all. Such a machine was left with SDL's dummy backend,
+# so the game ran silently with no way to fix it short of installing a package,
+# and the log said only "no available audio device", which reads as "this machine
+# has no sound card".
+#
+# The order of preference is PulseAudio, then ALSA, then neither:
+#
+#   * PulseAudio/pipewire first, because it is what a modern desktop actually
+#     uses and it is the one that survives a Bluetooth headset appearing.
+#   * ALSA second, because it works on a bare container with a real device and
+#     needs no sound server.
+#   * Neither: the game must still build and run. It does, silently.
 audio_flags=()
-if pkg-config --exists alsa && [[ -f /usr/include/alsa/asoundlib.h ]]; then
-    audio_flags+=("-DSDL_AUDIO_DRIVER_ALSA=ON" "-DSDL_AUDIO_DRIVER_PULSEAUDIO=ON")
-else
-    echo "[deps] no ALSA development headers found - SDL audio falls back to the dummy backend"
-    audio_flags+=("-DSDL_AUDIO_DRIVER_ALSA=OFF" "-DSDL_AUDIO_DRIVER_PULSEAUDIO=OFF" "-DSDL_AUDIO_DRIVER_DUMMY=ON")
+
+want_pulse="OFF"
+if pkg-config --exists libpulse && [[ -f /usr/include/pulse/pulseaudio.h ]]; then
+    want_pulse="ON"
+elif [[ -n "${ERASHIFT_PULSE_INCLUDE:-}" && -f "${ERASHIFT_PULSE_INCLUDE}/pulse/pulseaudio.h" ]]; then
+    # An out-of-tree libpulse, e.g. headers unpacked into .deps by
+    # scripts/get_audio_headers.sh. Needed on machines that cannot install a
+    # package, which is the normal case inside a container.
+    want_pulse="ON"
 fi
+
+want_alsa="OFF"
+if pkg-config --exists alsa && [[ -f /usr/include/alsa/asoundlib.h ]]; then
+    want_alsa="ON"
+fi
+
+audio_flags+=("-DSDL_AUDIO_DRIVER_PULSEAUDIO=${want_pulse}" "-DSDL_AUDIO_DRIVER_ALSA=${want_alsa}")
+
+if [[ "${want_pulse}" == "ON" || "${want_alsa}" == "ON" ]]; then
+    echo "[deps] SDL audio: pulse=${want_pulse} alsa=${want_alsa}"
+else
+    echo "[deps] WARNING: no ALSA or PulseAudio development headers found."
+    echo "[deps]          SDL will be built with the dummy audio backend and the"
+    echo "[deps]          game will run silently. For sound, install one of:"
+    echo "[deps]            apt install libpulse-dev      # pipewire/pulseaudio"
+    echo "[deps]            apt install libasound2-dev    # plain ALSA"
+    echo "[deps]          then re-run ./scripts/fetch_deps.sh"
+    echo "[deps]          or, with no package manager access, run:"
+    echo "[deps]            ./scripts/get_audio_headers.sh && ./scripts/fetch_deps.sh"
+fi
+
+audio_flags+=("-DSDL_AUDIO_DRIVER_DUMMY=ON")
 
 # --- SDL3 core -------------------------------------------------------------
 build_sdl "SDL3" "SDL" "${SDL_VERSION}" \

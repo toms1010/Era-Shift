@@ -40,6 +40,10 @@ void printUsage(const char* executable)
         "  --log-file <path>   Also write the log to <path>\n"
         "  --frames <n>        Quit after n frames. 0 means no limit.\n"
         "  --headless          Use the dummy video driver (CI, SSH, containers).\n"
+        "  --audio-debug       Print the audio subsystem's state at start-up and\n"
+        "                      at exit: driver, buses, whether each bed is actually\n"
+        "                      playing, stream backlog, and peak sample. This is the\n"
+        "                      first thing to run when the game is quiet or clicks.\n"
     "  --start-state <s>   Open on a screen other than the title screen:\n"
     "                      playing | settings | credits | paused. A developer\n"
     "                      and screenshot aid, not part of the game.\n"
@@ -67,6 +71,8 @@ int main(int argc, char* argv[])
     std::filesystem::path levelPath;
     std::string startState;
     bool demo = false;
+    /// `--audio-debug`: print the mixer's own view of itself, twice.
+    bool audioDebug = false;
     long frameLimit = 0;          ///< 0 means "run until quit".
     long screenshotFrame = 30;
 
@@ -185,6 +191,11 @@ int main(int argc, char* argv[])
             continue;
         }
 
+        if (arg == "--audio-debug") {
+            audioDebug = true;
+            continue;
+        }
+
         std::fprintf(stderr, "error: unknown argument '%.*s' (try --help)\n",
                      static_cast<int>(arg.size()), arg.data());
         return 3;
@@ -253,6 +264,10 @@ int main(int argc, char* argv[])
         if (startState.empty()) {
             engine.setStartState("playing");
         }
+    }
+
+    if (audioDebug) {
+        engine.setAudioDebug(true);
     }
 
     try {

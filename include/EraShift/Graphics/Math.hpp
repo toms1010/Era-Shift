@@ -185,9 +185,26 @@ std::ostream& operator<<(std::ostream& os, const CenteredRect& r);
 }
 
 template <typename T>
+/// Clamps `value` into [low, high]. NaN resolves to `low`.
+///
+/// The NaN case is not academic. `NaN < low` and `NaN > high` are both false, so
+/// the obvious two-comparison implementation returns NaN unchanged - it hands
+/// back exactly the value it was asked to contain. That matters most for audio:
+/// a single NaN reaching a mixer gain turns the whole output into NaN samples,
+/// which is silence or noise, not a quiet sound.
+///
+/// Resolving to `low` rather than to NaN is a choice: it makes the failure mode
+/// "inaudible" instead of "corrupts everything downstream", which is the better
+/// of two bad options for a value that is already meaningless.
 [[nodiscard]] constexpr T clampValue(T value, T low, T high) noexcept
 {
-    return value < low ? low : (value > high ? high : value);
+    if (value < low) {
+        return low;
+    }
+    if (value > high) {
+        return high;
+    }
+    return (value == value) ? value : low;   // value != value only for NaN
 }
 
 [[nodiscard]] constexpr float lerp(float a, float b, float t) noexcept

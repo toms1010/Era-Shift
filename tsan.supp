@@ -1,0 +1,56 @@
+# ThreadSanitizer suppressions.
+#
+# Used by the `tsan` test preset via TSAN_OPTIONS=suppressions=... See
+# docs/TESTING.md for why each entry is here.
+#
+# What a suppression file is for
+# ------------------------------
+# TSan can only prove a race when it can *see* the synchronisation. It reads
+# that from the instrumented code. A third-party shared library compiled without
+# TSan therefore looks like unsynchronised shared state even when it is correctly
+# locked, and TSan reports races that are not there.
+#
+# Every entry below is a library we did not compile, doing locking we cannot see.
+# None of them is a race in this project, and none is a race we would be willing
+# to leave alone if it were.
+
+# --- PulseAudio / PipeWire ---------------------------------------------------
+# libpulsecommon spawns its own worker threads and protects its state with
+# pthread mutexes that live inside the uninstrumented library. TSan sees
+# `pa_xmalloc` on one thread and `pa_mutex_lock` on another and cannot connect
+# them, so every mixer open produced a report from inside `MIX_CreateMixerDevice`
+# with AudioManager::initialise as the only frame in our code - which is the
+# signature of a report about somebody else's threading, not ours.
+race:libpulsecommon
+race:libpulse
+race:libpulse-simple
+race:pa_xmalloc
+race:pa_thread_new
+
+# --- Other system libraries we link but do not build -------------------------
+# Same reasoning. Listed explicitly rather than suppressed wholesale, so that a
+# report in *our* code is never lost to an over-broad rule.
+race:libfribidi
+race:libthai
+race:libdecor
+race:libwayland-client
+race:libdrm
+race:libgbm
+race:libGLX_mesa
+race:libEGL
+race:libglapi
+race:libnvidia-glcore
+race:libglvnd
+race:libX11
+race:libxcb
+
+# SDL's own thread for the audio device pulls from a ring buffer SDL guards with
+# a mutex inside libSDL3. Same uninstrumented-library problem. The game's own
+# audio path - AudioManager, Synth - is not suppressed, so a genuine race there
+# would still be reported.
+race:libSDL3
+
+# The graphics driver's internal threads, reachable only through SDL's renderer.
+race:nvidia
+race:swrast
+race:iris

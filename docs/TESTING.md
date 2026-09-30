@@ -16,6 +16,7 @@ suite runs in a container, over SSH, and in CI.
 | --- | --- | --- |
 | `erashift_tests_unit` | 94 cases | Maths, logging, config, timing, game loop, state machine, font |
 | `erashift_tests_integration` | 10 cases | Full state flow, config round trips and migrations |
+| `erashift_tests_platform` | 15 cases | The two SDL boundaries: the event pump and the audio manager. The audio tests skip themselves on a machine with no device, and one asserts the no-device path explicitly. |
 | `erashift_tests_gameplay` | 157 cases | The whole simulation — eras, tile collision, physics, the player, enemies, the world, level data, saves — **and the three presentation systems that are pure arithmetic: the synthesiser, the animation controller and the particle pool** |
 
 ```bash
@@ -142,6 +143,23 @@ wrong quietly.
 
 ---
 
+### `TestEventPump` — where SDL events become the game's own
+The event pump is the boundary where `SDL_Event` becomes `Input::Key` and friends, so it lives in `erashift_engine` and needs its own binary. It still needs no display: `pump` takes events as an argument, so the tests construct `SDL_Event` values and never call `SDL_Init`.
+
+- **A burst larger than the pump's buffer loses nothing.** 200 events against a 64-slot array. Before the fix the count was right by accident and the *contents* were uninitialised stack, which is why the assertions are about state rather than counts.
+- **A key pressed in the middle of a large burst is not dropped.** The half of the bug a player notices: the press simply did not exist.
+- **Input works before any focus event has been delivered.** Not hypothetical — a probe on this project's Wayland session produced zero focus events in four seconds.
+- **Losing focus releases held keys**, so alt-tabbing mid-stride does not leave the character running.
+- **A click reports its own position**, so a click with no preceding motion event lands where the player clicked.
+
+### `TestAudio` — the mixer, against a real device when there is one
+Same constraint, same binary. Every test skips itself rather than failing when there is no sound card, and one asserts the no-device path explicitly, because "fails soft with no device" is a requirement rather than an accident.
+
+- **A bed survives 200 updates.** The regression: before the fix the track had stopped within the first handful, because a track reading a dry stream reaches the end and stops.
+- **A bed recovers after a pause and a stream starvation** — the same path that covers a PipeWire sink suspending and a Bluetooth headset appearing.
+- **All 20 one-shots can be fired repeatedly** without wedging the six-channel pool.
+- **`audio.enabled = false` is honoured**, not silently overridden.
+
 ## Writing tests
 
 ```cpp
@@ -181,6 +199,18 @@ Guidelines:
 ---
 
 ## Sanitizers
+
+Under TSan, `tsan.supp` is wired in through CTest's `ENVIRONMENT` property rather
+than a CMake preset, because `${sourceDir}` is not expanded in a preset's
+environment block — so a preset pointing at the suppression file silently does
+nothing, which is the worst way for a suppression to fail, because the suite
+still runs and still fails.
+
+The file suppresses races in libraries the project did not compile, where TSan
+cannot see the synchronisation and so reports locks that are not missing. It
+deliberately does **not** mention `AudioManager`, `InputManager` or `EventPump`,
+so a genuine race in the game's own audio or input path would still be reported.
+
 
 Sanitizers are mutually exclusive; enabling two is a configure error.
 

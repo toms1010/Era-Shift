@@ -328,6 +328,31 @@ that is what makes the music able to do the thing the game needs it to do.
 - **Fails soft.** No sound card, no container, no CI runner: the game is still
   playable, and `MIX_Init` failing on a machine with no MIDI tables is logged and
   ignored, because every sound here is PCM.
+- **Beds never stop.** A track reading a stream that has run dry reaches the end
+  and stops, so both beds are primed with silence and a watchdog restarts either
+  of them. That covers the ways a bed genuinely dies: a PipeWire sink suspending
+  when idle, a Bluetooth headset appearing mid-game, a pause.
+
+**If the game is silent**, it is almost always that SDL was built without a
+PulseAudio backend — the driver is compiled in, not loaded at runtime, so no
+headers at build time means no sound ever, with only `no available audio device`
+to show for it. `scripts/fetch_deps.sh` says so loudly now, and:
+
+```bash
+# if you can install packages
+apt install libpulse-dev      # then: ./scripts/fetch_deps.sh && rebuild
+
+# if you cannot (a container)
+./scripts/get_audio_headers.sh    # unpacks the headers into .deps/, no root
+./scripts/fetch_deps.sh && cmake --build --preset debug
+```
+
+Check it worked — this line is the whole test:
+
+```bash
+./build/release/EraShift --headless --frames 60 2>&1 | grep audio
+# INFO  audio: started on pulseaudio at 48000 Hz
+```
 
 ### Animation — poses, clips, and markers
 
@@ -441,11 +466,30 @@ ctest --preset debug --output-on-failure
 ./scripts/reproduce_crash.sh                       # crash regression harness
 ```
 
-Three binaries, all headless: `unit` (no SDL), `integration` (no display) and
-`gameplay` (the whole simulation). The feedback systems are tested in the same
-place as the gameplay, because they are pure arithmetic — 44 cases covering the
-synthesiser, the animation controller and the particle pool, with assertions on
-waveform properties, clip timings and emission rates rather than on pictures.
+The four binaries, and what each is for:
+
+| Binary | Cases | Covers |
+| --- | --- | --- |
+| `erashift_tests_unit` | 94 | Maths, logging, config, timing, the game loop, the state machine, the font |
+| `erashift_tests_integration` | 10 | The documented state flow, config round trips and migrations |
+| `erashift_tests_gameplay` | 157 | The whole simulation, plus the synthesiser, the animation controller and the particle pool |
+| `erashift_tests_platform` | 15 | The two SDL boundaries: the event pump and the audio manager |
+
+`gameplay` links **only** `erashift_core` and no SDL whatsoever. That is the rule
+that proves the whole simulation is testable on a machine with no display and no
+sound card, and it is why the platform tests are a separate binary rather than
+folded into it.
+
+Four binaries, all headless: `unit` (no SDL), `integration` (no display),
+`gameplay` (the whole simulation) and `platform` (the two SDL boundaries). The
+feedback systems are tested alongside the gameplay, because they are pure
+arithmetic — 44 cases covering the synthesiser, the animation controller and the
+particle pool, with assertions on waveform properties, clip timings and emission
+rates rather than on pictures.
+
+`platform` covers what cannot be: the event pump and the audio manager. Its audio
+tests skip themselves on a machine with no sound card, and one asserts that the
+no-device path tolerates the whole API.
 
 See [`docs/TESTING.md`](docs/TESTING.md).
 

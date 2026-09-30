@@ -326,9 +326,9 @@ std::size_t EventPump::pump(SDL_Event* events, int count)
                 }
                 if (m_input != nullptr) {
                     if (down) {
-                        m_input->onMouseButtonDown(event.button);
+                        m_input->onMouseButtonDown(event.button, sdl.button.x, sdl.button.y);
                     } else {
-                        m_input->onMouseButtonUp(event.button);
+                        m_input->onMouseButtonUp(event.button, sdl.button.x, sdl.button.y);
                     }
                 }
                 break;
@@ -339,7 +339,8 @@ std::size_t EventPump::pump(SDL_Event* events, int count)
                 event.wheelX = sdl.wheel.x;
                 event.wheelY = sdl.wheel.y;
                 if (m_input != nullptr) {
-                    m_input->onMouseWheel(event.wheelX, event.wheelY);
+                    m_input->onMouseWheel(event.wheelX, event.wheelY, sdl.wheel.mouse_x,
+                                          sdl.wheel.mouse_y);
                 }
                 break;
             }
@@ -359,18 +360,37 @@ std::size_t EventPump::pump(SDL_Event* events, int count)
 
 std::size_t EventPump::pumpFromSDL()
 {
+    // Drained in chunks, and each chunk dispatched as it is read.
+    //
+    // This used to read the whole queue into one 64-slot array while counting up
+    // to 512, which was two bugs at once. `SDL_PollEvent` never writes more than
+    // the array holds, so the count grew past the array and `pump()` was then
+    // handed several hundred events that had never been written - undefined
+    // behaviour, and the garbage `SDL_Event`s it read carried random `type`
+    // fields. Any mouse movement arrives as its own event, so a burst easily
+    // passed 64, and a garbage `SDL_EVENT_MOUSE_MOTION` writes a random position
+    // into the input state - which is precisely why clicking a button would miss
+    // while the keyboard did nothing sensible. And even where it did not corrupt
+    // anything, each iteration overwrote the previous one's events, so input was
+    // silently dropped.
     SDL_Event events[64];
-    // Drain the queue so a burst of input (a key held through a frame hitch) is
-    // not spread across several frames. The cap stops a runaway event producer
-    // from starving the simulation.
+    std::size_t dispatched = 0;
     int total = 0;
-    int count = 0;
-    do {
-        count = SDL_PollEvent(events);
-        total += count;
-    } while (count > 0 && total < 512);
 
-    const std::size_t dispatched = pump(events, total);
+    for (;;) {
+        const int count = SDL_PollEvent(events);
+        if (count <= 0) {
+            break;
+        }
+        total += count;
+        dispatched += pump(events, count);
+        // The cap stops a runaway event producer from starving the simulation.
+        // Events still queued are picked up next frame, which is correct: SDL's
+        // queue is a queue, and dropping nothing is worth one frame of latency.
+        if (total >= kMaxEventsPerPump) {
+            break;
+        }
+    }
     return dispatched;
 }
 

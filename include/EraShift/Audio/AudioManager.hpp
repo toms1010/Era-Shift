@@ -112,6 +112,54 @@ public:
     /// Mixer's own idea of how loud things are, for the debug overlay.
     [[nodiscard]] const char* driverName() const noexcept { return m_driverName; }
 
+    /// A snapshot of the mixer, for a debug overlay or a log dump.
+    ///
+    /// Free to call and safe to call every frame. It exists because "the audio is
+    /// wrong" is otherwise undiagnosable: the symptom is silence or a click, and
+    /// neither says which of a dozen possible causes it is. Every field here is
+    /// something that can be wrong on its own.
+    struct Diagnostics {
+        bool  available      = false;
+        bool  audible        = false;
+        bool  muted          = false;
+        bool  bedsWanted     = false;
+        /// Are the bed tracks *actually* playing, as opposed to being wanted?
+        /// These are the two that diverge: a track whose stream ran dry reports
+        /// not-playing while everything else says the system is fine.
+        bool  musicPlaying   = false;
+        bool  ambiencePlaying = false;
+        float masterVolume   = 1.0f;
+        std::array<float, static_cast<std::size_t>(Bus::Count)> busVolume{};
+        /// Unconsumed audio waiting to be played, in bytes. Growing without bound
+        /// means the track stopped and nothing is draining the stream.
+        int   musicBacklogBytes = 0;
+        int   ambienceBacklogBytes = 0;
+        /// Peak sample of the last block fed to each bed, 0..1. Zero on a system
+        /// that is producing nothing.
+        float lastMusicPeak  = 0.0f;
+        float lastAmbiencePeak = 0.0f;
+        /// One-shot channels currently sounding, out of the pool size.
+        int   sfxVoices      = 0;
+        /// Blocks fed since start-up, and how many the streams refused. A rising
+        /// refusal count is the only sign of a wedged stream.
+        unsigned long blocksFed  = 0;
+        unsigned long putFailures = 0;
+    };
+
+    [[nodiscard]] Diagnostics diagnostics() const noexcept;
+
+    /// A human-readable dump, one field per line. Returns an owned string so the
+    /// caller decides where it goes.
+    [[nodiscard]] std::string describe() const;
+
+    /// Sets a volume from a 0..100 config-style value, sanitising it.
+    ///
+    /// The one place volumes enter the system, so it is the one place that has to
+    /// reject a malformed value. A NaN that reached a mixer gain would turn the
+    /// whole output into NaN, which is silence or noise rather than a quiet sound.
+    void setBusPercent(Bus bus, int percent) noexcept;
+    void setMasterPercent(int percent) noexcept;
+
 private:
     /// One of the interchangeable one-shot voices.
     struct Channel {
@@ -124,7 +172,26 @@ private:
     bool createMixer();
     bool createBeds();
     void createSfxCache();
+    /// Peak absolute sample of a block. Cheap next to synthesis, and the
+    /// difference between "quiet" and "producing nothing" from the outside.
+    static float peakOf(const SampleBuffer& buffer) noexcept;
+
+    /// A peak that jumps to the loudest recent block and decays slowly.
+    ///
+    /// Reporting a single block's peak is worse than useless for a bed with a
+    /// high crest factor: one 16ms window of wind is near-silence, so a working
+    /// ambience bed reads as broken. Instant attack, ~1.5s release.
+    static float peakHold(float held, float current, float dt) noexcept;
+
     void applyVolumes();
+    /// Restarts either bed track that has stopped for any reason.
+    ///
+    /// A bed is meant to run for the whole session, and the ways it can silently
+    /// stop are not exotic: a stream that runs dry reads as end-of-stream, a
+    /// PipeWire sink suspends when idle, a Bluetooth headset appearing rewires
+    /// the device, and a pause stops feeding the streams entirely. All of those
+    /// should be invisible, and all of them are fixed by starting the track again.
+    void ensureBedsPlaying();
     /// Returns a channel that is free, stealing the oldest if all are busy.
     Channel* claimChannel();
     void pushBeds(float dt);
@@ -171,6 +238,16 @@ private:
     SampleBuffer m_musicBlock;
     SampleBuffer m_ambienceBlock;
     Core::Logger* m_log = nullptr;
+    /// Warned once about a bed stream that stopped accepting data, so the log
+    /// carries the diagnosis once instead of sixty times a second.
+    bool m_reportedStreamFailure = false;
+    float m_lastMusicPeak = 0.0f;
+    float m_lastAmbiencePeak = 0.0f;
+    unsigned long m_blocksFed = 0;
+    unsigned long m_putFailures = 0;
+#ifdef ERASHIFT_AUDIO_TRACE
+    int m_traceCounter = 0;
+#endif
 };
 
 } // namespace Audio

@@ -208,10 +208,18 @@ public:
 
     void onKeyDown(Key key);
     void onKeyUp(Key key);
-    void onMouseButtonDown(MouseButton button);
-    void onMouseButtonUp(MouseButton button);
+    /// The position is taken from the event, not ignored.
+    ///
+    /// A click carries the cursor's position, and SDL will happily deliver a
+    /// click with no preceding motion event - a trackpad tap, a click in the
+    /// first instant after focus, or a compositor that coalesces motion. Reading
+    /// the position from motion alone means the click is hit-tested wherever the
+    /// cursor last was, which is the "I clicked the button and something else
+    /// happened" bug.
+    void onMouseButtonDown(MouseButton button, float x, float y);
+    void onMouseButtonUp(MouseButton button, float x, float y);
     void onMouseMotion(float x, float y, float deltaX, float deltaY);
-    void onMouseWheel(float x, float y);
+    void onMouseWheel(float x, float y, float atX, float atY);
     void onTextInput(std::string text);
 
     [[nodiscard]] const InputState& state() const noexcept { return m_current; }

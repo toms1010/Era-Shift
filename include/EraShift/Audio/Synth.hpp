@@ -129,6 +129,20 @@ private:
     /// instead of clicking at every buffer boundary.
     float  m_padPhase[3]    = {0.0f, 0.0f, 0.0f};
     float  m_leadPhase      = 0.0f;
+    /// Filter state, which has to outlive the call.
+    ///
+    /// These were locals in `render()`, which is a bug with a name: a one-pole
+    /// filter that starts every block from zero is not filtering, it is
+    /// re-attacking - so it produced a step discontinuity at every block boundary
+    /// (a click, once per fixed step, ~60 times a second) *and* left the pad
+    /// bright and pumping. The ambience filters were members all along, which is
+    /// exactly why the ambience did not click and the music did.
+    float  m_padFilter      = 0.0f;
+    float  m_leadFilter     = 0.0f;
+    /// The bass note's own phase, because `m_time` is the *beat* clock and is
+    /// deliberately wrapped every step - using it as an oscillator phase made the
+    /// bass jump a few times a second.
+    float  m_bassPhase      = 0.0f;
     /// Semitone targets for the current bar and eighth, recomputed per block.
     float  m_padTarget[3]   = {0.0f, 0.0f, 0.0f};
     float  m_leadTarget     = 0.0f;
@@ -198,6 +212,15 @@ void renderSfx(Sfx sfx, int sampleRate, SampleBuffer& out);
 
 /// The sound's name, for logs and for failing tests that need to say which one.
 [[nodiscard]] std::string_view toString(Sfx sfx) noexcept;
+
+/// Fades the first and last few milliseconds of a rendered one-shot.
+///
+/// A one-shot that starts at full amplitude and stops at its exact length has a
+/// step discontinuity at both ends, and a step is a click. Applied once to the
+/// finished buffer rather than per voice, so every sound gets clean edges however
+/// it was built. `renderSfx` calls this; it is public so a test can assert the
+/// property directly.
+void applyEdgeFades(SampleBuffer& buffer, int sampleRate);
 
 /// Length of a one-shot in seconds, so the caller can size a stream.
 [[nodiscard]] float sfxDuration(Sfx sfx) noexcept;

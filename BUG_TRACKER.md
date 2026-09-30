@@ -1,31 +1,45 @@
-# Bug Tracker 报告
+# Bug Tracker
 
-> 生成时间: 2026-09-30 · Phase 3 反馈系统（音频 / 动画 / 特效）
+> Phase 3 — Feedback systems (audio / animation / effects)
+> Last updated: 2026-09-30
 
-## 📊 统计概览
+## Statistics
 
-- 🔴 待处理: 0
-- 🟡 进行中: 0
-- 🟢 已解决: 8
-- ⚪ 已关闭: 0
-- 📝 总计: 8
+| | |
+| --- | --- |
+| 🔴 Open | 0 |
+| 🟡 In progress | 0 |
+| 🟢 Fixed | 12 |
+| ⚪ Closed | 0 |
+| 📝 **Total** | **12** |
 
-本阶段发现的 8 个缺陷全部由新加入的测试捕获。它们共同的特征是：**编译通过、
-运行正常、结果错误**。这类缺陷只能靠断言行为属性的测试发现，靠肉眼看不出来。
+Eleven of these twelve were found by tests added alongside the system that had
+the bug. The twelfth was reported by a player.
+
+Their shared characteristic is worth stating once: **they compiled, they ran, and
+they were wrong.** A defect of that shape cannot be found by running the game and
+looking at it, because everything you can see says the system is working. It can
+only be found by asserting on a *property* of the behaviour and letting the
+assertion fail.
+
+Which means the interesting question about any of these is not "how was it
+spotted" but "what property was violated" — that is what the test now protects.
 
 ---
 
-## 🟢 BUG-001 · 命中停顿吞掉了玩家输入
+## 🟢 BUG-001 · Hit-stop swallowed player input
 
-**严重度**: 高 · **状态**: 已解决
+**Severity**: High · **Status**: Fixed
 
-**现象** 玩家在一次重击后的 160ms 冻结期间按下 `Q`（时代切换）或 `E`（交互），
-输入被静默丢弃。世界看起来"卡了一下"，然后什么都没发生。
+**Symptom** A player pressing `Q` (era shift) or `E` (interact) during the 160ms
+freeze after a heavy hit had the input silently dropped. The world would appear
+to hitch, then nothing would happen.
 
-**根因** `World::update` 在冻结时直接 `return`，跳过了整步——包括命令处理。
-冻结本是表现层的装饰，却吃掉了玩家最重要的输入。
+**Root cause** `World::update` returned early while frozen, skipping the entire
+step — including command processing. The freeze is a presentation effect, and it
+was eating the player's most important input.
 
-**修复** 冻结只拦截**没有按下任何键**的步骤：
+**Fix** The freeze only intercepts steps on which the player pressed *nothing*:
 
 ```cpp
 const bool pressed = commands.shiftPressed || commands.interactPressed ||
@@ -33,49 +47,53 @@ const bool pressed = commands.shiftPressed || commands.interactPressed ||
 const bool frozen  = (m_hitStop > 0.0f) && !pressed;
 ```
 
-按住方向键穿过冻结**仍然**会冻结，因为那正是"沉重"应该被感受到的地方。
+Holding a direction *through* a freeze still freezes, because that is exactly
+where the weight should be felt.
 
-**验证** 4 个 gameplay 测试失败后转为通过。
+**Verification** Four gameplay tests failed and now pass.
 
 ---
 
-## 🟢 BUG-002 · `randomRange` 把有符号噪声当无符号用
+## 🟢 BUG-002 · `randomRange` treated signed noise as unsigned
 
-**严重度**: 高 · **状态**: 已解决
+**Severity**: High · **Status**: Fixed
 
-**现象** Past 时代的树叶平均生成高度在屏幕**顶部之外**（y = −19），一半的环境
-粒子出现在它们被生成的房间外面。
+**Symptom** Past-era leaves spawned at an average height *above the top of the
+screen* (y = −19). Half the ambient particles were appearing outside the room they
+were spawned into.
 
-**根因** 粒子池的噪声源 `nextRandom()` 返回 `[-1, 1]`——散射速度时这正是需要的
-形状。但 `randomRange(low, high)` 直接用它作区间比例：
+**Root cause** The particle pool's noise source, `nextRandom()`, returns
+`[−1, 1]` — which is the useful shape for scattering a velocity. But
+`randomRange(low, high)` used it directly as a range fraction:
 
 ```cpp
-return low + (high - low) * system.nextRandom();   // 一半结果小于 low
+return low + (high - low) * system.nextRandom();   // half the results are below low
 ```
 
-**修复** 拆成两个意图明确的函数：
+**Fix** Split into two functions with unambiguous intent:
 
-| 函数 | 用途 |
+| Function | Purpose |
 | --- | --- |
-| `randomRange(system, low, high)` | 区间 `[low, high)`，内部重标定 |
-| `randomSigned(system)` | `[-1, 1]`，用于速度和旋转 |
+| `randomRange(system, low, high)` | The interval `[low, high)`, rescaling internally |
+| `randomSigned(system)` | `[−1, 1]`, for velocities and rotations |
 
-**验证** `TestParticles.cpp` 断言三个时代的环境粒子平均高度分别落在屏幕的
-上半、中央和下半。
+**Verification** `TestParticles.cpp` asserts that the three eras' ambient
+particles spawn in the upper, middle and lower parts of the screen respectively.
 
 ---
 
-## 🟢 BUG-003 · 三个时代发出完全相同的环境粒子密度
+## 🟢 BUG-003 · All three eras emitted identical ambient density
 
-**严重度**: 中 · **状态**: 已解决
+**Severity**: Medium · **Status**: Fixed
 
-**现象** 三个时代的环境粒子数完全相同（实测均为 120）。三种天气悄悄变成了
-一种。
+**Symptom** All three eras emitted exactly the same number of ambient particles
+(measured: 120 each). Three distinct weathers had quietly become one.
 
-**根因** 60Hz 下"每秒 3 个"是每帧 0.05 个，取整后是 0；于是"每帧至少 1 个"
-的下限接管了一切。速率参数被完全绕过。
+**Root cause** At 60Hz, a rate of 3 particles per second is 0.05 per frame, and
+rounding that to an integer gives zero — at which point the "at least one per
+frame" floor took over and the rate parameter was bypassed entirely.
 
-**修复** 跨调用累计小数余额：
+**Fix** Accumulate a fractional balance across calls:
 
 ```cpp
 m_ambientAccumulator += rate * dt;
@@ -83,124 +101,277 @@ int count = static_cast<int>(m_ambientAccumulator);
 m_ambientAccumulator -= static_cast<float>(count);
 ```
 
-同时保留每步上限（6），这样一次 1 秒的卡顿不会把整个预算花在已经迟到的那一帧上。
+A per-step cap of 6 is kept alongside it, so a one-second hitch cannot spend the
+whole budget on the one frame where the game is already late.
 
-**结果** Past 13 / Present 8 / Future 21 个粒子，且与帧率无关。
+**Result** Past 13 / Present 8 / Future 21 particles, and frame-rate independent.
 
-**验证** `emission is frame-rate independent` 与
-`the three eras emit visibly different weather` 两个测试。
+**Verification** The `emission is frame-rate independent` and
+`the three eras emit visibly different weather` tests.
 
 ---
 
-## 🟢 BUG-004 · 攻击的视觉伸展从未发生，死亡从未淡出
+## 🟢 BUG-004 · Attacks never visibly reached, and deaths never faded
 
-**严重度**: 中 · **状态**: 已解决
+**Severity**: Medium · **Status**: Fixed
 
-**现象** 挥击时手臂不前伸（`armExtension` 恒为 0）；死亡动画结束时角色仍然
-完全不透明（`alpha` 恒为 1）。
+**Symptom** The arm did not extend during a swing (`armExtension` was always 0),
+and a body stayed fully opaque at the end of its death animation (`alpha` was
+always 1).
 
-**根因** 动画表用了一个位置参数式的 `key()` 辅助函数，9 个 float 排成一列。
-本该给 `armExtension` 的值落进了 `limbSpread`，本该给 `alpha` 的 0.0 落进了
-`armExtension` 然后被默认值 1.0 覆盖。
+**Root cause** The clip table was written with a positional `key()` helper — nine
+floats in a row. A value intended for `armExtension` landed in `limbSpread`, and
+a `0.0` intended for `alpha` landed in `armExtension` and was then overwritten by
+the default of 1.0.
 
-**修复** 全部改用**指定初始化器**，字段名即文档：
+**Fix** Everything now uses **designated initialisers**, where the field name is
+the documentation:
 
 ```cpp
 key(0.16f, (Rig{.scaleX = 1.06f, .scaleY = 0.94f, .offsetX = 2.0f,
                 .lean = 12.0f, .armExtension = 1.0f}.pose()))
 ```
 
-**验证** `a non-looping clip finishes and holds its last pose` 断言死亡片段
-结束时 `alpha < 0.1`。
+**Verification** `a non-looping clip finishes and holds its last pose` asserts
+that the death clip ends with `alpha < 0.1`.
 
 ---
 
-## 🟢 BUG-005 · 负帧数试图分配整个地址空间
+## 🟢 BUG-005 · A negative frame count tried to allocate the address space
 
-**严重度**: 中 · **状态**: 已解决
+**Severity**: Medium · **Status**: Fixed
 
-**现象** 传入 −5 帧时抛出
-`cannot create std::vector larger than max_size()`。
+**Symptom** Passing −5 frames threw
+`cannot create std::vector larger than max_size()`.
 
-**根因** 先 resize 后检查：`out.assign(size_t(frames) * 2, 0)` 把有符号负数
-转成接近 `SIZE_MAX` 的无符号数。
+**Root cause** Resize happened before the check: `out.assign(size_t(frames) * 2, 0)`
+turned a signed negative into an unsigned value near `SIZE_MAX`.
 
-**修复** 检查移到 resize **之前**。`MusicSynth::render`、
-`AmbienceSynth::render` 和 `renderSfx` 三处都是。
+**Fix** The guard moved **before** the resize, in all three places:
+`MusicSynth::render`, `AmbienceSynth::render` and `renderSfx`.
 
-**为什么重要** 断点、暂停、或任何一帧耗时为零的时刻都会走到这些函数。
-
----
-
-## 🟢 BUG-006 · 零长度包络不可达
-
-**严重度**: 低 · **状态**: 已解决
-
-**现象** 长度为 0 的 attack 在 t = 0 处返回 0 而不是 1。
-
-**根因** `if (t <= 0.0f) return 0.0f;` 抢先返回，还没走到 `attack > 0.0f ?
-t / attack : 1.0f` 那个分支。
-
-**修复** 改为 `t < 0.0f`。
-
-**后果** 修复前，游戏中每一个 click 都从一个静音采样开始。
+**Why it matters** A breakpoint, a pause, or any frame that took no time at all
+reaches these functions.
 
 ---
 
-## 🟢 BUG-007 · 攻击片段的标记与 `PlayerTuning` 不符
+## 🟢 BUG-006 · A zero-length envelope was unreachable
 
-**严重度**: 中 · **状态**: 已解决
+**Severity**: Low · **Status**: Fixed
 
-**现象** 火花在命中框**打开之前**出现。
+**Symptom** An envelope with `attack = 0` returned 0 at t = 0 instead of 1.
 
-**根因** 标记写在 0.08s 和 0.20s；实际的前摇结束于 0.06s，判定窗口关闭于
-0.16s。两者相差 20–40ms——刚好是"看起来不对但说不出哪里不对"的量级。
+**Root cause** `if (t <= 0.0f) return 0.0f;` returned before it could reach the
+`attack > 0.0f ? t / attack : 1.0f` branch.
 
-**修复** 片段的关键时间现在**直接读自** `PlayerTuning`，并加了一个测试
-`the attack clip's hit window matches the player's swing` 保持两者对齐。
+**Fix** Changed to `t < 0.0f`.
 
-**为什么重要** 这正是"模拟决定何时致命，动画被告知模拟在哪"这条规则的第一个
-回报。图片和命中框是两个独立计时器的话，这个 bug 迟早会回来。
-
----
-
-## 🟢 BUG-008 · `config/audio.json` 指向一个不存在的 `.wav`
-
-**严重度**: 低 · **状态**: 已解决
-
-**现象** `eraTransitionSfx: "sfx/era_shift/shift.wav"`。
-
-**根因** 引用了一个项目从未有过的目录。
-
-**修复** 配置文件现在描述实际发生的事：所有声音在运行时合成，音量对应混音器的
-四个总线。移除了这个键。
-
-**备注** 这类缺陷的特征是**永远不会触发**——因为没有代码读它。它是文档与
-现实脱节的第一个证据，而它一直躺在配置里。
+**Consequence** Before the fix, every click in the game began from a sample of
+silence.
 
 ---
 
-## 已检查且**未**发现问题的项
+## 🟢 BUG-007 · The attack clip's markers disagreed with `PlayerTuning`
 
-记录下来是为了说明检查过，不是为了凑数。
+**Severity**: Medium · **Status**: Fixed
 
-| 检查项 | 结果 |
+**Symptom** The spark appeared *before* the hitbox opened.
+
+**Root cause** The markers were written at 0.08s and 0.20s. The windup actually
+ends at 0.06s and the active window closes at 0.16s — a 20–40ms discrepancy,
+which is exactly the magnitude of "that looks wrong but I couldn't say what".
+
+**Fix** The clip's key times are now read directly from `PlayerTuning`, and a test
+(`the attack clip's hit window matches the player's swing`) keeps the two aligned.
+
+**Why it matters** This was the first return on the rule that *the simulation
+decides when something is dangerous, and the animation is told where the
+simulation is*. If the picture and the hitbox are two independent timers, this bug
+comes back.
+
+---
+
+## 🟢 BUG-008 · `config/audio.json` pointed at a `.wav` that did not exist
+
+**Severity**: Low · **Status**: Fixed
+
+**Symptom** `eraTransitionSfx: "sfx/era_shift/shift.wav"`.
+
+**Root cause** It referenced a directory the project has never had.
+
+**Fix** The config now describes what actually happens: every sound is synthesised
+at runtime, and the volumes map to the mixer's four buses. The key was removed.
+
+**Note** The defining characteristic of this one is that it **could never fire**,
+because no code read it. It was the first evidence of documentation and reality
+coming apart, and it had been sitting in the config the whole time.
+
+---
+
+## 🟢 BUG-009 · The music and ambience beds stopped after ~100ms and never restarted
+
+**Severity**: Critical · **Status**: Fixed · **Reported by** a player
+
+**Symptom** The game was completely silent. This is the only one of the four
+player-reported defects that made the game unplayable.
+
+**Root cause** A mixer track reading a stream that has run dry reaches the end of
+it and stops. Both beds were started once during initialisation, at which point
+the stream was *empty* — the first synthesised block arrived a frame or two later,
+by which time the tracks had already ended.
+
+**Why every diagnostic said audio was fine** This is the least findable bug in the
+project, and the table is worth keeping:
+
+| Diagnostic | What it said at the time |
 | --- | --- |
-| `MIX_Init()` 在无 timidity.cfg 的机器上失败 | 预期且非致命。合成的全是 PCM，日志明说 `PCM is unaffected`，混音器仍以 48kHz 启动 |
-| 无声卡环境（CI / 容器） | 预期且非致命。`context().audio` 始终非空，`available()` 返回 false，游戏静音运行 |
-| 粒子池耗尽 | 回收最旧的而非丢弃。满池时静默失去所有特效比丢一个火花糟糕得多 |
-| 循环片段在 `setTime` 越界时回绕 | 挥击会回绕到末尾，在仍处于挥出状态时看起来已经收招。已改为钳制 |
-| 长时间单步（1 秒） | 每个发射器都有每步上限，不会一次性请求数百个粒子 |
-| 合成确定性 | 两次相同的调用产生逐位相同的结果，否则"火花看起来不对"的报告无法回答 |
+| Synthesiser output | Peak 0.29 per block — correct |
+| `SDL_PutAudioStreamData` | Returned true, every time |
+| The log | `audio: started on pulseaudio at 48000 Hz` |
+| `pactl list sink-inputs` | `EraShift` present, `Corked: no` |
+| What you could hear | **Nothing** |
+
+Every diagnostic agreed with every other one, and together they described a
+stream going nowhere.
+
+**Fix** Two changes, of which the second is the real one:
+
+1. Prime both streams with a quarter second of silence before starting the
+   tracks, which removes the start-up race.
+2. `AudioManager::ensureBedsPlaying()` restarts either bed that has stopped, for
+   any reason.
+
+**Why the watchdog is the important half** The ways a bed stops are not exotic: a
+PipeWire sink suspends when idle, a Bluetooth headset appearing rewires the
+device, and a pause stops feeding the streams entirely. All of them should be
+invisible to the player, and priming alone covers none of them.
+
+**Verification** Recording the sink monitor and analysing peak amplitude in
+half-second windows: before the fix, 0 of 31 windows had any signal; after,
+26 of 31 peaked at roughly 6000 out of 32767. Two new tests — a bed surviving 200
+updates, and a bed recovering after a pause and a stream starvation.
+
+**By-product** A `-DERASHIFT_AUDIO_TRACE` build option that reports the track's
+own `MIX_TrackPlaying` and the stream backlog. Off by default and free when off,
+but kept, because the only symptom a player can report is "it's quiet" — which is
+the one sentence every log line was contradicting.
+
+**Related** SDL's audio drivers are compiled in rather than loaded at runtime, so
+this could not have been fixed in application code at all. `scripts/fetch_deps.sh`
+had been gating the PulseAudio driver on ALSA headers being present, which is
+false of exactly the machines that matter: a PipeWire desktop serves audio over
+the PulseAudio protocol and frequently has no ALSA development headers at all.
+See the follow-up work below.
 
 ---
 
-## 建议的后续工作
+## 🟢 BUG-010 · The event pump read past the end of its own buffer
 
-1. **`graphics.maxParticles` 是死配置。** 它现在是 4000，而实际池是 768，且它
-   是上限而非设置——调到 768 以上不会让游戏更繁忙。要么接上它，要么从配置里
-   删掉。一个看起来有效但无效的设置，比没有这个设置更糟。
-2. **玩家脚下音效的音高** 目前是速度的线性函数。踩在金属上和踩在草上是同一个
-   声音。`TileKind` 已经有足够的信息可以区分。
-3. **没有混音响度测试。** 测试断言了 `peak <= 1.0`，但一个恒定比峰值低 20dB 的
-   音效会通过所有测试却在游戏里听不见。
+**Severity**: Critical · **Status**: Fixed · **Reported by** a player
+
+**Symptom** Clicking a menu button did nothing. The keyboard behaved erratically.
+
+**Root cause** `pumpFromSDL` polled SDL into a 64-slot `SDL_Event` array while
+counting up to 512, then handed the count to `pump`:
+
+```cpp
+SDL_Event events[64];          // 64 slots
+do { count = SDL_PollEvent(events); total += count; } while (count > 0 && total < 512);
+pump(events, total);           // reads 512
+```
+
+`SDL_PollEvent` never writes more than the array holds, so `total` grows past 64
+and `pump` then reads several hundred events that were **never written**. Every
+mouse movement is its own event, so passing 64 in a single frame is ordinary
+rather than exceptional. The uninitialised garbage carried random `type` fields,
+and a garbage `SDL_EVENT_MOUSE_MOTION` writes a random position into the input
+state — which is precisely why the click missed.
+
+**Fix** Drain in chunks and dispatch each chunk as it is read. Nothing is
+overrun, and nothing is dropped.
+
+**Verification** New `TestEventPump`: 200 events lose nothing, a key pressed in
+the middle of a large burst is not dropped, and a click reports its own position.
+
+---
+
+## 🟢 BUG-011 · All input depended on an event many systems never send
+
+**Severity**: High · **Status**: Fixed · **Reported by** a player
+
+**Symptom** The game was completely unresponsive, and unrecoverable without a
+restart.
+
+**Root cause** All three queries were gated on `focused`, and the only thing that
+ever set it was `SDL_EVENT_WINDOW_FOCUS_GAINED`. Measured on the Wayland session
+this was developed against: **zero** focus-gained and **zero** focus-lost events
+in four seconds. Any focus-lost without a matching gain left the game permanently
+dead.
+
+**Fix** Key *edges* are no longer gated on focus. Held state is still released on
+focus loss — which is the behaviour the gate was there to provide — but a press
+is an event, and discarding it because of unrelated window state is a lost input.
+
+**Verification** New tests: input must work before any focus event has been
+delivered, and losing focus releases held keys.
+
+---
+
+## 🟢 BUG-012 · Mouse clicks were hit-tested at a stale position
+
+**Severity**: Medium · **Status**: Fixed · **Reported by** a player
+
+**Symptom** Clicking a button hit whatever the cursor had been over last.
+
+**Root cause** An SDL click event **carries the cursor position**, and the pump
+threw it away, taking the position from motion events alone. SDL will happily
+deliver a click with no preceding motion event — a trackpad tap, a click in the
+first instant after focus, or a compositor that coalesces motion.
+
+**Fix** The button and wheel handlers now take the position from their own event.
+The attract script reports a real position too, so it can actually click a menu
+row rather than clicking at (0, 0).
+
+---
+
+## Checked, and *not* found
+
+Recorded to show what was looked at, not to pad the list.
+
+| Checked | Result |
+| --- | --- |
+| `MIX_Init()` fails on a machine with no `timidity.cfg` | Expected and non-fatal. Everything synthesised is PCM; the log says `PCM is unaffected` and the mixer still starts at 48kHz |
+| No audio device (CI, container) | Expected and non-fatal. `context().audio` is always non-null, `available()` returns false, the game runs silently |
+| A looping clip wrapping past its end under `setTime` | A swing would wrap to the end and look recovered while still being thrown. Now clamped |
+| A very long single step (1 second) | Every emitter has a per-step cap, so a hitch cannot request hundreds of particles at once |
+| Synthesis determinism | Two identical calls produce bit-identical output. Without this, a report of the form "the sparks looked wrong" would be unanswerable |
+| The particle pool running out | Recycles the oldest rather than dropping. A busy screen that silently loses every effect is worse than one that drops a footstep |
+
+---
+
+## Follow-up work
+
+1. **SDL's audio backends are a build-time decision, and nothing checks it.**
+   The drivers are compiled in, not loaded at runtime, so "no sound" is not a
+   configuration problem and no amount of in-game setting will fix it. Add a
+   post-build self-check that inspects SDL's driver list for `pulseaudio` or
+   `alsa` and fails loudly if neither is present. A game that runs silently is
+   much worse than a build that stops.
+
+2. **`graphics.maxParticles` is a ceiling, not a setting.** It is now wired up
+   (it was dead config) but raising it above the pool's capacity will not make the
+   game busier. Either make it meaningful or delete it — a setting that looks
+   live and does nothing is worse than no setting.
+
+3. **Footstep pitch is a linear function of speed.** Stepping on metal and
+   stepping on grass are the same sound. `TileKind` already carries enough
+   information to tell them apart.
+
+4. **There is no loudness test for the mixer.** The tests assert `peak <= 1.0`, but
+   an effect that is uniformly 20dB below the peak passes every test and is
+   inaudible in the game. A per-effect loudness floor would catch a sound that was
+   scaled too far down.
+
+5. **`-DERASHIFT_AUDIO_TRACE` is not documented in the build docs.** It is the
+   only thing that found BUG-009, which is an argument for documenting it
+   properly rather than leaving it as a flag in a source file.

@@ -90,6 +90,14 @@ public:
     /// Writes the next presented frame to `path`, replacing any pending request.
     void requestScreenshot(std::filesystem::path path) { m_screenshotPath = std::move(path); }
 
+    /// Logs the audio subsystem's own state at start-up and again at shutdown.
+    ///
+    /// Must be set before `initialise()`. Exists because "the audio is wrong" is
+    /// otherwise undiagnosable: the symptom is silence or a click, and neither
+    /// says which of a dozen possible causes produced it.
+    void setAudioDebug(bool enabled) noexcept { m_audioDebug = enabled; }
+    [[nodiscard]] bool audioDebug() const noexcept { return m_audioDebug; }
+
     /// Replaces real input with the built-in attract script.
     ///
     /// For the attract loop on the title screen and for automated visual
@@ -170,6 +178,7 @@ private:
     std::string m_projectRoot;
     std::string m_buildLabel = "Development Build";
     bool        m_debugBuild = true;
+    bool        m_audioDebug = false;
     bool        m_running    = false;
     bool        m_quitRequested = false;
     bool        m_initialised = false;

@@ -129,6 +129,39 @@ can see it.
   emission is frame-rate independent; the three eras emit visibly different
   weather; a degenerate region emits nothing rather than dividing by zero.
 
+**Build and tooling**
+- `scripts/get_audio_headers.sh`: fetches PulseAudio headers without root, by
+  unpacking `libpulse-dev` into `.deps/`. For machines that cannot install a
+  package, which is the normal case inside a container.
+- `scripts/fetch_deps.sh` now probes ALSA and PulseAudio **independently**. It
+  used to gate the PulseAudio driver on ALSA headers being present, which is false
+  of exactly the machines that matter: a PipeWire desktop serves audio over the
+  PulseAudio protocol and frequently has no ALSA development headers at all. Such
+  a machine was left with SDL's dummy backend - silently, forever, with a log
+  line that reads like "this machine has no sound card".
+- SDL3 is now built with `SDL_AUDIO_DRIVER_PULSEAUDIO=ON` where the headers are
+  available, and loaded dynamically, so there is no link-time dependency on
+  libpulse.
+- `tsan.supp`, wired in through CTest's `ENVIRONMENT` property. libpulsecommon
+  spawns its own threads behind mutexes that live inside an uninstrumented
+  library, so TSan reports races in it that are not there. The game's own audio
+  and input paths are deliberately not suppressed.
+
+**Tests — 24 new cases in a new binary**
+- `tests/input/` is now `tests/platform/` and produces
+  `erashift_tests_platform`. The event pump and the audio manager are the two
+  boundaries where SDL types become the game's own, so they are in
+  `erashift_engine` and cannot be covered by the headless gameplay suite - which
+  is exactly the point of that suite's rule.
+- `TestEventPump`: a burst larger than the pump's buffer loses nothing; a key
+  pressed in the middle of a large burst is not dropped; input works before any
+  focus event is delivered; losing focus releases held keys; a click reports its
+  own position.
+- `TestAudio`: a bed survives 200 updates; a bed recovers after a pause and a
+  stream starvation; all 20 one-shots can be fired repeatedly without wedging the
+  pool; a manager with no device tolerates the entire API; `audio.enabled = false`
+  is honoured.
+
 **Documentation**
 - `docs/FEEDBACK.md`: audio, animation, effects, hit-stop and paradox, with the
   reasoning behind each decision and the tests that protect them.
@@ -138,6 +171,64 @@ can see it.
   step — both verified to render.
 
 ### Fixed
+
+- **The music and ambience beds stopped after about 100ms and never restarted.**
+  This is the one that made the game silent, and it is worth reading because
+  every diagnostic available at the time said audio was fine. A mixer track
+  reading a stream that has run dry reaches the end of it and stops; both beds
+  were started once at initialisation against an *empty* stream, the first
+  synthesised block arrived a frame or two later, and by then the tracks were
+  gone. The synthesiser went on producing good audio (`musicPeak=0.29` per
+  block), every `SDL_PutAudioStreamData` succeeded, the log said
+  `audio: started on pulseaudio at 48000 Hz`, and PulseWire showed an uncorked
+  `EraShift` sink input - all of it true, and all of it streaming silence.
+
+  Two fixes, and the second is the important one. The streams are primed with a
+  quarter second of silence so the start-up race cannot happen, and
+  `AudioManager::ensureBedsPlaying()` restarts either bed that has stopped for
+  any reason. The watchdog is the real fix: a PipeWire sink suspends when idle, a
+  Bluetooth headset appearing rewires the device, and a pause stops feeding the
+  streams entirely. All of those end a track silently, and all of them should be
+  invisible to the player.
+
+  A build-time trace (`-DERASHIFT_AUDIO_TRACE`) now reports the track's own
+  `MIX_TrackPlaying` and the stream backlog. It is off by default and costs
+  nothing, and it is kept because this bug was unfindable without it: the only
+  symptom a player can report is "it's quiet", which is the one thing every log
+  line was contradicting.
+
+- **The event pump read past the end of its own buffer.** `pumpFromSDL` polled
+  SDL into a 64-slot `SDL_Event` array while counting up to 512, so any burst of
+  more than 64 events in a frame made it hand several hundred events that had
+  never been written. Mouse motion arrives one event per movement, so passing 64
+  in a single frame is ordinary rather than exceptional. The unread garbage
+  carried random `type` fields, and a garbage `SDL_EVENT_MOUSE_MOTION` writes a
+  random position into the input state - which is precisely why clicking a button
+  missed. It now drains in chunks and dispatches each chunk as it is read.
+
+- **All input was gated on a focus event that many systems never send.** Every
+  query returned false unless `focused`, and the only thing that ever set it was
+  `SDL_EVENT_WINDOW_FOCUS_GAINED`. A probe on the Wayland session this was
+  developed against produced *zero* focus events in four seconds, so a stray
+  focus-lost with no matching gain left the game permanently unresponsive with no
+  way out but a restart. Held state is still released on focus loss, which is the
+  behaviour the gate was there to provide; the edges are no longer gated, because
+  a press is an event and discarding it because of unrelated window state is a
+  lost input.
+
+- **Mouse clicks were hit-tested at a stale position.** A click event carries the
+  cursor position, and the pump threw it away, reading the position from motion
+  events alone. SDL will deliver a click with no preceding motion - a trackpad
+  tap, a click in the first instant after focus, a compositor that coalesces
+  motion - so the click landed wherever the cursor last was. Button and wheel
+  handlers now take the position from their event, and the attract script reports
+  a real position so it can click a menu row rather than clicking at (0, 0).
+
+- **`InputManager::endFrame` and `Engine::pumpEvents` carried comments describing
+  a latching mechanism that does not exist.** The edges are cleared by the *next*
+  `beginFrame`, on purpose, so that a press stays readable for every fixed step
+  in the frame it happened in. A stale comment saying otherwise invites someone to
+  "fix" working code.
 
 - **Hit-stop swallowed player input.** The first implementation returned early
   from `World::update` during a freeze, so a shift or an interact pressed during

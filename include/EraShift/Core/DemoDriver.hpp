@@ -32,6 +32,15 @@ struct DemoEvent {
     Input::Key    key     = Input::Key::Unknown;
     Input::MouseButton mouse = Input::MouseButton::Left;
     bool          down    = false;
+    /// Where the cursor is, in pixels, for a mouse event.
+    ///
+    /// A click now carries its own position - see `InputManager::onMouseButtonDown`
+    /// - so the attract script has to say where it is pointing. That is what lets
+    /// the script actually click a menu row instead of clicking at (0, 0), which
+    /// is the only way to have an automated check that a button can be clicked
+    /// at all.
+    float         screenX = 0.0f;
+    float         screenY = 0.0f;
 };
 
 /// Replays a fixed key sequence into an InputManager.

@@ -294,8 +294,18 @@ void InputManager::beginFrame() noexcept
 
 void InputManager::endFrame() noexcept
 {
-    // Nothing to latch: edges were computed when the events arrived. This is the
-    // hook that clears the per-frame edges and deltas.
+    // Deliberately does nothing.
+    //
+    // The edges are cleared at the *start* of the next frame by `beginFrame`, not
+    // here, and that placement is the point: an edge has to stay readable for the
+    // whole frame it happened in. A frame can contain several fixed update steps,
+    // and a press seen by only the first of them is a press that was dropped
+    // because the machine happened to be running fast.
+    //
+    // This comment used to claim the opposite - that this was "the hook that
+    // clears the per-frame edges" - describing a mechanism that was never there.
+    // A stale comment like that is worse than none: it invites someone to come
+    // along and "fix" working code.
 }
 
 void InputManager::setFocused(bool focused) noexcept
@@ -336,7 +346,7 @@ void InputManager::onKeyUp(Key key)
     m_current.keys[index] = false;
 }
 
-void InputManager::onMouseButtonDown(MouseButton button)
+void InputManager::onMouseButtonDown(MouseButton button, float x, float y)
 {
     const auto index = static_cast<std::size_t>(button);
     if (index >= kMouseCount) {
@@ -346,18 +356,22 @@ void InputManager::onMouseButtonDown(MouseButton button)
         m_current.mousePressed[index] = true;
     }
     m_current.mouseButtons[index] = true;
+    // The click's own position, so a click with no preceding motion event still
+    // lands where the player clicked.
+    m_current.mouseX = x;
+    m_current.mouseY = y;
 }
 
-void InputManager::onMouseButtonUp(MouseButton button)
+void InputManager::onMouseButtonUp(MouseButton button, float x, float y)
 {
     const auto index = static_cast<std::size_t>(button);
     if (index >= kMouseCount) {
         return;
     }
-    if (m_current.mouseButtons[index]) {
-        m_current.mouseReleased[index] = true;
-    }
-    m_current.mouseButtons[index] = false;
+    m_current.mouseButtons[index]   = false;
+    m_current.mouseReleased[index] = true;
+    m_current.mouseX = x;
+    m_current.mouseY = y;
 }
 
 void InputManager::onMouseMotion(float x, float y, float deltaX, float deltaY)
@@ -368,10 +382,14 @@ void InputManager::onMouseMotion(float x, float y, float deltaX, float deltaY)
     m_current.mouseDeltaY += deltaY;
 }
 
-void InputManager::onMouseWheel(float x, float y)
+void InputManager::onMouseWheel(float x, float y, float atX, float atY)
 {
     m_current.wheelX += x;
     m_current.wheelY += y;
+    // A wheel event carries a position for the same reason a click does, and a
+    // menu that scrolls should not act on a stale cursor position.
+    m_current.mouseX = atX;
+    m_current.mouseY = atY;
 }
 
 void InputManager::onTextInput(std::string text)
@@ -432,19 +450,35 @@ Vec2 InputManager::wheel() const noexcept
     return {m_current.wheelX, m_current.wheelY};
 }
 
+// These three deliberately do *not* all gate on focus, and the asymmetry is the
+// point.
+//
+// Focus is used for exactly one job: making sure a character is not still running
+// because the player alt-tabbed away with the key held. `setFocused(false)`
+// already does that, by releasing every held key and button. So the held state
+// is already correct without gating the query, and gating it buys nothing.
+//
+// Edges must not be gated at all. A press is an event the system gave us, and
+// discarding it because of an unrelated piece of window state is a lost input -
+// the same mistake as a freeze swallowing a button press. More concretely, not
+// every compositor sends a focus event at all: on the Wayland session this was
+// developed against, a four second window produced zero focus gained and zero
+// focus lost. Anything that depends on that event to start working is a game
+// that never responds, and if a stray `FOCUS_LOST` arrives with no matching
+// gain, the old code was unrecoverable without a restart.
 bool InputManager::isDown(Action action) const noexcept
 {
-    return m_current.focused && down(action);
+    return down(action);
 }
 
 bool InputManager::wasPressed(Action action) const noexcept
 {
-    return m_current.focused && pressed(action);
+    return pressed(action);
 }
 
 bool InputManager::wasReleased(Action action) const noexcept
 {
-    return m_current.focused && released(action);
+    return released(action);
 }
 
 bool InputManager::down(Action action) const noexcept
