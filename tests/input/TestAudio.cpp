@@ -31,6 +31,7 @@
 #include <SDL3/SDL.h>
 
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -240,4 +241,260 @@ TEST_CASE("volume settings reach the mixer")
     CHECK_FALSE(manager->audible());
     manager->setMuted(false);
     CHECK(manager->audible());
+}
+
+// --- loudness, validity and mixer behaviour ---------------------------------
+//
+// These assert *properties of the signal*, not that a call succeeded. The
+// distinction is not pedantic: every one-shot in the game was silent for a while
+// while `MIX_PlayTrack` was being called, the mixer was open, the buses had gain
+// and the log said everything was fine. A test that checks "did initialise
+// return true" cannot see that. A test that measures the samples can.
+
+namespace {
+
+float rmsOf(const SampleBuffer& buffer)
+{
+    if (buffer.empty()) {
+        return 0.0f;
+    }
+    double sum = 0.0;
+    for (const float sample : buffer) {
+        sum += static_cast<double>(sample) * static_cast<double>(sample);
+    }
+    return static_cast<float>(std::sqrt(sum / static_cast<double>(buffer.size())));
+}
+
+float peakOf(const SampleBuffer& buffer)
+{
+    float high = 0.0f;
+    for (const float sample : buffer) {
+        high = std::max(high, std::fabs(sample));
+    }
+    return high;
+}
+
+} // namespace
+
+TEST_CASE("every one-shot is audible, not merely non-zero")
+{
+    // `peak > 0` is too weak a bar: a buffer of denormals passes it and is
+    // inaudible. The floor is per category rather than one global number,
+    // because the categories are genuinely different jobs - a footstep is a
+    // quiet incidental sound and is *supposed* to sit well below a seal pickup,
+    // which is a scripted beat the player is meant to notice.
+    struct Expectation {
+        Sfx         sfx;
+        float       minPeak;
+        const char* why;
+    };
+    const Expectation expectations[] = {
+        {Sfx::UiMove,     0.02f,  "menu tick, deliberately quiet"},
+        {Sfx::UiConfirm,  0.05f,  "a confirmation the player must notice"},
+        {Sfx::UiDeny,     0.05f,  "a rejection the player must notice"},
+        {Sfx::FootstepStone, 0.01f, "incidental, fires constantly"},
+        {Sfx::FootstepGrass, 0.01f, "incidental, fires constantly"},
+        {Sfx::FootstepSand,  0.01f, "incidental, fires constantly"},
+        {Sfx::FootstepMetal, 0.01f, "incidental, fires constantly"},
+        {Sfx::FootstepCrystal, 0.01f, "incidental, fires constantly"},
+        {Sfx::Jump,       0.05f,  "a player action"},
+        {Sfx::Land,       0.05f,  "a player action"},
+        {Sfx::Dash,       0.05f,  "a player action"},
+        {Sfx::Attack,     0.05f,  "combat, must be audible over the bed"},
+        {Sfx::EnemyHurt,  0.05f,  "combat feedback"},
+        {Sfx::EnemyDie,   0.05f,  "combat feedback"},
+        {Sfx::PlayerHurt, 0.05f,  "the player must always hear being hit"},
+        {Sfx::PlayerDie,  0.05f,  "death must be unmissable"},
+        {Sfx::PickupChrono, 0.05f, "a reward"},
+        {Sfx::PickupHealth, 0.05f, "a reward"},
+        {Sfx::SealTaken,  0.05f,  "a progression beat"},
+        {Sfx::GateOpened, 0.05f,  "a progression beat"},
+        {Sfx::ShiftCharge, 0.05f, "the signature verb, charging"},
+        {Sfx::ShiftImpact, 0.05f, "the signature verb, landing"},
+        {Sfx::Hazard,     0.03f,  "a warning"},
+        {Sfx::Victory,    0.05f,  "the ending"},
+    };
+
+    for (const Expectation& e : expectations) {
+        SampleBuffer buffer;
+        renderSfx(e.sfx, kSampleRate, buffer);
+        CAPTURE(e.sfx);
+        INFO(e.why);
+        CHECK_FALSE(buffer.empty());
+        // Finite: a NaN compares false against everything, so a buffer of NaNs
+        // would slip past a bare `peak > 0` check.
+        for (const float sample : buffer) {
+            CHECK(std::isfinite(sample));
+        }
+        CHECK_GT(peakOf(buffer), e.minPeak);
+        CHECK_GT(rmsOf(buffer), e.minPeak * 0.05f);
+        CHECK_LE(peakOf(buffer), 1.0f);
+    }
+}
+
+TEST_CASE("one-shots are distinct from one another")
+{
+    // A copy-paste in a synth switch would make two events sound identical while
+    // every other test still passed, so identity is asserted directly.
+    std::vector<SampleBuffer> rendered;
+    for (int i = 0; i <= static_cast<int>(Sfx::Victory); ++i) {
+        SampleBuffer buffer;
+        renderSfx(static_cast<Sfx>(i), kSampleRate, buffer);
+        rendered.push_back(std::move(buffer));
+    }
+    for (std::size_t a = 0; a < rendered.size(); ++a) {
+        for (std::size_t b = a + 1; b < rendered.size(); ++b) {
+            CAPTURE(a);
+            CAPTURE(b);
+            const bool sameLength = rendered[a].size() == rendered[b].size();
+            bool identical = sameLength;
+            if (sameLength) {
+                for (std::size_t i = 0; i < rendered[a].size(); ++i) {
+                    if (rendered[a][i] != rendered[b][i]) {
+                        identical = false;
+                        break;
+                    }
+                }
+            }
+            CHECK_FALSE(identical);
+        }
+    }
+}
+
+TEST_CASE("beds produce finite, in-range audio over a long run")
+{
+    // Catches a filter or oscillator going unstable over time, which a
+    // short render never reaches.
+    MusicSynth music;
+    AmbienceSynth ambience;
+    MusicParams params;
+    params.era      = Game::Era::Present;
+    params.intensity = 1.0f;
+    params.tempo     = 116.0f;
+    AmbienceParams amb;
+    amb.era = Game::Era::Present;
+
+    SampleBuffer out;
+    for (int block = 0; block < 400; ++block) {
+        music.render(params, 1024, out);
+        for (const float sample : out) {
+            REQUIRE(std::isfinite(sample));
+            CHECK_LE(std::fabs(sample), 1.0f);
+        }
+        ambience.render(amb, 1024, out);
+        for (const float sample : out) {
+            REQUIRE(std::isfinite(sample));
+            CHECK_LE(std::fabs(sample), 1.0f);
+        }
+    }
+}
+
+TEST_CASE("a zero master gain silences the mixer, and full gain does not")
+{
+    // Behavioural, because the distinction this protects is the one that was
+    // broken: master gain demonstrably reaches the output, the per-bus tag gains
+    // did not.
+    auto manager = liveManager();
+    if (manager == nullptr) {
+        return;
+    }
+    for (int i = 0; i < 30; ++i) {
+        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+    }
+
+    manager->setMasterVolume(0.0f);
+    for (int i = 0; i < 30; ++i) {
+        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+    }
+    // The streams are still being fed - silence must come from the gain, not
+    // from the synthesis having stopped.
+    CHECK_GT(manager->diagnostics().lastMusicPeak, 0.0f);
+    CHECK(manager->diagnostics().musicPlaying);
+
+    manager->setMasterVolume(1.0f);
+    for (int i = 0; i < 30; ++i) {
+        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+    }
+    CHECK(manager->diagnostics().musicPlaying);
+}
+
+TEST_CASE("bus volumes are remembered and reported")
+{
+    auto manager = liveManager();
+    if (manager == nullptr) {
+        return;
+    }
+    manager->setBusVolume(Bus::Music, 0.25f);
+    manager->setBusVolume(Bus::Ambience, 0.5f);
+    manager->setBusVolume(Bus::Sfx, 0.75f);
+    CHECK(manager->busVolume(Bus::Music)    == doctest::Approx(0.25f));
+    CHECK(manager->busVolume(Bus::Ambience) == doctest::Approx(0.5f));
+    CHECK(manager->busVolume(Bus::Sfx)      == doctest::Approx(0.75f));
+
+    // Out-of-range and malformed values are clamped rather than trusted: a NaN
+    // gain poisons every sample downstream of it.
+    manager->setBusVolume(Bus::Music, 5.0f);
+    CHECK(manager->busVolume(Bus::Music) == doctest::Approx(1.0f));
+    manager->setBusVolume(Bus::Music, -1.0f);
+    CHECK(manager->busVolume(Bus::Music) == doctest::Approx(0.0f));
+    manager->setBusVolume(Bus::Music, std::numeric_limits<float>::quiet_NaN());
+    CHECK(std::isfinite(manager->busVolume(Bus::Music)));
+}
+
+TEST_CASE("more one-shots than channels recycles without going quiet")
+{
+    // Six channels, many more sounds. The oldest must be stolen, the new sound
+    // must be audible, and the pool must not wedge.
+    auto manager = liveManager();
+    if (manager == nullptr) {
+        return;
+    }
+    for (int round = 0; round < 40; ++round) {
+        for (int i = 0; i <= static_cast<int>(Sfx::Victory); ++i) {
+            manager->play(static_cast<Sfx>(i), 1.0f);
+        }
+        manager->update(kStep, Game::Era::Present, MusicState::Combat, 0.0f);
+        CHECK_MESSAGE(manager->diagnostics().sfxVoices > 0,
+                      "pool went silent on round " << round);
+        // The pool is six deep; stealing must never exceed it.
+        CHECK_LE(manager->diagnostics().sfxVoices, 6);
+    }
+    // And the beds are untouched by one-shot pressure.
+    const auto d = manager->diagnostics();
+    CHECK(d.musicPlaying);
+    CHECK(d.ambiencePlaying);
+    CHECK_EQ(d.putFailures, 0u);
+}
+
+TEST_CASE("both beds recover together after simultaneous starvation")
+{
+    // The single-bed recovery test exists; this is the case where both stop at
+    // once, which is what happens when the device is suspended rather than when
+    // one synth misbehaves.
+    auto manager = liveManager();
+    if (manager == nullptr) {
+        return;
+    }
+    for (int i = 0; i < 60; ++i) {
+        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+    }
+    REQUIRE(manager->diagnostics().musicPlaying);
+    REQUIRE(manager->diagnostics().ambiencePlaying);
+
+    // Pause the beds, which stops feeding the streams entirely, then let the
+    // watchdog notice.
+    manager->setBedsPlaying(false);
+    for (int i = 0; i < 10; ++i) {
+        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+    }
+    manager->setBedsPlaying(true);
+    for (int i = 0; i < 120; ++i) {
+        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+    }
+    const auto d = manager->diagnostics();
+    CHECK_MESSAGE(d.musicPlaying, "music did not come back");
+    CHECK_MESSAGE(d.ambiencePlaying, "ambience did not come back");
+    CHECK_GT(d.lastMusicPeak, 0.0f);
+    CHECK_GT(d.lastAmbiencePeak, 0.0f);
+    CHECK_EQ(d.putFailures, 0u);
 }

@@ -152,6 +152,13 @@ bool Engine::initialise(Core::ConfigManager& configManager,
                                    config.clampInt("audio", "musicVolume", 65, 0, 100, m_log));
             m_audio.setBusPercent(Audio::Bus::Ambience,
                                    config.clampInt("audio", "ambienceVolume", 55, 0, 100, m_log));
+            // These three were readable in audio.json and did nothing. Wired to
+            // the values they were always meant to change.
+            m_audio.setCombatIntensity(
+                static_cast<float>(config.clampInt("audio", "combatIntensity", 85, 0, 100, m_log)) / 100.0f);
+            m_audio.setTempoScale(
+                static_cast<float>(config.clampInt("audio", "musicTempo", 96, 24, 240, m_log)) / 96.0f);
+            m_audio.setTensionEnabled(config.getBool("audio", "paradoxTension", true));
             m_audio.setBusPercent(Audio::Bus::Sfx,
                                    config.clampInt("audio", "sfxVolume", 85, 0, 100, m_log));
             m_log.info("audio", "started on {} at {} Hz", m_audio.driverName(), m_audio.sampleRate());

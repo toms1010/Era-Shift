@@ -210,6 +210,18 @@ std::size_t InputManager::loadBindings(const Core::ConfigStore& config, Core::Lo
 {
     std::size_t applied = 0;
 
+    // Bindings for actions this build does not have are collected and reported
+    // once, at the end, rather than warned about individually on every launch.
+    //
+    // The case that made this worth changing: an existing player's saved
+    // settings still contain Aim, Inventory, Map and QuestLog from before those
+    // actions were removed as dead. The saved file is never rewritten, so the
+    // same four warnings appeared at every single start-up, forever, with
+    // nothing the player could do about them. A warning that recurs identically
+    // on every launch trains people to skip the log, which is a real cost the
+    // moment a warning does matter.
+    std::vector<std::string> ignored;
+
     // Expected shape:
     //   "controls": { "Jump": "Space", "Attack": "Mouse Left" }
     // An optional "Secondary" suffix on the action name sets the second binding.
@@ -222,7 +234,7 @@ std::size_t InputManager::loadBindings(const Core::ConfigStore& config, Core::Lo
             bool ok = false;
             action = parseAction(base, ok);
             if (!ok) {
-                log.warn("Input", "unknown action '{}' in controls config", raw);
+                ignored.emplace_back(raw);
             }
             return ok ? secondary : false;
         };
@@ -255,6 +267,15 @@ std::size_t InputManager::loadBindings(const Core::ConfigStore& config, Core::Lo
 
     if (applied > 0) {
         log.info("Input", "loaded {} control bindings from config", applied);
+    }
+    if (!ignored.empty()) {
+        std::string names;
+        for (std::size_t i = 0; i < ignored.size(); ++i) {
+            names += (i == 0 ? "" : ", ");
+            names += ignored[i];
+        }
+        log.info("Input", "ignoring {} binding(s) for actions this build does not have: {}",
+                 ignored.size(), names);
     }
     return applied;
 }

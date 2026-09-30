@@ -334,6 +334,86 @@ row rather than clicking at (0, 0).
 
 ---
 
+## 🔴 BUG-013 · Every one-shot in the game was silent
+
+**Severity**: Critical · **Status**: Fixed · **Found by** the `--audio-test` mode
+
+**Symptom** Music and ambience played. No sound effect did, ever. Attacking,
+being hit, killing an enemy, jumping, dashing, opening the gate and collecting a
+seal were all silent, in every state, for the whole session.
+
+**Root cause** `AudioManager::play()` handed the cached samples to
+`MIX_SetTrackIOStream`, which is the function for **decodable containers** — it
+reads a WAV or Ogg header to learn the sample format. The cache is raw
+interleaved `float` PCM with no header at all, so the mixer could not determine a
+format, the track was left with no input assigned, and every `MIX_PlayTrack`
+failed with `No audio currently assigned to this track`.
+
+The return value of `MIX_PlayTrack` was discarded, which is what let it stay
+hidden. The mixer was open, the beds were playing, all four buses had gain, the
+one-shot pool reported itself healthy, and the log said the audio system was fine.
+The game had music, ambience, and silence.
+
+**Fix** One-shots now go through an explicitly-formatted `SDL_AudioStream`, the
+same mechanism the music and ambience beds already used successfully, instead of
+a headerless IOStream. `MIX_PlayTrack`'s result is checked, and a failure is
+logged once rather than once per footstep.
+
+**Regression test** `tests/input/TestAudio.cpp` — *"a one-shot actually starts a
+mixer track"* fires every `Sfx` and asserts `diagnostics().sfxVoices > 0` per
+sound. The pre-existing test for this only checked `available()`, which stayed
+true, which is exactly why the bug survived. Verified at the device as well: with
+the music and ambience buses at 0 and SFX at 85, the PulseAudio sink monitor reads
+−13.7 dBFS; with all three buses at 0 it reads digital silence.
+
+---
+
+## 🟠 BUG-014 · The music, ambience and SFX volume settings did nothing
+
+**Severity**: High · **Status**: Fixed · **Found by** measuring the sink
+
+**Symptom** Setting `musicVolume`, `ambienceVolume` or `sfxVolume` to 0 in
+`config/audio.json` changed nothing. All three buses at 0 produced −13 dBFS at
+the sink, identical to full volume.
+
+**Root cause** The four buses were built with SDL3_mixer's *tag* mechanism —
+`MIX_TagTrack` plus `MIX_SetTagGain`. The tag gains had no measurable effect on
+the output. The master gain, applied with `MIX_SetMixerGain`, demonstrably worked:
+master 0 gave true digital silence, and 50/100 measured −18.8/−12.4 dBFS. So the
+settings menu's three bus sliders were connected to nothing.
+
+**Fix** The three sub-buses are applied as **per-track gains**, which is a plain
+multiplier that can be verified. `play()` folds the SFX bus into each sound's own
+volume. Verified: buses all 0 → digital silence; SFX only → −13.7 dBFS; music
+only → −15.7 dBFS; all up → −10.9 dBFS.
+
+---
+
+## 🟡 BUG-015 · A dead control warned on every single launch
+
+**Severity**: Low · **Status**: Fixed
+
+**Symptom** Four warnings on every start-up, forever:
+
+```
+WARN Input: unknown action 'Aim' in controls config
+WARN Input: unknown action 'Inventory' in controls config
+WARN Input: unknown action 'Map' in controls config
+WARN Input: unknown action 'QuestLog' in controls config
+```
+
+**Root cause** `Aim`, `Inventory`, `Map` and `QuestLog` were removed as dead
+actions — nothing consumed them — but an existing player's saved
+`~/.config/EraShift/settings.json` still contains their bindings, and the saved
+file is never rewritten. The warning recurred identically on every launch with
+nothing the player could do about it.
+
+**Fix** Unrecognised action names are collected and reported once as a single
+informational line, which keeps a genuine typo visible while removing the
+per-launch noise. A warning that repeats forever trains people to skip the log.
+
+---
+
 ## Checked, and *not* found
 
 Recorded to show what was looked at, not to pad the list.
@@ -350,6 +430,27 @@ Recorded to show what was looked at, not to pad the list.
 ---
 
 ## Follow-up work
+
+### Resolved
+
+- **SDL's audio backends are a build-time decision, and nothing checks it.**
+  → `scripts/check_audio_backends.sh` now fails loudly when SDL has no real
+  backend compiled in, and `--audio-test` prints the compiled-in driver list.
+  On this machine that list is `pulseaudio,disk,dummy`: usable, but `alsa` and
+  `pipewire` are **not** compiled in, so `SDL_AUDIODRIVER=alsa` and
+  `SDL_AUDIODRIVER=pipewire` both fail to open a device here. That is a build
+  configuration fact, not a game defect, and it is now visible instead of
+  something to discover by hand.
+- **Footstep pitch is a linear function of speed.** → Fixed. `TileKind` now
+  selects one of five real footsteps (stone, grass, sand, metal, crystal) via a
+  `SurfaceAudioProfile`; speed still colours the step but no longer decides what
+  it is. See BUG-016 below for the level-level follow-up.
+- **There is no loudness test for the mixer.** → Fixed. Per-category loudness
+  floors in `tests/input/TestAudio.cpp`, plus finite-value and distinctness
+  checks. The floor immediately caught two footsteps I had written 15 dB below
+  the stone one, which would have been inaudible in play.
+
+### Still open
 
 1. **SDL's audio backends are a build-time decision, and nothing checks it.**
    The drivers are compiled in, not loaded at runtime, so "no sound" is not a

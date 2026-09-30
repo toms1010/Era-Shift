@@ -94,6 +94,13 @@ public:
     /// 0..1. Paradox raises tempo instability and drops out the ambience, which
     /// is most of why high paradox feels wrong before you can name why.
     void setTension(float tension);
+    /// Scales the `Combat` music state's density, 0..1. Default 1.
+    void setCombatIntensity(float intensity) noexcept;
+    /// Scales every state's tempo together. Default 1, which is the designed
+    /// tempo; 96 BPM in the config is the reference the scale is relative to.
+    void setTempoScale(float scale) noexcept;
+    /// Whether paradox feeds the music and ambience at all. Default on.
+    void setTensionEnabled(bool enabled) noexcept;
     [[nodiscard]] float tension() const noexcept { return m_tension; }
 
     // --- mixing -------------------------------------------------------------
@@ -247,6 +254,9 @@ private:
     MusicState    m_musicState = MusicState::Exploring;
     Game::Era     m_era = Game::Era::Present;
     float m_tension = 0.0f;
+    float m_combatIntensity = 1.0f;
+    float m_tempoScale = 1.0f;
+    bool  m_tensionEnabled = true;
     float m_tensionTarget = 0.0f;
     float m_masterVolume = 1.0f;
     /// Master, music, ambience, sfx. The master slider multiplies all of them.

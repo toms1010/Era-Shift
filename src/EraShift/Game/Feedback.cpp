@@ -36,6 +36,47 @@ constexpr float kTierCollapse  = 62.0f;
 /// is still readable, because a game you cannot see is not tense, it is broken.
 constexpr float kMaxGlitch = 0.55f;
 
+/// How a surface sounds underfoot.
+///
+/// The world has no material field - `TileKind` describes collision behaviour
+/// per era, not what a floor is made of - so the surface is *derived* from the
+/// kind. That is a deliberate limit: a separate material system would be a much
+/// larger change to the level format for a cosmetic gain, and the kinds that
+/// exist already separate the cases that matter audibly.
+///
+/// Loudness is part of the profile rather than a constant because a footstep on
+/// sand should sit under the mix, and one on metal should cut through it.
+struct SurfaceAudioProfile {
+    Sfx   sfx;
+    float volume;
+    float pitch;
+};
+
+SurfaceAudioProfile surfaceProfile(TileKind kind) noexcept
+{
+    switch (kind) {
+        // The ruins themselves: hard, bright, unremarkable.
+        case TileKind::Solid:
+        case TileKind::Goal:
+            return {Sfx::FootstepStone, 0.22f, 1.00f};
+        // Timber decking and the ruined span: a hollow, woody knock.
+        case TileKind::Platform:
+        case TileKind::Bridge:
+            return {Sfx::FootstepStone, 0.20f, 0.78f};
+        // Rotting masonry: duller than solid stone and quieter underfoot.
+        case TileKind::Crumble:
+            return {Sfx::FootstepGrass, 0.18f, 0.90f};
+        // Grown crystal: bright, glassy, and the loudest thing you can stand on.
+        case TileKind::Crystal:
+            return {Sfx::FootstepCrystal, 0.24f, 1.05f};
+        // Loose regolith: the quietest, dullest footstep there is.
+        case TileKind::Hazard:
+        case TileKind::Empty:
+            return {Sfx::FootstepSand, 0.16f, 1.00f};
+    }
+    return {Sfx::FootstepStone, 0.20f, 1.0f};
+}
+
 float easeOut(float t) noexcept
 {
     t = Graphics::clampValue(t, 0.0f, 1.0f);
@@ -323,8 +364,16 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
 
             case WorldEvent::PlayerFootstep:
                 if (audio != nullptr) {
-                    audio->play(Sfx::Land, 0.22f * event.strength,
-                                Graphics::clampValue(1.35f - event.strength * 0.2f, 0.9f, 1.4f));
+                    // Speed still colours the step, but the surface decides which
+                    // sound it is. Previously this was `Sfx::Land` with a pitch
+                    // curve, which meant every surface in the level made the
+                    // identical noise and the player had no way to hear what they
+                    // were walking on.
+                    const SurfaceAudioProfile profile = surfaceProfile(event.surface);
+                    const float speedPitch =
+                        1.0f - Graphics::clampValue(event.strength, 0.0f, 1.4f) * 0.12f;
+                    audio->play(profile.sfx, profile.volume * event.strength,
+                                Graphics::clampValue(profile.pitch * speedPitch, 0.5f, 2.0f));
                 }
                 m_particles.emitFootfall(event.position.x, event.position.y + 20.0f,
                                          event.strength * 0.35f, accent);

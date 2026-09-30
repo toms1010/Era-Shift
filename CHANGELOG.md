@@ -8,6 +8,61 @@ All notable changes to Era Shift are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+**Every one-shot in the game was silent (BUG-013, critical).** Music and ambience
+played; no sound effect ever did. `AudioManager::play()` passed raw headerless
+float PCM to `MIX_SetTrackIOStream`, which expects a decodable container and reads
+a WAV/Ogg header for the format. With no header the track was left with no input
+and every `MIX_PlayTrack` failed with *"No audio currently assigned to this
+track"*. The return value was being discarded, so the mixer stayed open, the beds
+kept playing, all four buses kept their gain, and the log reported a healthy audio
+system throughout. One-shots now use an explicitly-formatted `SDL_AudioStream` —
+the path the beds already used successfully — and the result of `MIX_PlayTrack` is
+checked. Verified at the PulseAudio sink: SFX-only reads −13.7 dBFS, all buses at 0
+reads digital silence.
+
+**The music, ambience and SFX volume settings did nothing (BUG-014, high).** The
+three sub-buses were built on `MIX_SetTagGain`, which had no measurable effect on
+the output: all three at 0 still measured −13 dBFS at the sink. The master gain
+(`MIX_SetMixerGain`) always worked, which is what made the bug look like a
+measurement error rather than a wiring one. The sub-buses are now per-track gains,
+which can be verified: buses at 0 → digital silence, SFX only → −13.7 dBFS, music
+only → −15.7 dBFS, all up → −10.9 dBFS.
+
+**A dead control warned on every launch (BUG-015, low).** `Aim`, `Inventory`, `Map`
+and `QuestLog` were removed as unimplemented actions, but saved settings still
+contained their bindings and the file is never rewritten, so four warnings
+recurred on every start-up permanently. Unrecognised names are now collected into
+one informational line.
+
+**Four dead settings in `config/audio.json`.** `outputDevice`, `channels`,
+`bufferSamples`, `musicFadeSeconds` and `glitchAtHighParadox` had no reader at
+all. `musicTempo`, `combatIntensity` and `paradoxTension` *did* describe real
+behaviour that was hardcoded, so those three are now wired to the values they were
+always meant to change; the other five were deleted rather than left looking
+functional. Every key in the file now has a consumer.
+
+### Added
+
+**`--audio-test`** plays every documented sound in sequence through the real
+device and logs what each one did — generated samples, RMS, peak, zero samples,
+clipped samples, duration, track state, bus gain, master gain and device — then
+exits non-zero if anything was silent or clipped. It is what found BUG-013: the
+first run reported `track_playing=false` for all nine one-shots while the beds
+were fine.
+
+**`scripts/check_audio_backends.sh`** fails loudly when the built SDL has no real
+audio backend compiled in. `disk` and `dummy` do not count. `--audio-test` also
+prints the compiled-in driver list, which on this machine is
+`pulseaudio,disk,dummy` — so `alsa` and `pipewire` are *not* available here.
+
+**Footsteps per surface.** `TileKind` now selects one of five real footsteps —
+stone, grass, sand, metal, crystal — through a `SurfaceAudioProfile`, replacing a
+single sound whose pitch rose with speed. The surface travels on the `WorldEvent`
+so presentation cannot disagree with the simulation about where the player is.
+
+
 Phase 3: The game has a voice. Audio, animation and effects are no longer a
 TODO — the shift now has a sound, the swing has a windup you can read, a hit has
 sparks and a moment of silence, and paradox is something you can hear before you

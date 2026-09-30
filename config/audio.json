@@ -1,6 +1,6 @@
 {
   "audio": {
-    "//": "Every sound in Era Shift is synthesised at runtime; there are no audio files in the repository. These settings drive the SDL3_mixer bus gains and the synthesis parameters, not a file list.",
+    "//": "Every sound in Era Shift is synthesised at runtime; there are no audio files in the repository. These settings drive the SDL3_mixer bus gains and the synthesis parameters, not a file list. Every key here is read at start-up: see Engine::initialise. Keys with no reader were removed rather than left looking functional.",
 
     "enabled": true,
 
@@ -8,17 +8,11 @@
     "musicVolume": 65,
     "ambienceVolume": 55,
     "sfxVolume": 85,
-
-    "outputDevice": "",
     "mixRate": 48000,
-    "channels": 2,
-    "bufferSamples": 1024,
 
     "musicTempo": 96,
-    "musicFadeSeconds": 1.5,
     "combatIntensity": 85,
 
-    "paradoxTension": true,
-    "glitchAtHighParadox": true
+    "paradoxTension": true
   }
 }

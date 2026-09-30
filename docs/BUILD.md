@@ -142,6 +142,24 @@ validation, both video drivers and the test suite. See
 
 ---
 
+## 5b. Audio trace
+
+For "the game is silent, where did the signal stop?", configure with the trace
+define and run:
+
+```bash
+cmake --preset relwithdebinfo -DCMAKE_CXX_FLAGS=-DERASHIFT_AUDIO_TRACE
+./build/relwithdebinfo/EraShift --frames 600 --audio-debug
+```
+
+Once every sixty frames it logs the music track's playing state, the stream
+backlog in bytes, and the effective mixer gain. It is deliberately sampled rather
+than per-frame: a trace that prints every frame produces enough output to hide the
+one line that mattered.
+
+For a per-sound breakdown instead, use `--audio-test`, which measures every sound
+once and exits.
+
 ## 6. Editor configuration
 
 `.vscode/` contains ready-made configuration:
@@ -176,6 +194,24 @@ window; setting only one of them falls back to windowed.
 Run it under gdb (see `CRASH_ANALYSIS.md`) or with `--log-level trace`. A null
 `Logger*` in a `StateContext` is the usual culprit and is asserted against in
 `StateContext::valid()`.
+
+### Checking the audio backends
+
+SDL decides at build time which audio backends it compiles in, and a build with
+none of them still links, still runs, and still logs a healthy-looking audio
+subsystem — it just cannot make a noise. Nothing in an ordinary build says so.
+
+```bash
+./scripts/check_audio_backends.sh
+```
+
+This asks the binary for its compiled-in driver list and **fails** if none of
+`pulseaudio`, `alsa`, `pipewire`, `jack` or `sndio` is present. `disk` and `dummy`
+do not count: one writes a file and the other discards samples, and neither means
+a player would hear anything.
+
+`--audio-test` prints the same list as part of its header, so you can see it
+without running the script.
 
 **No audio**
 If the game logs `no available audio device`, SDL was built without a real audio

@@ -204,6 +204,21 @@ enum class Sfx : std::uint8_t {
     ShiftImpact,
 
     Hazard,
+
+    /// Footsteps, one per surface material.
+    ///
+    /// These exist because "footstep" was a single sound whose pitch rose with
+    /// speed, which meant walking on grass and walking on stone were the same
+    /// noise. The distinction is the whole point of hearing where you are: soft
+    /// and dull underfoot on vegetation, sharp and ringing on metal, bright and
+    /// glassy on crystal.
+    FootstepStone,
+    FootstepGrass,
+    FootstepSand,
+    FootstepMetal,
+    FootstepCrystal,
+
+    /// Last. Used as the one-shot count, so nothing may be added after it.
     Victory,
 };
 

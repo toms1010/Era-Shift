@@ -21,18 +21,6 @@ constexpr const char* kTagMusic = "music";
 constexpr const char* kTagAmbience = "ambience";
 constexpr const char* kTagSfx = "sfx";
 
-const char* tagFor(Bus bus) noexcept
-{
-    switch (bus) {
-        case Bus::Master:    return nullptr;
-        case Bus::Music:     return kTagMusic;
-        case Bus::Ambience:  return kTagAmbience;
-        case Bus::Sfx:       return kTagSfx;
-        case Bus::Count:     break;
-    }
-    return nullptr;
-}
-
 float busIndex(Bus bus) noexcept
 {
     return static_cast<float>(static_cast<std::size_t>(bus));
@@ -241,11 +229,39 @@ void AudioManager::applyVolumes()
     if (m_mixer == nullptr) {
         return;
     }
+    // Master is the mixer gain, which demonstrably works: setting it to zero
+    // silences the output completely.
     MIX_SetMixerGain(static_cast<MIX_Mixer*>(m_mixer), m_muted ? 0.0f : m_masterVolume);
-    for (Bus bus : {Bus::Music, Bus::Ambience, Bus::Sfx}) {
-        const char* tag = tagFor(bus);
-        if (tag != nullptr) {
-            MIX_SetTagGain(static_cast<MIX_Mixer*>(m_mixer), tag, m_busVolume[busIndex(bus)]);
+
+    // The three sub-buses are applied as *per-track* gains rather than through
+    // `MIX_SetTagGain`.
+    //
+    // The tag API looked like the obvious way to build four buses and it was
+    // wired up that way first, but the tag gains had no measurable effect on the
+    // output: with music, ambience and sfx all set to 0 the sink monitor still
+    // read -13 dBFS, identical to full volume, while the master gain at 0 did
+    // silence everything. So the bus sliders in the settings menu were connected
+    // to nothing. Tags are still assigned, because they are useful for
+    // `MIX_PlayTag`-style control, but nothing load-bearing depends on them.
+    //
+    // Per-track gain is the alternative that can be verified: it is a plain
+    // multiplier on the track, and `play()` already relies on it for each
+    // sound's own volume.
+    if (m_musicTrack != nullptr) {
+        MIX_SetTrackGain(static_cast<MIX_Track*>(m_musicTrack),
+                         m_busVolume[busIndex(Bus::Music)]);
+    }
+    if (m_ambienceTrack != nullptr) {
+        MIX_SetTrackGain(static_cast<MIX_Track*>(m_ambienceTrack),
+                         m_busVolume[busIndex(Bus::Ambience)]);
+    }
+    // One-shots set their own gain in `play()` as volume * sfx bus, so a channel
+    // that is not currently sounding only needs the bus value as a resting
+    // state.
+    for (Channel& channel : m_channels) {
+        if (channel.track != nullptr) {
+            MIX_SetTrackGain(static_cast<MIX_Track*>(channel.track),
+                             m_busVolume[busIndex(Bus::Sfx)]);
         }
     }
 }
@@ -334,8 +350,11 @@ void AudioManager::play(Sfx sfx, float volume, float pitch)
     // heavier or lighter one without a second buffer.
     MIX_SetTrackFrequencyRatio(static_cast<MIX_Track*>(channel->track),
                                Graphics::clampValue(pitch, 0.5f, 2.0f));
+    // The per-sound volume and the sfx bus are one multiplier, because the bus
+    // is applied per track. See `applyVolumes` for why.
     MIX_SetTrackGain(static_cast<MIX_Track*>(channel->track),
-                     Graphics::clampValue(volume, 0.0f, 1.5f));
+                     Graphics::clampValue(volume, 0.0f, 1.5f) *
+                         m_busVolume[busIndex(Bus::Sfx)]);
 
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetNumberProperty(props, MIX_PROP_PLAY_LOOPS_NUMBER, 0);
@@ -361,6 +380,21 @@ void AudioManager::playPriority(Sfx sfx, float volume, float pitch)
     // steals rather than drops, so both are the same call; keeping the two names
     // means the policy can diverge without touching every call site.
     play(sfx, volume, pitch);
+}
+
+void AudioManager::setCombatIntensity(float intensity) noexcept
+{
+    m_combatIntensity = Graphics::clampValue(intensity, 0.0f, 1.0f);
+}
+
+void AudioManager::setTempoScale(float scale) noexcept
+{
+    m_tempoScale = Graphics::clampValue(scale, 0.25f, 4.0f);
+}
+
+void AudioManager::setTensionEnabled(bool enabled) noexcept
+{
+    m_tensionEnabled = enabled;
 }
 
 void AudioManager::setTension(float tension)
@@ -420,7 +454,11 @@ void AudioManager::pushBeds(float dt)
     }
 
     // Tension eases, so paradox creeping up sounds like it is creeping.
-    m_tension += (m_tensionTarget - m_tension) * std::min(1.0f, dt * 2.0f);
+    if (m_tensionEnabled) {
+        m_tension += (m_tensionTarget - m_tension) * std::min(1.0f, dt * 2.0f);
+    } else {
+        m_tension = 0.0f;
+    }
 
     const int frames = static_cast<int>(static_cast<float>(m_sampleRate) * dt);
     if (frames <= 0) {
@@ -441,19 +479,26 @@ void AudioManager::pushBeds(float dt)
     // together land near -6dBFS peak; the bus volumes stay where the user set
     // them, because those are the ones the player controls.
     music.gain = 0.95f;
+    // The per-state numbers are the designed defaults. `musicTempo` scales all
+    // of them together and `combatIntensity` scales how dense Combat gets; both
+    // were settings in audio.json with no reader, so a player who changed them
+    // got silence and no explanation.
     switch (m_musicState) {
         case MusicState::Exploring: music.intensity = 0.0f; music.tempo = 84.0f; break;
         case MusicState::Alert:     music.intensity = 0.35f; music.tempo = 96.0f; break;
-        case MusicState::Combat:    music.intensity = 1.0f; music.tempo = 116.0f; break;
+        case MusicState::Combat:    music.intensity = m_combatIntensity; music.tempo = 116.0f; break;
         case MusicState::Still:     music.intensity = 0.10f; music.tempo = 68.0f; break;
     }
+    music.tempo *= m_tempoScale;
     // Tension also raises the tempo a little, on top of the state's own.
     music.tempo += m_tension * 10.0f;
 
     AmbienceParams ambience;
     ambience.era = m_era;
     ambience.eraBlend = 1.0f;
-    ambience.instability = m_tension * 0.7f;
+    // Gated so a player can turn the paradox effect off without losing the rest
+    // of the feedback.
+    ambience.instability = m_tensionEnabled ? m_tension * 0.7f : 0.0f;
     // Left at 1.0: the synth scales itself to a sensible absolute level, so this
     // stays a clean user control. The *bus* gain (0.55 by default) is what makes
     // ambience sit under the music, which is the right place for that decision.
@@ -762,14 +807,31 @@ int AudioManager::runSelfTest()
     };
     static constexpr Step kOneShots[] = {
         {"ui_click",        Sfx::UiConfirm},
+        {"ui_cancel",       Sfx::UiDeny},
+        {"ui_hover",        Sfx::UiMove},
         {"player_attack",   Sfx::Attack},
         {"player_hit",      Sfx::PlayerHurt},
         {"enemy_hit",       Sfx::EnemyHurt},
         {"enemy_death",     Sfx::EnemyDie},
+        {"player_death",    Sfx::PlayerDie},
         {"era_shift",       Sfx::ShiftImpact},
+        {"era_shift_charge", Sfx::ShiftCharge},
         {"chrono_pickup",   Sfx::PickupChrono},
+        {"health_pickup",   Sfx::PickupHealth},
         {"seal_pickup",     Sfx::SealTaken},
         {"gate_opening",    Sfx::GateOpened},
+        {"jump",            Sfx::Jump},
+        {"land",            Sfx::Land},
+        {"dash",            Sfx::Dash},
+        {"hazard",          Sfx::Hazard},
+        {"victory",         Sfx::Victory},
+        // Every footstep surface, so a regression in one material shows up here
+        // rather than only as "the floor sounds wrong somewhere".
+        {"footstep_stone",  Sfx::FootstepStone},
+        {"footstep_grass",  Sfx::FootstepGrass},
+        {"footstep_sand",   Sfx::FootstepSand},
+        {"footstep_metal",  Sfx::FootstepMetal},
+        {"footstep_crystal", Sfx::FootstepCrystal},
     };
 
     const int rate = sampleRate();
@@ -780,6 +842,27 @@ int AudioManager::runSelfTest()
             m_log->info("AUDIO TEST", "{}", line);
         }
     };
+
+    // Which backends this SDL actually has compiled in. Runtime availability and
+    // compiled-in availability are different questions, and the difference is how
+    // a machine ends up with a working SDL and no way to make sound: asking SDL
+    // for `alsa` on a build without it fails at open time, long after the point
+    // where anyone would think to check.
+    {
+        const int count = SDL_GetNumAudioDrivers();
+        std::string drivers;
+        for (int i = 0; i < count; ++i) {
+            const char* name = SDL_GetAudioDriver(i);
+            if (name != nullptr) {
+                if (!drivers.empty()) {
+                    drivers += ",";
+                }
+                drivers += name;
+            }
+        }
+        emit("--- compiled-in SDL audio drivers ---");
+        emit("available_drivers=" + (drivers.empty() ? std::string("none") : drivers));
+    }
 
     emit("--- device ---");
     emit("device=" + std::string(m_driverName) + " rate=" + std::to_string(rate) +
@@ -844,6 +927,7 @@ int AudioManager::runSelfTest()
 
         std::string line = "[AUDIO TEST] event=" + std::string(step.label) +
                            " generated_samples=" + std::to_string(stats.samples) +
+                           " state=GENERATED+QUEUED" +
                            " rms=" + std::to_string(stats.rms) +
                            " peak=" + std::to_string(stats.peak) +
                            " zero_samples=" + std::to_string(stats.zeros) +

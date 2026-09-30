@@ -124,6 +124,11 @@ struct EventRecord {
     /// 0..1, how hard it was. A graze and a full swing are the same event with
     /// different numbers, which is how one emitter covers both.
     float strength = 1.0f;
+    /// What the player was standing on, for the events where the surface is the
+    /// point. Carried on the event rather than looked up again by the feedback
+    /// system, so presentation cannot disagree with the simulation about where
+    /// the player actually is.
+    TileKind surface = TileKind::Empty;
 };
 
 /// Non-player actions, kept apart from `PlayerInput` so the movement controller
@@ -222,7 +227,11 @@ public:
 
 private:
     void emit(WorldEvent kind, std::string text);
-    void emit(WorldEvent kind, Vec2 position, Vec2 direction, float strength);
+    void emit(WorldEvent kind, Vec2 position, Vec2 direction, float strength,
+              TileKind surface = TileKind::Empty);
+    /// The tile under the player's feet, for the events that care what they are
+    /// standing on.
+    [[nodiscard]] TileKind surfaceUnderfoot() const noexcept;
     void updateEraShift(const WorldCommands& commands);
     /// Turns the player's one-step edges into world events, so the presentation
     /// layer has a single event stream to read rather than two to correlate.

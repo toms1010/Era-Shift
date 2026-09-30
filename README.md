@@ -70,6 +70,7 @@ ctest --preset debug --output-on-failure
 | `--level <file>` | Load a specific level instead of the shipped one. |
 | `--demo` | Replace input with the built-in attract script. |
 | `--audio-debug` | Print the mixer's state: driver, buses, whether each bed is playing, backlog, level. |
+| `--audio-test` | Play every sound in sequence through the real device, log what each one did, and exit non-zero if any was silent or clipped. |
 | `--content <dir>` | Load assets and data from elsewhere. |
 | `--set key=value` | Override any configuration value. |
 | `--log-level`, `--log-file` | Logging. |

@@ -423,6 +423,11 @@ float sfxDuration(Sfx sfx) noexcept
         case Sfx::ShiftCharge:  return 0.35f;
         case Sfx::ShiftImpact:  return 0.80f;
         case Sfx::Hazard:       return 0.30f;
+        case Sfx::FootstepStone:   return 0.16f;
+        case Sfx::FootstepGrass:   return 0.18f;
+        case Sfx::FootstepSand:    return 0.20f;
+        case Sfx::FootstepMetal:   return 0.30f;
+        case Sfx::FootstepCrystal: return 0.26f;
         case Sfx::Victory:      return 1.60f;
     }
     return 0.2f;
@@ -450,6 +455,11 @@ std::string_view toString(Sfx sfx) noexcept
         case Sfx::ShiftCharge:   return "ShiftCharge";
         case Sfx::ShiftImpact:   return "ShiftImpact";
         case Sfx::Hazard:        return "Hazard";
+        case Sfx::FootstepStone:   return "FootstepStone";
+        case Sfx::FootstepGrass:   return "FootstepGrass";
+        case Sfx::FootstepSand:    return "FootstepSand";
+        case Sfx::FootstepMetal:   return "FootstepMetal";
+        case Sfx::FootstepCrystal: return "FootstepCrystal";
         case Sfx::Victory:       return "Victory";
     }
     return "?";
@@ -532,6 +542,42 @@ void renderSfx(Sfx sfx, int sampleRate, SampleBuffer& out)
             addTone(120.0f, 70.0f, 0.14f, 9.0f, 0.0f, duration);
             break;
         case Sfx::Dash: addNoise(0.20f, 4.0f, duration, 0.05f, 0.20f); break;
+
+        // Footsteps, one per material. Each is built from the two things that
+        // actually distinguish a surface by ear: how much broadband noise it
+        // makes, and how much pitched ring sits on top of it.
+        //
+        //   stone    hard, bright noise, almost no ring
+        //   grass    soft and dark, the noise barely there
+        //   sand     the quietest and the dullest, plus a slow swell
+        //   metal    noise transient plus two inharmonic partials that ring on
+        //   crystal  glassy, high, and slightly detuned so it shimmers
+        //
+        // Levels are set so every one of them is actually audible. The first
+        // versions of the soft two were 15dB below the stone step - quiet enough
+        // to be inaudible in play - which is what the `rms > 0.01` floor in the
+        // synth tests caught. Material variety is carried by timbre and by a
+        // modest level spread, not by making half the surfaces inaudible.
+        case Sfx::FootstepStone:
+            addNoise(0.30f, 20.0f, duration, 0.02f, 0.09f);
+            addTone(150.0f, 95.0f, 0.10f, 13.0f, 0.0f, duration);
+            break;
+        case Sfx::FootstepGrass:
+            addNoise(0.42f, 5.0f, duration, 0.05f, 0.11f);
+            break;
+        case Sfx::FootstepSand:
+            addNoise(0.27f, 2.5f, duration, 0.07f, 0.13f);
+            break;
+        case Sfx::FootstepMetal:
+            addNoise(0.09f, 24.0f, 0.06f, 0.01f, 0.06f);
+            addTone(1240.0f, 1235.0f, 0.26f, 3.0f, 0.0f, duration);
+            addTone(1867.0f, 1861.0f, 0.18f, 4.0f, 0.0f, duration);
+            break;
+        case Sfx::FootstepCrystal:
+            addNoise(0.055f, 26.0f, 0.05f, 0.01f, 0.05f);
+            addTone(1760.0f, 2340.0f, 0.20f, 2.0f, 0.0f, duration);
+            addTone(2640.0f, 2630.0f, 0.12f, 5.0f, 0.0f, duration);
+            break;
 
         case Sfx::Attack:
             addNoise(0.24f, 10.0f, 0.16f, 0.06f, 0.22f);

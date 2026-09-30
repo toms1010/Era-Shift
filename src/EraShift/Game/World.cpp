@@ -85,13 +85,18 @@ void World::emit(WorldEvent kind, std::string text)
     m_events.push_back(EventRecord{kind, std::move(text), m_player.body().center(), Vec2{1.0f, 0.0f}, 1.0f});
 }
 
-void World::emit(WorldEvent kind, Vec2 position, Vec2 direction, float strength)
+void World::emit(WorldEvent kind, Vec2 position, Vec2 direction, float strength, TileKind surface)
 {
     if (m_events.size() >= kMaxEvents) {
         m_events.erase(m_events.begin());
     }
-    m_events.push_back(EventRecord{kind, std::string{}, position, direction,
-                                   Graphics::clampValue(strength, 0.0f, 4.0f)});
+    EventRecord record;
+    record.kind      = kind;
+    record.position  = position;
+    record.direction = direction;
+    record.strength  = Graphics::clampValue(strength, 0.0f, 4.0f);
+    record.surface   = surface;
+    m_events.push_back(std::move(record));
 }
 
 std::vector<EventRecord> World::takeEvents()
@@ -428,8 +433,20 @@ void World::forwardPlayerEvents()
     }
     if (edges.footstep) {
         emit(WorldEvent::PlayerFootstep, centre, Vec2{0.0f, 1.0f},
-             Graphics::clampValue(std::fabs(m_player.body().velocity.x) / 250.0f, 0.2f, 1.4f));
+             Graphics::clampValue(std::fabs(m_player.body().velocity.x) / 250.0f, 0.2f, 1.4f),
+             surfaceUnderfoot());
     }
+}
+
+TileKind World::surfaceUnderfoot() const noexcept
+{
+    // The tile the player's feet are on, not the one their centre is in: a player
+    // straddling the edge of a bridge and a stone floor should read as the
+    // surface they are standing on rather than whichever cell happens to contain
+    // the middle of their body.
+    const Vec2  centre = m_player.body().center();
+    const float feet   = m_player.body().position.y + m_player.body().size.y;
+    return m_map.at(m_map.cellX(centre.x), m_map.cellY(feet)).kind;
 }
 
 void World::updatePickups(float dt)
