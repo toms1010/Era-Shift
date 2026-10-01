@@ -20,6 +20,9 @@
 
 namespace EraShift::Game {
 
+class Enemy;
+class Player;
+
 /// Every animation in the game. An enum rather than a string so a typo is a
 /// compile error, and so the clip table can be a plain array.
 enum class AnimId : std::uint8_t {
@@ -103,6 +106,33 @@ struct AnimationClip {
 /// The clip table. Built once; clips are constant for the life of the process.
 [[nodiscard]] const AnimationClip& clipFor(AnimId id) noexcept;
 [[nodiscard]] float defaultBlendTime(AnimId id) noexcept;
+
+// ---------------------------------------------------------------------------
+
+/// Which clip the player should be playing, from the simulation's state.
+///
+/// The switch is on simulation state and never on input, which is the whole point:
+/// the animation cannot get ahead of the physics or fall behind it, because it has
+/// no clock of its own to get ahead with.
+///
+/// `shiftHeld` is whether the era-shift key is *down*, not whether the player can
+/// afford a shift. That distinction is the entire reason this is a parameter
+/// rather than something read off the player: a player holding the shift key with
+/// no chrono to spend is not charging anything, and a player with a full chrono
+/// bar who is not touching the key is not charging either. Deriving it from
+/// anything else puts the semi-transparent charging pose on screen permanently.
+///
+/// It lives here, next to the clip table, rather than in the state that draws the
+/// player because it is pure logic over the simulation and the gameplay suite is
+/// the thing that can assert on it. A selection function no test can reach is a
+/// selection function that gets the argument wrong.
+[[nodiscard]] AnimId playerClipFor(const Player& player, bool shiftHeld) noexcept;
+
+/// The same for an enemy, from its AI state.
+///
+/// Being struck outranks the AI state, for the same reason it does on the player:
+/// the reaction is the only part of the hit the enemy cannot fail to communicate.
+[[nodiscard]] AnimId enemyClipFor(const Enemy& enemy) noexcept;
 
 // ---------------------------------------------------------------------------
 

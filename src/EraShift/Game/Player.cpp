@@ -31,6 +31,7 @@ void Player::reset(const Vec2& spawn, Era era)
     m_dashTimer   = 0.0f;
     m_dashCooldown = 0.0f;
     m_invulnTimer = 0.0f;
+    m_hurtTimer   = 0.0f;
     m_eraBlend    = 1.0f;
     m_attack      = AttackState{};
 }
@@ -84,6 +85,7 @@ bool Player::update(const TileMap& map, const PlayerInput& input, float dt)
 
     // --- timers -------------------------------------------------------------
     m_invulnTimer  = std::max(0.0f, m_invulnTimer - dt);
+    m_hurtTimer    = std::max(0.0f, m_hurtTimer - dt);
     m_dashCooldown = std::max(0.0f, m_dashCooldown - dt);
     m_coyoteTimer  = std::max(0.0f, m_coyoteTimer - dt);
     m_jumpBuffer   = std::max(0.0f, m_jumpBuffer - dt);
@@ -275,6 +277,9 @@ bool Player::takeDamage(float amount, Vec2 from)
 
     m_health = std::max(0.0f, m_health - amount);
     m_invulnTimer = m_tuning.invulnTime;
+    // The flinch runs its own, much shorter clock than the i-frames. See
+    // `Player::hurt()`.
+    m_hurtTimer = m_tuning.hurtTime;
     m_events.hurt = true;
 
     // Knockback always points away from the source. Dashing cancels it, which

@@ -339,8 +339,12 @@ void Engine::update(double fixedDelta)
     // tension the step just produced. It is here rather than in a state so that
     // the beds keep running identically in every state, and so a state can never
     // forget to feed them.
-    m_audio.update(static_cast<float>(fixedDelta), m_audio.era(), m_audio.musicState(),
-                   m_audio.tension());
+    //
+    // Only `dt` is passed. The era, the music state and the tension are set by
+    // `FeedbackSystem` through their own setters, and this used to take all three
+    // as arguments as well - which let the manager be handed its own values back,
+    // overwriting the targets a state had just set. See `AudioManager::update`.
+    m_audio.update(static_cast<float>(fixedDelta));
 }
 
 void Engine::render(double frameDelta, double alpha)

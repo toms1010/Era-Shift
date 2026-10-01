@@ -139,6 +139,18 @@ Three rules, each of which was a measured defect first:
    `applyEdgeFades` over the finished buffer, so it applies to everything
    regardless of how it is built.
 
+**A fourth rule, learned the hard way: a pitch jump is not a click.** Rules 1–3
+are all about *discontinuity in the waveform*, and a synthesiser can be perfectly
+continuous while being musically wrong. The era shift used to resolve the whole
+harmony out of `params.era` — triad, bass and arpeggio — inside a single 16ms
+block. Phases are accumulated, so nothing about the signal was discontinuous and
+it did not click; the pad simply moved several semitones at once, at the loudest
+moment in the game, while the world dissolved around it. Every edge-measuring
+test in this file passed. The bed now latches the note it is *sounding* when a
+shift is requested and slides toward the new era's, and the assertion that catches
+it is on the note, not on the samples — `MusicSynth::padNote()` exists for exactly
+that.
+
 Measured on captured output: −17.2dBFS RMS, −4.7dBFS peak, zero clipped samples.
 
 A note on how these were found, because it is the useful part: the first defect
@@ -296,6 +308,15 @@ shockwave.
 
 The charge is driven from whether the key is *actually* held, so a player can see
 what they are charging, aim it, and let it go.
+
+That is the whole condition — the key down, and chrono to spend — and the
+character pose has to use the same one. It is written twice, in
+`FeedbackSystem::update` and in `Game::playerClipFor`, and the test
+*"the charge pose and the charge aura agree on what charging is"* exists because
+they are two expressions of one rule in two files. They disagreed: the pose took
+"does the player have any chrono", which is true for the whole game, so the
+player spent every run in the translucent charging pose and never showed a walk
+cycle. A rule that needs to be in two places needs a test that says so.
 
 ### Screen effects
 

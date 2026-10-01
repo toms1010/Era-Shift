@@ -1,5 +1,7 @@
 #include "EraShift/Game/Animation.hpp"
 
+#include "EraShift/Game/Enemy.hpp"
+#include "EraShift/Game/Player.hpp"
 #include "EraShift/Graphics/Math.hpp"
 
 #include <algorithm>
@@ -349,6 +351,82 @@ float defaultBlendTime(AnimId id) noexcept
         case AnimId::EDie:     return 0.18f;
         default:               return 0.10f;
     }
+}
+
+AnimId playerClipFor(const Player& player, bool shiftHeld) noexcept
+{
+    if (!player.alive()) {
+        return AnimId::Death;
+    }
+    // Being hit outranks everything short of dying. It is the one reaction the
+    // player cannot afford to miss, so it is checked before the swing; the state
+    // that owns the controller then forces the play, because `AnimationController`
+    // refuses to cut a short action short and a swing in progress would otherwise
+    // swallow the flinch.
+    if (player.hurt()) {
+        return AnimId::Hurt;
+    }
+    // A swing is one clip covering all three simulation phases, so it is selected
+    // here and placed from `attackProgress()` by the caller.
+    if (player.attacking() || player.attackPhase() != AttackPhase::Idle) {
+        return AnimId::Attack;
+    }
+    if (player.dashing()) {
+        return AnimId::Dash;
+    }
+    // Charging a shift. Needs both the key down and something to spend: the
+    // charging pose is translucent, so putting it up for a player who is merely
+    // walking around with a full chrono bar makes the player permanently
+    // see-through and stops the walk cycle from ever being seen.
+    if (shiftHeld && player.chrono() > 0.0f) {
+        return AnimId::ShiftCharge;
+    }
+    if (!player.body().onGround) {
+        if (player.body().velocity.y < -40.0f) {
+            return AnimId::Jump;
+        }
+        if (player.body().velocity.y > 220.0f) {
+            return AnimId::Fall;
+        }
+        return AnimId::JumpStart;
+    }
+    const float speed = std::fabs(player.body().velocity.x);
+    if (speed < 12.0f) {
+        return AnimId::Idle;
+    }
+    return speed > 190.0f ? AnimId::Run : AnimId::Walk;
+}
+
+AnimId enemyClipFor(const Enemy& enemy) noexcept
+{
+    // Dying outranks everything, including the hurt flash it may still be carrying:
+    // a corpse that flinches is not a corpse.
+    if (enemy.state() == EnemyState::Dying) {
+        return AnimId::EDie;
+    }
+    // Being struck outranks the AI state, so a hit interrupts a windup rather than
+    // queueing behind it. This check used to sit *after* the switch below, where
+    // it was unreachable: the switch is exhaustive over the enum, so every path
+    // had already returned and `AnimId::EHurt` - a clip with three keys, a
+    // dedicated blend time and its own test - was never selected for anything. An
+    // enemy that is visibly struck and visibly unchanged reads as a miss.
+    if (enemy.hurt()) {
+        return AnimId::EHurt;
+    }
+    switch (enemy.state()) {
+        case EnemyState::Asleep:  return AnimId::EIdle;
+        case EnemyState::Idle:    return AnimId::EIdle;
+        case EnemyState::Patrol:  return AnimId::EPatrol;
+        case EnemyState::Chase:   return AnimId::EChase;
+        case EnemyState::Windup:  return AnimId::EWindup;
+        case EnemyState::Attack:  return AnimId::EAttack;
+        case EnemyState::Recover: return AnimId::ERecover;
+        case EnemyState::Dying:   return AnimId::EDie;
+    }
+    // Unreachable while the enum and this switch agree, which is exactly the
+    // property worth stating at the end of a function whose body used to be
+    // unreachable code.
+    return AnimId::EIdle;
 }
 
 void AnimationController::reset() noexcept

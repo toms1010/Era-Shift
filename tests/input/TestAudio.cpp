@@ -76,7 +76,9 @@ TEST_CASE("with no device the game still starts and reports it honestly")
     CHECK_FALSE(manager.audible());
 
     // Inert, not crashing.
-    manager.update(kStep, Game::Era::Present, MusicState::Combat, 0.5f);
+    manager.setMusicState(MusicState::Combat);
+    manager.setTension(0.5f);
+    manager.update(kStep);
     manager.play(Sfx::Jump);
     manager.playPriority(Sfx::ShiftImpact, 1.0f, 0.5f);
     manager.setEra(Game::Era::Future);
@@ -109,13 +111,15 @@ TEST_CASE("a bed keeps playing across many updates")
     }
     REQUIRE(manager->available());
 
-    manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+    manager->update(kStep);
 
     // Two hundred updates is three seconds of play. Before the fix the track had
     // stopped within the first handful.
     for (int i = 0; i < 200; ++i) {
-        manager->update(kStep, static_cast<Game::Era>(i % 3),
-                        static_cast<MusicState>(i % 4), static_cast<float>(i) / 200.0f);
+        manager->setEra(static_cast<Game::Era>(i % 3));
+        manager->setMusicState(static_cast<MusicState>(i % 4));
+        manager->setTension(static_cast<float>(i) / 200.0f);
+        manager->update(kStep);
     }
     CHECK(manager->available());   // still live after 200 updates
 }
@@ -132,20 +136,20 @@ TEST_CASE("a bed recovers after its stream is starved")
     }
     REQUIRE(manager->available());
 
-    manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+    manager->update(kStep);
 
     // With the beds stopped, `update` deliberately does not feed the streams, so
     // this is the starvation the watchdog is meant to survive.
     manager->setBedsPlaying(false);
     for (int i = 0; i < 120; ++i) {
-        manager->update(kStep, Game::Era::Present, MusicState::Still, 0.0f);
+        manager->update(kStep);
     }
 
     // Un-pause, and feed again. The beds must be running without anything else
     // having to notice.
     manager->setBedsPlaying(true);
     for (int i = 0; i < 60; ++i) {
-        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+        manager->update(kStep);
     }
     CHECK(manager->available());   // beds recovered
 }
@@ -165,7 +169,7 @@ TEST_CASE("every one-shot can be asked for on a live mixer")
         for (int i = 0; i <= static_cast<int>(Sfx::Victory); ++i) {
             const auto sfx = static_cast<Sfx>(i);
             manager->play(sfx, 1.0f);
-            manager->update(kStep, Game::Era::Present, MusicState::Combat, 0.0f);
+            manager->update(kStep);
         }
     }
     CHECK(manager->available());   // every one-shot fired without wedging the pool
@@ -195,7 +199,7 @@ TEST_CASE("a one-shot actually starts a mixer track")
     for (int i = 0; i <= static_cast<int>(Sfx::Victory); ++i) {
         const auto sfx = static_cast<Sfx>(i);
         manager->play(sfx, 1.0f);
-        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+        manager->update(kStep);
         // Checked per sound, not once at the end: the pool is six voices deep,
         // so a single check at the end could pass on a bed voice and prove
         // nothing about the one-shot.
@@ -213,6 +217,116 @@ TEST_CASE("the self-test reports no problems on a live device")
         return;
     }
     CHECK(manager->runSelfTest() == 0);
+}
+
+TEST_CASE("paradox tension reaches the audio, and only through its setter")
+{
+    // The regression, in the shape it actually failed: the parameter looked
+    // connected the whole time.
+    //
+    // `Engine::update` pumped the manager with the manager's *own* eased values:
+    //
+    //     m_audio.update(dt, m_audio.era(), m_audio.musicState(), m_audio.tension());
+    //
+    // and `update` began by writing those straight back into the continuous
+    // controls. `setTension(t)` sets the *target*, so being handed the current
+    // value is a fixed point: `m_tension += (m_tensionTarget - m_tension) * rate`
+    // with `m_tensionTarget == m_tension` is zero, forever. The target that
+    // `FeedbackSystem` had set earlier in the same frame was overwritten before
+    // anything could read it.
+    //
+    // Everything else hid it. `tension()` returned a plausible float, the trace
+    // printed it, the beds played, and the mixer was healthy - the audio was
+    // simply never told that paradox existed. Tempo instability, the widened
+    // tremolo and the ambience drop-out are all gated on this one number, so
+    // "you can hear paradox before you can see it" was silence.
+    //
+    // `update` now takes only `dt`, which is what makes this test possible to
+    // write at all: there is no longer a way to pass the tension back in.
+    auto manager = liveManager();
+    if (manager == nullptr) {
+        return;
+    }
+
+    manager->setTension(1.0f);
+    for (int i = 0; i < 120; ++i) {
+        manager->update(kStep);
+    }
+    CHECK_MESSAGE(manager->tension() > 0.8f,
+                  "tension never rose: " << manager->tension() << " after 120 updates");
+
+    // And it comes back down, so a paradox that resolves is audible too.
+    manager->setTension(0.0f);
+    for (int i = 0; i < 120; ++i) {
+        manager->update(kStep);
+    }
+    CHECK_LT(manager->tension(), 0.2f);
+}
+
+TEST_CASE("a muted or paused bed resumes where it left off")
+{
+    // The synths used to be `reset()` while muted or paused, under a comment
+    // claiming they were being advanced. A reset looks harmless because the bed
+    // is silent either way - and then unpausing starts the music again from the
+    // top of the bar, which in the middle of a fight sounds exactly like the game
+    // skipped.
+    //
+    // The bed's own clock is the observable. `MusicSynth` exposes its position and
+    // `AudioManager` publishes it, because "is the bed producing anything" cannot
+    // tell a bed that is still running from one that has been restarted.
+    auto manager = liveManager();
+    if (manager == nullptr) {
+        return;
+    }
+    for (int i = 0; i < 60; ++i) {
+        manager->update(kStep);
+    }
+    const float before = manager->diagnostics().musicPositionSeconds;
+    CHECK_GT(before, 0.5f);
+
+    manager->setBedsPlaying(false);
+    for (int i = 0; i < 60; ++i) {
+        manager->update(kStep);
+    }
+    // Still advancing while nothing is listening: that is the whole point.
+    CHECK_GT(manager->diagnostics().musicPositionSeconds, before);
+    const float whilePaused = manager->diagnostics().musicPositionSeconds;
+
+    manager->setBedsPlaying(true);
+    manager->update(kStep);
+    // It carries on from where it paused rather than starting again.
+    CHECK_GT(manager->diagnostics().musicPositionSeconds, whilePaused);
+    CHECK_GT(manager->diagnostics().musicPositionSeconds, 1.5f);
+}
+
+TEST_CASE("a manager can be shut down and started again")
+{
+    // `initialise` documents itself as safe to call twice, which implies the
+    // object survives a shutdown. The synths have to come back from it too, or a
+    // second run starts its beds halfway through the first one's bar - which is
+    // the same defect as BUG-024 from the other direction.
+    Core::Logger log;
+    AudioManager manager;
+    if (!manager.initialise(true, kSampleRate, &log)) {
+        return;   // no device on this machine
+    }
+    for (int i = 0; i < 60; ++i) {
+        manager.update(kStep);
+    }
+    REQUIRE(manager.diagnostics().musicPositionSeconds > 0.5f);
+
+    manager.shutdown();
+    CHECK_FALSE(manager.available());
+
+    REQUIRE(manager.initialise(true, kSampleRate, &log));
+    // Fresh clock, not the one the first run left behind.
+    CHECK(manager.diagnostics().musicPositionSeconds == doctest::Approx(0.0f));
+    for (int i = 0; i < 30; ++i) {
+        manager.update(kStep);
+    }
+    CHECK(manager.diagnostics().musicPlaying);
+    CHECK(manager.diagnostics().ambiencePlaying);
+    manager.shutdown();
 }
 
 TEST_CASE("volume settings reach the mixer")
@@ -399,12 +513,12 @@ TEST_CASE("a zero master gain silences the mixer, and full gain does not")
         return;
     }
     for (int i = 0; i < 30; ++i) {
-        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+        manager->update(kStep);
     }
 
     manager->setMasterVolume(0.0f);
     for (int i = 0; i < 30; ++i) {
-        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+        manager->update(kStep);
     }
     // The streams are still being fed - silence must come from the gain, not
     // from the synthesis having stopped.
@@ -413,7 +527,7 @@ TEST_CASE("a zero master gain silences the mixer, and full gain does not")
 
     manager->setMasterVolume(1.0f);
     for (int i = 0; i < 30; ++i) {
-        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+        manager->update(kStep);
     }
     CHECK(manager->diagnostics().musicPlaying);
 }
@@ -453,7 +567,7 @@ TEST_CASE("more one-shots than channels recycles without going quiet")
         for (int i = 0; i <= static_cast<int>(Sfx::Victory); ++i) {
             manager->play(static_cast<Sfx>(i), 1.0f);
         }
-        manager->update(kStep, Game::Era::Present, MusicState::Combat, 0.0f);
+        manager->update(kStep);
         CHECK_MESSAGE(manager->diagnostics().sfxVoices > 0,
                       "pool went silent on round " << round);
         // The pool is six deep; stealing must never exceed it.
@@ -476,7 +590,7 @@ TEST_CASE("both beds recover together after simultaneous starvation")
         return;
     }
     for (int i = 0; i < 60; ++i) {
-        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+        manager->update(kStep);
     }
     REQUIRE(manager->diagnostics().musicPlaying);
     REQUIRE(manager->diagnostics().ambiencePlaying);
@@ -485,11 +599,11 @@ TEST_CASE("both beds recover together after simultaneous starvation")
     // watchdog notice.
     manager->setBedsPlaying(false);
     for (int i = 0; i < 10; ++i) {
-        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+        manager->update(kStep);
     }
     manager->setBedsPlaying(true);
     for (int i = 0; i < 120; ++i) {
-        manager->update(kStep, Game::Era::Present, MusicState::Exploring, 0.0f);
+        manager->update(kStep);
     }
     const auto d = manager->diagnostics();
     CHECK_MESSAGE(d.musicPlaying, "music did not come back");
@@ -519,11 +633,11 @@ TEST_CASE("a long run of one-shots stays bounded and does not starve the beds")
         return;
     }
     for (int i = 0; i < 60; ++i) {
-        manager->update(kStep, Game::Era::Present, MusicState::Combat, 0.0f);
+        manager->update(kStep);
     }
     for (int i = 0; i < 5000; ++i) {
         manager->play(static_cast<Sfx>(i % 20), 1.0f);
-        manager->update(kStep, Game::Era::Present, MusicState::Combat, 0.0f);
+        manager->update(kStep);
     }
     const auto d = manager->diagnostics();
     CHECK_LE(d.sfxVoices, 6);

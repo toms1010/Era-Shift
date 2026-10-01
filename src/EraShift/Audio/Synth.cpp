@@ -49,6 +49,30 @@ float waveform(Voice::Wave wave, float phase, std::uint32_t noiseIndex) noexcept
     return 0.0f;
 }
 
+float mixValue(float a, float b, float t) noexcept { return a + (b - a) * t; }
+
+/// The semitone a voice of the pad triad sings in a given bar.
+///
+/// Expressed against a scale rather than against a blended "current scale",
+/// because an era transition interpolates between the two eras' *notes*. Two
+/// scales with different degree counts cannot be blended index by index - the
+/// Past has five degrees and the Present seven - but the chord each bar wants
+/// can be resolved in each era and then slid between, which is both easier to
+/// reason about and what a crossfade should sound like.
+float chordNote(const EraScale& scale, int bar, int voice) noexcept
+{
+    const int index = (bar * 2 + voice * 2) % scale.degreeCount;
+    const float octave = (voice == 2) ? 12.0f : 0.0f;
+    return static_cast<float>(scale.root + scale.degrees[index]) + octave;
+}
+
+/// The arpeggio's current note, in semitones.
+float leadNote(const EraScale& scale, int leadStep) noexcept
+{
+    return static_cast<float>(scale.root + scale.degrees[leadStep % scale.degreeCount]) +
+           static_cast<float>((leadStep / scale.degreeCount) % 2) * 12.0f;
+}
+
 } // namespace
 
 float noteFrequency(int semitonesFromA4) noexcept
@@ -144,10 +168,14 @@ void renderVoice(const Voice& voice, float frequency, float amplitude, SampleBuf
 // ---------------------------------------------------------------------------
 void MusicSynth::reset() noexcept
 {
+    m_elapsed = 0.0f;
     m_time = 0.0f;
     m_intensity = 0.0f;
     m_brightness = 1.0f;
     m_eraBlend = 1.0f;
+    m_era = Game::Era::Present;
+    m_eraKnown = false;
+    m_latchPending = false;
     m_step = 0;
     m_tremolo = 0.0f;
     m_leadPhase = 0.0f;
@@ -164,15 +192,46 @@ void MusicSynth::advance(float seconds, const MusicParams& params) noexcept
     // is what replaces a crossfade between two tracks.
     const float rate = std::min(1.0f, seconds * 3.0f);
     m_intensity += (params.intensity - m_intensity) * rate;
-    m_eraBlend   += (params.eraBlend - m_eraBlend) * rate;
     m_tempo     += (std::max(20.0f, params.tempo) - m_tempo) * rate;
 
-    const EraScale target = scaleFor(params.era);
-    m_brightness += (target.brightness - m_brightness) * rate;
+    // The era transition is detected here and latched in `render`, which is where
+    // the notes are chosen - the latch has to capture the notes that are
+    // *sounding*, and only `render` knows them.
+    //
+    // The very first era is adopted rather than transitioned to. A bed that has
+    // never rendered anything has not come *from* anywhere, and defaulting to
+    // `Present` meant a run that began in the Past faded in from the Present's
+    // harmony over its first second - a shift heard at the start of the game, for
+    // a shift that never happened.
+    const bool firstEra   = !m_eraKnown;
+    const bool eraChanged = !firstEra && params.era != m_era;
+    m_era      = params.era;
+    m_eraKnown = true;
+    if (eraChanged) {
+        // Restarted from where the bed currently is, not from the era it is
+        // leaving: a second shift partway through the first has to continue the
+        // slide rather than jump back to where the first one started.
+        //
+        // The blend does not advance on this frame, deliberately. Easing it first
+        // and then latching means the first block after the request is already a
+        // few percent of the way along the new slide, which is a fifth of a
+        // semitone of pitch jump inside 16ms on a double shift - a slew. Holding
+        // the note still for one block costs nothing and makes the transition
+        // continuous by construction rather than by a small enough constant.
+        m_latchPending = true;
+        m_eraBlend = 0.0f;
+    } else {
+        m_eraBlend += (1.0f - m_eraBlend) * rate;
+    }
+
+    // The brightness the filter is heading for is eased across the shift rather
+    // than snapped, so the pad opens with the era instead of after it.
+    m_brightness += (scaleFor(params.era).brightness - m_brightness) * rate;
 
     // The eased tempo, not the requested one: this is the clock that decides when
     // the next note fires, and moving it instantly is what used to click.
     const float secondsPerStep = 60.0f / std::max(20.0f, m_tempo) * 0.5f;
+    m_elapsed += seconds;
     m_time += seconds;
     while (m_time >= secondsPerStep) {
         m_time -= secondsPerStep;
@@ -194,10 +253,25 @@ void MusicSynth::render(MusicParams params, int frames, SampleBuffer& out)
     const float seconds = static_cast<float>(frames) / static_cast<float>(kSampleRate);
     advance(seconds, params);
 
-    const EraScale scale = scaleFor(params.era);
+    // Both ends of the era transition, and the blend between them.
+    //
+    // This is the part that was missing. The notes used to be resolved straight
+    // out of `params.era`, so a shift changed the whole harmony - the triad, the
+    // bass under it and the arpeggio - inside a single 16ms block. Phases are
+    // accumulated rather than computed, so it did not click; it snapped, which is
+    // a different and more tiresome defect.
+    //
+    // `m_padFrom` is the note the bed was *sounding* at the moment of the shift,
+    // latched rather than re-resolved from an era. Re-resolving it would be wrong
+    // the moment two shifts land close together: the bed would be halfway between
+    // the Past and the Future, and a second shift would send it back to the pure
+    // Future for a frame before sliding on to the Present.
+    const EraScale scale = scaleFor(m_era);
+    const float   blend = Graphics::clampValue(m_eraBlend, 0.0f, 1.0f);
+    const float   detune = scale.detune;
     // The same eased clock `advance` just ran, rather than a second one derived
-    // from the raw parameter. Two clocks reading the same value is fine until
-    // the value changes, and then they disagree about where the bar is.
+    // from the raw parameter. Two clocks reading the same value is fine until the
+    // value changes, and then they disagree about where the bar is.
     const float secondsPerStep = 60.0f / std::max(20.0f, m_tempo) * 0.5f;
     const float intensity = Graphics::clampValue(m_intensity, 0.0f, 1.0f);
     const float instability = Graphics::clampValue(params.instability, 0.0f, 1.0f);
@@ -211,12 +285,22 @@ void MusicSynth::render(MusicParams params, int frames, SampleBuffer& out)
     const int   leadStep  = static_cast<int>(std::floor(leadPhase));
 
     // The chord turns over each bar; the arpeggio walks the scale in eighths.
-    m_padTarget[0] = static_cast<float>(scale.root + scale.degrees[(bar * 2 + 0) % scale.degreeCount]);
-    m_padTarget[1] = static_cast<float>(scale.root + scale.degrees[(bar * 2 + 2) % scale.degreeCount]);
-    m_padTarget[2] = static_cast<float>(scale.root + scale.degrees[(bar * 2 + 4) % scale.degreeCount]) + 12.0f;
-
-    m_leadTarget = static_cast<float>(scale.root + scale.degrees[leadStep % scale.degreeCount]) +
-                   ((leadStep / scale.degreeCount) % 2) * 12.0f;
+    // Each voice resolves its note in the era being shifted to; on the frame a
+    // shift is requested, the sounding note becomes the far end of the slide.
+    for (int voice = 0; voice < 3; ++voice) {
+        const std::size_t v = static_cast<std::size_t>(voice);
+        if (m_latchPending) {
+            m_padFrom[v] = m_padTarget[v];
+        }
+        m_padTo[v] = chordNote(scale, bar, voice);
+        m_padTarget[v] = mixValue(m_padFrom[v], m_padTo[v], blend);
+    }
+    if (m_latchPending) {
+        m_leadFrom = m_leadTarget;
+    }
+    m_leadTo = leadNote(scale, leadStep);
+    m_leadTarget = mixValue(m_leadFrom, m_leadTo, blend);
+    m_latchPending = false;
 
     // The filter states are members, deliberately. As locals they were rebuilt
     // from zero on every call, which is a one-pole filter that re-attacks instead
@@ -275,7 +359,7 @@ void MusicSynth::render(MusicParams params, int frames, SampleBuffer& out)
         // Cheap width: the channels differ by a hair, which is enough to open up
         // the pad without smearing the centre the way a hard pan would.
         out[static_cast<std::size_t>(i) * 2] += mix;
-        out[static_cast<std::size_t>(i) * 2 + 1] += mix * (1.0f + scale.detune * (1.0f - instability) * 0.03f);
+        out[static_cast<std::size_t>(i) * 2 + 1] += mix * (1.0f + detune * (1.0f - instability) * 0.03f);
     }
 
     // Clamp, because summing a pad, an arpeggio, a bass and a detune can exceed
@@ -297,6 +381,14 @@ void AmbienceSynth::reset() noexcept
     m_motif = 0.0f;
     m_motifIndex = 0;
     m_eraBlend = 1.0f;
+    m_era = Game::Era::Present;
+    m_eraKnown = false;
+    m_latchPending = false;
+    m_windCutoffFrom = 0.045f;
+    m_windDepthFrom = 0.6f;
+    m_windDepthTo = 0.6f;
+    m_motifOctaveFrom = 0.0f;
+    m_motifOctaveTo = 0.0f;
     m_framesUntilMote = 0;
 }
 
@@ -310,46 +402,82 @@ void AmbienceSynth::render(AmbienceParams params, int frames, SampleBuffer& out)
 
     const float seconds = static_cast<float>(frames) / static_cast<float>(kSampleRate);
     m_time += seconds;
-    m_eraBlend += (Graphics::clampValue(params.eraBlend, 0.0f, 1.0f) - m_eraBlend) *
-                  std::min(1.0f, seconds * 3.0f);
-
-    const EraScale scale = scaleFor(params.era);
+    // Owned here rather than passed in, for the same reason as the music bed: a
+    // caller cannot know how far through a shift it is, so the parameter it used
+    // to accept could only ever be a constant. The first era is adopted rather
+    // than transitioned to, for the same reason: a bed that has never rendered
+    // anything has not come from anywhere.
+    const bool firstEra = !m_eraKnown;
+    const bool eraChanged = !firstEra && params.era != m_era;
+    m_era = params.era;
+    m_eraKnown = true;
+    if (eraChanged) {
+        // See `MusicSynth::advance`: the blend holds for the latch frame so the
+        // wind's cutoff does not slew on the block a shift lands.
+        m_latchPending = true;
+        m_eraBlend = 0.0f;
+    } else {
+        m_eraBlend += (1.0f - m_eraBlend) * std::min(1.0f, seconds * 3.0f);
+    }
+    const float blend = Graphics::clampValue(m_eraBlend, 0.0f, 1.0f);
 
     // The same noise through a different filter and a different motif per era.
     // That is enough for the three beds to be identifiable with your eyes shut,
     // which is the actual requirement.
-    float windCutoff = 0.10f;
-    float windDepth  = 0.9f;
-    int   motifEvery = 6;      ///< seconds
-    switch (params.era) {
-        case Era::Past:
-            windCutoff = 0.10f;   // leaves and open air
-            windDepth  = 0.9f;
-            motifEvery = 7;
-            break;
-        case Era::Present:
-            windCutoff = 0.045f;  // low, through stone
-            windDepth  = 0.6f;
-            motifEvery = 9;
-            break;
-        case Era::Future:
-            windCutoff = 0.16f;   // thin, synthetic
-            windDepth  = 0.8f;
-            motifEvery = 4;
-            break;
+    //
+    // Resolved per era and then blended, for the same reason as the music bed's
+    // harmony: a filter coefficient that jumps from 0.045 to 0.16 inside a single
+    // block is an instant change of the wind's colour, at exactly the moment the
+    // rest of the world is dissolving. The motif's *interval* is taken from the
+    // era being shifted to rather than blended, because it is only ever read when
+    // a new mote fires, and a mote landing half a second early is not a defect.
+    struct WindShape {
+        float cutoff;
+        float depth;
+        float motifSeconds;
+    };
+    const auto windFor = [](Era era) {
+        switch (era) {
+            case Era::Past:    return WindShape{0.10f, 0.9f, 7.0f};  // leaves and open air
+            case Era::Present: return WindShape{0.045f, 0.6f, 9.0f}; // low, through stone
+            case Era::Future:  return WindShape{0.16f, 0.8f, 4.0f};  // thin, synthetic
+        }
+        return WindShape{0.045f, 0.6f, 9.0f};
+    };
+    const WindShape toWind = windFor(m_era);
+    if (m_latchPending) {
+        // What is sounding right now becomes the far end of the next slide, for
+        // the same reason the music bed latches its notes: two shifts in quick
+        // succession must continue, not restart.
+        m_windCutoffFrom = m_windCutoffTo;
+        m_windDepthFrom  = m_windDepthTo;
+        m_motifOctaveFrom = m_motifOctaveTo;
     }
+    m_windCutoffTo = toWind.cutoff;
+    m_windDepthTo  = toWind.depth;
+    // The Past's motif sits an octave up. Slid rather than switched, so the mote
+    // arrives in place instead of appearing an octave away.
+    m_motifOctaveTo = (m_era == Era::Past) ? 12.0f : 0.0f;
+    m_latchPending  = false;
+    const EraScale toScale = scaleFor(m_era);
+    float windCutoff = mixValue(m_windCutoffFrom, m_windCutoffTo, blend);
+    const float windDepth = mixValue(m_windDepthFrom, m_windDepthTo, blend);
+    const float motifOctave = mixValue(m_motifOctaveFrom, m_motifOctaveTo, blend);
     windCutoff *= 1.0f + params.instability * 1.5f;
 
     m_framesUntilMote -= frames;
     if (m_framesUntilMote <= 0) {
-        m_framesUntilMote = motifEvery * kSampleRate / 2;
-        m_motifIndex      = (m_motifIndex + 1) % scale.degreeCount;
-        m_motif           = static_cast<float>(scale.root + scale.degrees[m_motifIndex]) +
-                             (params.era == Era::Past ? 12.0f : 0.0f);
+        m_framesUntilMote = static_cast<int>(toWind.motifSeconds * kSampleRate / 2);
+        m_motifIndex      = (m_motifIndex + 1) % toScale.degreeCount;
+        m_motif           = static_cast<float>(toScale.root + toScale.degrees[m_motifIndex]) +
+                             motifOctave;
     }
     m_motif *= std::exp(-seconds / 2.0f);
 
     const float instability = Graphics::clampValue(params.instability, 0.0f, 1.0f);
+    // Read from the era being shifted to: the Future's motif bends as it decays,
+    // and which timbre a mote gets is decided when the mote starts.
+    const bool future = m_era == Era::Future;
 
     for (int i = 0; i < frames; ++i) {
         const float t = static_cast<float>(m_time) +
@@ -371,7 +499,7 @@ void AmbienceSynth::render(AmbienceParams params, int frames, SampleBuffer& out)
         if (std::fabs(m_motif) > 0.01f) {
             const float f = noteFrequency(static_cast<int>(std::lround(m_motif)));
             tone = std::sin(kTwoPi * f * static_cast<float>(m_time)) * 0.10f;
-            if (params.era == Era::Future) {
+            if (future) {
                 // The Future's motif bends as it decays.
                 tone += std::sin(kTwoPi * f * 1.5f * static_cast<float>(m_time)) * 0.05f;
             }

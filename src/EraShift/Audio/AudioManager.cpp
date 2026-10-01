@@ -177,7 +177,7 @@ bool AudioManager::createBeds()
     // reads that as end-of-stream: the track starts, immediately reaches the end,
     // and stops. Nothing ever restarts it, so the bed is silent for the rest of
     // the session while every log line cheerfully reports a healthy mixer. The
-    // first `pushBeds` call arrives about 100ms later, by which point the track
+    // first `advanceBeds` call arrives about 100ms later, by which point the track
     // is already gone and the data just accumulates in the stream.
     //
     // The symptom is indistinguishable from "the game is quiet", which is why it
@@ -457,13 +457,17 @@ void AudioManager::setBedsPlaying(bool playing)
     }
 }
 
-void AudioManager::pushBeds(float dt)
+void AudioManager::advanceBeds(float dt, bool feed)
 {
     if (m_musicStream == nullptr || m_ambienceStream == nullptr) {
         return;
     }
 
-    // Tension eases, so paradox creeping up sounds like it is creeping.
+    // Tension eases, so paradox creeping up sounds like it is creeping. Eased
+    // rather than set because every consumer of it downstream is a *rate* rather
+    // than a level: tempo jitter, tremolo depth, how often the ambience drops
+    // out. Snapping them would read as the world glitching, which is the opposite
+    // of what a slow build of paradox should feel like.
     if (m_tensionEnabled) {
         m_tension += (m_tensionTarget - m_tension) * std::min(1.0f, dt * 2.0f);
     } else {
@@ -477,7 +481,6 @@ void AudioManager::pushBeds(float dt)
 
     MusicParams music;
     music.era = m_era;
-    music.eraBlend = 1.0f;
     music.instability = m_tension;
     // The synthesiser's own level, before the mixer's buses.
     //
@@ -505,7 +508,6 @@ void AudioManager::pushBeds(float dt)
 
     AmbienceParams ambience;
     ambience.era = m_era;
-    ambience.eraBlend = 1.0f;
     // Gated so a player can turn the paradox effect off without losing the rest
     // of the feedback.
     ambience.instability = m_tensionEnabled ? m_tension * 0.7f : 0.0f;
@@ -530,7 +532,9 @@ void AudioManager::pushBeds(float dt)
     // and only decays if the bed really has gone quiet.
     m_lastMusicPeak    = peakHold(m_lastMusicPeak, peakOf(m_musicBlock), dt);
     m_lastAmbiencePeak = peakHold(m_lastAmbiencePeak, peakOf(m_ambienceBlock), dt);
-    ++m_blocksFed;
+    if (feed) {
+        ++m_blocksFed;
+    }
 
 #ifdef ERASHIFT_AUDIO_TRACE
     if (m_traceCounter++ % 60 == 0) {
@@ -546,6 +550,10 @@ void AudioManager::pushBeds(float dt)
         }
     }
 #endif
+
+    if (!feed) {
+        return;
+    }
 
     const int musicBytes = static_cast<int>(m_musicBlock.size() * sizeof(float));
     const int ambienceBytes = static_cast<int>(m_ambienceBlock.size() * sizeof(float));
@@ -612,6 +620,8 @@ AudioManager::Diagnostics AudioManager::diagnostics() const noexcept
     d.lastAmbiencePeak = m_lastAmbiencePeak;
     d.blocksFed   = m_blocksFed;
     d.putFailures = m_putFailures;
+    d.musicPositionSeconds    = m_music.positionSeconds();
+    d.ambiencePositionSeconds = m_ambience.positionSeconds();
 
     if (m_musicTrack != nullptr) {
         d.musicPlaying = MIX_TrackPlaying(static_cast<MIX_Track*>(m_musicTrack));
@@ -657,6 +667,8 @@ std::string AudioManager::describe() const
            std::to_string(kSfxChannels) + "\n";
     out += "blocks fed  : " + std::to_string(d.blocksFed) + "  put failures " +
            std::to_string(d.putFailures) + "\n";
+    out += "bed clocks  : music " + std::to_string(d.musicPositionSeconds) + "s  ambience " +
+           std::to_string(d.ambiencePositionSeconds) + "s\n";
     return out;
 }
 
@@ -709,22 +721,22 @@ void AudioManager::ensureBedsPlaying()
 
 }
 
-void AudioManager::update(float dt, Era era, MusicState state, float tension)
+void AudioManager::update(float dt)
 {
-    setEra(era);
-    setMusicState(state);
-    setTension(tension);
     if (!m_available || dt <= 0.0f) {
         return;
     }
     if (m_muted || !m_bedsPlaying) {
-        // Still advance the synths so the beds are where they should be when
-        // unmuted, rather than jumping forward from wherever they were.
-        m_music.reset();
-        m_ambience.reset();
+        // The synths keep running while nothing is listening to them, rather than
+        // being reset. A reset looks like it does nothing, because the bed is
+        // silent either way, and then unmuting starts the music again from the top
+        // of the bar - a bed that jumps back to its first step in the middle of a
+        // fight. Advancing costs the same synthesis and keeps the phase
+        // continuous across the gap.
+        advanceBeds(dt, false);
         return;
     }
-    pushBeds(dt);
+    advanceBeds(dt, true);
 }
 
 void AudioManager::shutdown() noexcept
@@ -758,9 +770,15 @@ void AudioManager::shutdown() noexcept
     }
     m_available = false;
     m_driverName = "none";
+    // The synths go back to their initial state too, so that a manager which is
+    // shut down and initialised again starts its beds at the top of a bar rather
+    // than halfway through the last one. Nothing else in the engine re-initialises
+    // a manager, which is exactly why this had no caller: the muted path used to
+    // call `reset()` instead, for a reason that was not this one and was wrong.
+    m_music.reset();
+    m_ambience.reset();
     MIX_Quit();
 }
-
 
 namespace {
 
@@ -930,7 +948,7 @@ int AudioManager::runSelfTest()
         // Let it actually sound: a fixed step per iteration keeps this the same
         // code path the game uses rather than a test-only shortcut.
         for (int i = 0; i < 12; ++i) {
-            update(1.0f / 60.0f, m_era, m_musicState, m_tension);
+            update(1.0f / 60.0f);
         }
 
         int voices = 0;
@@ -964,8 +982,9 @@ int AudioManager::runSelfTest()
     // --- ambience bed --------------------------------------------------------
     {
         setBedsPlaying(true);
+        setMusicState(MusicState::Still);
         for (int i = 0; i < 60; ++i) {
-            update(1.0f / 60.0f, m_era, MusicState::Still, m_tension);
+            update(1.0f / 60.0f);
         }
         const Diagnostics d = diagnostics();
         // `lastAmbiencePeak` is a decaying hold, so a working bed that happens to
@@ -994,7 +1013,7 @@ int AudioManager::runSelfTest()
              {MusicState::Exploring, MusicState::Alert, MusicState::Combat, MusicState::Still}) {
             setMusicState(state);
             for (int i = 0; i < 30; ++i) {
-                update(1.0f / 60.0f, m_era, state, m_tension);
+                update(1.0f / 60.0f);
             }
             const Diagnostics d = diagnostics();
             if (d.lastMusicPeak <= 0.0f) {

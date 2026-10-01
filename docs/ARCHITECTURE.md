@@ -64,6 +64,15 @@ layer are in `Core` instead, and the reason is the same in all three cases:
 | The synthesiser | `Audio/Synth.cpp` | Oscillators, envelopes, filters, scales. Produces float PCM; knows nothing about a device. |
 | `ParticleSystem` | `Graphics/ParticleSystem.cpp` | A fixed pool with velocity integration. Draws nothing. |
 | `AnimationController` | `Game/Animation.cpp` | Clip sampling and blending. Poses, not pixels. |
+| Clip selection | `Game/Animation.cpp` | `playerClipFor` / `enemyClipFor`: which clip the simulation's state calls for. Pure logic over `Player` and `Enemy`, so it lives here rather than in the state that draws them. |
+
+`PlayingState` is the counter-example that proves the rule matters: it holds a
+renderer, an input device and a level, so nothing in it can be asserted on
+headlessly. Three separate bugs lived in its clip selection — a charge flag that
+was always true, an unreachable hurt clip, an unreachable enemy hurt clip — and
+all three were found the moment the decision moved next to the table it reads
+(`playerClipFor` in `Game/Animation.cpp`). The early return in its `update` that
+stopped the death animation from playing is still untested, for the same reason.
 
 `AudioManager` is the only part of the audio that needs a device, and it is in
 `erashift_engine`. The split is not tidy for its own sake — it is that

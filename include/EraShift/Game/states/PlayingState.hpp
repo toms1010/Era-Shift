@@ -73,7 +73,12 @@ private:
     void drawEnemies(const StateContext& ctx) const;
     void drawPlayer(const StateContext& ctx, const Vec2& interpolated) const;
     /// Chooses the player's clip from the simulation's state and advances it.
-    void updatePlayerAnimation(float dt);
+    ///
+    /// `shiftHeld` is the era-shift key's state for this frame. It is passed in
+    /// rather than read from the context because the selection logic itself lives
+    /// in `Game::playerClipFor`, next to the clip table, where the gameplay suite
+    /// can assert on it.
+    void updatePlayerAnimation(float dt, bool shiftHeld);
     /// Same, for every enemy, keyed on the enemy's stable id.
     void updateEnemyAnimations(float dt);
     /// The controller for an enemy, created on first sight. Pruned on death.

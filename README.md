@@ -315,9 +315,13 @@ that is what makes the music able to do the thing the game needs it to do.
 
 - **Music and ambience are streams, not loops.** An `SDL_AudioStream` per bed is
   fed a block of float PCM every fixed step and the track loops forever over it.
-  Changing era is a change to *parameters* — scale, cutoff, detune — eased over a
-  third of a second. Two crossfading loops cannot glide the Past into the Future
-  mid-bar; a synthesiser does it because the scale is a variable.
+  Changing era is a change to *parameters* — scale, cutoff, detune — and the synth
+  owns the transition rather than being told about it: on the frame a shift is
+  requested it latches the note it is *currently* sounding and slides toward the
+  new era's, so the harmony portamentos across instead of cutting, and two shifts
+  in quick succession continue the slide. Two crossfading loops cannot glide the
+  Past into the Future mid-bar; a synthesiser does it because the scale is a
+  variable.
 - **The three eras are different keys.** Past is a minor pentatonic, Present a
   natural minor, Future a whole tone. A symmetric scale has no leading tone, so a
   phrase built from it has nowhere to go — that is the sound of a timeline coming
@@ -371,8 +375,17 @@ A character is four rectangles. A rectangle animated well needs nine numbers.
 - **Clips carry markers**, and a marker can be a gameplay event. The attack's
   hit window is at 0.06s because `PlayerTuning` says the windup ends there, and a
   test asserts the two still agree.
+- **Which clip plays is a function of the simulation, in `Game/Animation.cpp`**,
+  next to the clip table rather than in the state that draws the player — so the
+  headless gameplay suite can assert on the decision. Being struck and dying are
+  forced past the rule below, because a reaction the player cannot see is a
+  reaction that did not happen.
 - **Non-looping clips refuse to be cut short**, so mashing attack does not
   visually restart the swing while the input buffer queues a second one.
+- **The charge pose is translucent, and only appears while the shift key is
+  actually down** — the same condition that drives the charge aura, so the
+  character and the particles cannot disagree about whether the player is
+  charging.
 - **Footsteps are counted in ground covered, not in time.** A clock-tied footstep
   slides at low speed and scrabbles at high speed.
 

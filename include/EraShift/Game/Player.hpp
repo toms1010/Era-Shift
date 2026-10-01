@@ -63,6 +63,13 @@ struct PlayerTuning {
     float maxHealth      = 5.0f;
     /// Seconds of invulnerability after taking a hit.
     float invulnTime     = 0.9f;
+    /// Seconds the hurt *animation* runs for, which is the clip's own length.
+    ///
+    /// Deliberately much shorter than the invulnerability window. i-frames last
+    /// most of a second, and a reaction pose held for most of a second is a
+    /// character standing around flinching; the pose is a flinch, and the
+    /// invulnerability is a separate rule with a separate length.
+    float hurtTime       = 0.22f;
     /// Knockback applied away from the source of the damage.
     float knockbackX     = 190.0f;
     float knockbackY     = 260.0f;
@@ -177,6 +184,13 @@ public:
     [[nodiscard]] float maxChrono() const noexcept { return m_tuning.maxChrono; }
     [[nodiscard]] float facing() const noexcept { return m_facing; }
     [[nodiscard]] bool invulnerable() const noexcept { return m_invulnTimer > 0.0f; }
+    /// True while the hurt reaction is playing.
+    ///
+    /// Separate from `invulnerable()`, which is most of a second of i-frames and
+    /// is not a thing to animate. This is the flinch, and it exists because
+    /// `stepEvents().hurt` is an edge lasting exactly one step - a reaction
+    /// selected from a one-frame flag is a reaction that never appears.
+    [[nodiscard]] bool hurt() const noexcept { return m_hurtTimer > 0.0f; }
     [[nodiscard]] bool dashing() const noexcept { return m_dashTimer > 0.0f; }
     [[nodiscard]] float dashCooldownRemaining() const noexcept { return m_dashCooldown; }
     [[nodiscard]] AttackPhase attackPhase() const noexcept { return m_attack.phase; }
@@ -215,6 +229,7 @@ private:
     float m_dashTimer     = 0.0f;
     float m_dashCooldown  = 0.0f;
     float m_invulnTimer   = 0.0f;
+    float m_hurtTimer     = 0.0f;
     float m_eraBlend      = 1.0f;
 
     AttackState m_attack;

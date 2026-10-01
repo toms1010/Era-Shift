@@ -81,14 +81,20 @@ void renderVoice(const Voice& voice, float frequency, float amplitude, SampleBuf
 
 /// Parameters for the music bed. Changing them mid-playback is what makes the
 /// music react to the era and to combat without any crossfade machinery.
+///
+/// There is no era blend parameter here, and its absence is deliberate. The blend
+/// used to be one - `eraBlend`, defaulted to 1.0 - and it was the only knob in
+/// the file that no code path ever read, so an era shift switched the harmony
+/// from one era to the next inside a single block instead of gliding. A caller
+/// cannot express "how far through the shift am I", which is why the value was
+/// always going to be a constant. The synth owns the transition now, and
+/// `eraBlend()` reports where it is.
 struct MusicParams {
     Game::Era era = Game::Era::Present;
     /// 0 = exploration, 1 = combat. Drives density and brightness.
     float  intensity = 0.0f;
     float  tempo     = 96.0f;    ///< Beats per minute.
     float  gain      = 0.5f;
-    /// 0..1. How far the era has shifted, used to glide rather than jump.
-    float  eraBlend  = 1.0f;
     /// Temporal instability, 0..1. Adds detune and a tremolo.
     float  instability = 0.0f;
 };
@@ -97,7 +103,6 @@ struct MusicParams {
 struct AmbienceParams {
     Game::Era era = Game::Era::Present;
     float gain = 0.6f;
-    float eraBlend = 1.0f;
     float instability = 0.0f;
 };
 
@@ -112,14 +117,54 @@ public:
     /// Renders `frames` of stereo audio into `out`, which is resized to match.
     void render(MusicParams params, int frames, SampleBuffer& out);
 
-    [[nodiscard]] float positionSeconds() const noexcept { return m_time; }
+    /// How far the bed has run, in seconds, since the last `reset`.
+    ///
+    /// Monotonic. This used to return the internal beat clock, which is
+    /// deliberately wrapped every eighth-note, so it reported a position between
+    /// zero and about 0.36 seconds no matter how long the bed had been playing -
+    /// and it went *backwards* every bar. A "how far has it run" that goes
+    /// backwards cannot tell a bed that is still running from one that has just
+    /// been restarted, which is the only thing it was wanted for.
+    [[nodiscard]] float positionSeconds() const noexcept { return m_elapsed; }
+
+    /// How many eighth-notes the bed has played.
+    ///
+    /// The step counter is the bed's clock at the resolution the music is written
+    /// at, and it is what a tempo change actually moves.
+    [[nodiscard]] int steps() const noexcept { return m_step; }
+
     [[nodiscard]] float intensity() const noexcept { return m_intensity; }
     [[nodiscard]] float brightness() const noexcept { return m_brightness; }
+
+    /// The semitone the pad's voice `voice` (0..2) is currently singing.
+    ///
+    /// Exposed because the property an era transition has to have is not "it
+    /// eventually arrives" but "the pitch it is singing never jumps" - and pitch
+    /// is invisible in the waveform, since oscillator phases are accumulated
+    /// rather than computed. A note that moves by a semitone per block is smooth
+    /// as a signal and glaring as music, so it has to be assertable directly.
+    [[nodiscard]] float padNote(int voice) const noexcept
+    {
+        const int v = voice < 0 ? 0 : (voice > 2 ? 2 : voice);
+        return m_padTarget[v];
+    }
+
+    /// How far through an era transition the bed is: 0 is entirely the era it is
+    /// shifting away from, 1 is entirely the new one.
+    ///
+    /// Exposed because it is the observable that proves the shift glides. It was
+    /// private state that nothing read, and a private number nothing reads is a
+    /// private number that is wrong.
+    [[nodiscard]] float eraBlend() const noexcept { return m_eraBlend; }
 
 private:
     void advance(float seconds, const MusicParams& params) noexcept;
 
-    float  m_time       = 0.0f;
+    /// Wall time rendered since the last reset. `m_time` below is *not* this: it
+    /// is the beat clock, wrapped every eighth-note, which is what a musical
+    /// instrument needs and is useless as a position.
+    float  m_elapsed     = 0.0f;
+    float  m_time        = 0.0f;
     /// The tempo the step clock actually runs at, eased toward `params.tempo`.
     ///
     /// Held as state rather than read from the parameters because tempo *is* the
@@ -130,7 +175,16 @@ private:
     float  m_tempo      = 96.0f;
     float  m_intensity  = 0.0f;
     float  m_brightness = 1.0f;
+    /// Progress of the current era transition. See `eraBlend()`.
     float  m_eraBlend   = 1.0f;
+    /// The era the bed is shifting to.
+    Game::Era m_era      = Game::Era::Present;
+    /// False until the first era has been seen, so the first one is adopted
+    /// rather than treated as a transition away from `Present`.
+    bool    m_eraKnown  = false;
+    /// Set for the one frame an era changes, which is when the notes being sounded
+    /// have to be latched as the far end of the next slide.
+    bool    m_latchPending = false;
     int    m_step       = 0;
     float  m_tremolo    = 0.0f;
     /// Running oscillator phases, kept across buffers so a note is continuous
@@ -152,8 +206,18 @@ private:
     /// bass jump a few times a second.
     float  m_bassPhase      = 0.0f;
     /// Semitone targets for the current bar and eighth, recomputed per block.
+    ///
+    /// `*From` is the note being sounded when the last shift began and `*To` is
+    /// the era's note; the target is slid between them. Latching the *sounding*
+    /// note rather than resolving it from an era is what makes two shifts in quick
+    /// succession continue the slide instead of jumping back to where the first
+    /// one started.
     float  m_padTarget[3]   = {0.0f, 0.0f, 0.0f};
+    float  m_padFrom[3]     = {0.0f, 0.0f, 0.0f};
+    float  m_padTo[3]       = {0.0f, 0.0f, 0.0f};
     float  m_leadTarget     = 0.0f;
+    float  m_leadFrom       = 0.0f;
+    float  m_leadTo         = 0.0f;
 };
 
 /// A continuously running ambience synthesiser: filtered noise, wind, and the
@@ -166,6 +230,9 @@ public:
     /// How far the bed has run. Proves a parameter change glided rather than
     /// restarting the bed from zero.
     [[nodiscard]] float positionSeconds() const noexcept { return m_time; }
+    /// See `MusicSynth::eraBlend()`. The ambience crosses between eras over the
+    /// same time constant as the music.
+    [[nodiscard]] float eraBlend() const noexcept { return m_eraBlend; }
 
 private:
     float  m_time       = 0.0f;
@@ -175,6 +242,20 @@ private:
     float  m_motif      = 0.0f;
     int    m_motifIndex = 0;
     float  m_eraBlend   = 1.0f;
+    Game::Era m_era      = Game::Era::Present;
+    /// See `MusicSynth::m_eraKnown` and `m_latchPending`.
+    bool    m_eraKnown = false;
+    bool    m_latchPending = false;
+    /// The wind filter's cutoff and depth at the moment the last shift began, and
+    /// the era's own values. Blended between, for the same reason as the music
+    /// bed's harmony.
+    float  m_windCutoffFrom = 0.045f;
+    float  m_windCutoffTo   = 0.045f;
+    float  m_windDepthFrom  = 0.6f;
+    float  m_windDepthTo    = 0.6f;
+    /// The Past's motif sits an octave up; latched and slid rather than switched.
+    float  m_motifOctaveFrom = 0.0f;
+    float  m_motifOctaveTo   = 0.0f;
     int    m_framesUntilMote = 0;
 };
 

@@ -77,7 +77,14 @@ public:
 
     /// Feeds the synths one frame's worth of audio. Call once per fixed step
     /// from the update path, before rendering.
-    void update(float dt, Game::Era era, MusicState state, float tension);
+    ///
+    /// Deliberately takes nothing but `dt`. The era, the music state and the
+    /// tension each have a setter, and this used to accept all three as
+    /// arguments as well - which meant a caller could pass the manager's *own*
+    /// values back in, and `setTension` on its own current value is a fixed
+    /// point that pins the tension at zero for the rest of the session. A
+    /// parameter that can be a no-op is a parameter that will be.
+    void update(float dt);
 
     // --- one-shots ----------------------------------------------------------
     /// Fire and forget. Pool exhaustion is silently tolerated: dropping a
@@ -147,6 +154,14 @@ public:
         float lastAmbiencePeak = 0.0f;
         /// One-shot channels currently sounding, out of the pool size.
         int   sfxVoices      = 0;
+        /// How far each bed's own clock has run.
+        ///
+        /// Exposed because the bed having *stopped* is indistinguishable from the
+        /// bed having *restarted* from the outside: both are audible, both keep
+        /// `musicPlaying` true, and both keep the peak hold high. The clock is the
+        /// only thing that distinguishes "still running" from "started again".
+        float musicPositionSeconds    = 0.0f;
+        float ambiencePositionSeconds = 0.0f;
         /// Blocks fed since start-up, and how many the streams refused. A rising
         /// refusal count is the only sign of a wedged stream.
         unsigned long blocksFed  = 0;
@@ -230,7 +245,10 @@ private:
     void ensureBedsPlaying();
     /// Returns a channel that is free, stealing the oldest if all are busy.
     Channel* claimChannel();
-    void pushBeds(float dt);
+    /// Renders one block for each bed, and only hands it to the mixer when
+    /// `feed` is set. A muted or paused game wants the synthesis and not the
+    /// feed, so that the bed resumes where it left off.
+    void advanceBeds(float dt, bool feed);
 
     bool  m_available = false;
     bool  m_muted = false;

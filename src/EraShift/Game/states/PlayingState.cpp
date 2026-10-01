@@ -421,11 +421,28 @@ void PlayingState::update(StateContext& ctx, double fixedDelta)
     commands.shiftPressed    = ctx.input->wasPressed(Action::ShiftEra);
     commands.interactPressed = ctx.input->wasPressed(Action::Interact);
 
+    // Whether the shift key is *down*, for the charge animation. Held rather than
+    // pressed, and deliberately not "can afford a shift": the charge pose is
+    // translucent, so deriving it from anything other than the key being held
+    // leaves the player permanently see-through and never showing a walk cycle.
+    const bool shiftHeld = ctx.input->isDown(Action::ShiftEra);
+
     // --- outcomes -----------------------------------------------------------
     if (m_world.outcome() != Game::Outcome::Running) {
         // The world keeps rendering behind the results screen, so hold it for a
         // moment: cutting straight to a panel the instant the player dies takes
         // away the last frame of what killed them. A keypress skips the wait.
+        //
+        // The *animation* keeps running through that hold, which is the point of
+        // holding at all. Returning here before the presentation updates froze the
+        // player's rig one frame into the death clip for the whole 1.4 seconds, so
+        // the last thing the player ever saw of their own run was a single frame of
+        // it. Same arrangement as hit-stop: the simulation stops, the picture
+        // finishes what it started.
+        m_feedback.update(ctx, fixedDelta, m_world);
+        updatePlayerAnimation(dt, shiftHeld);
+        updateEnemyAnimations(dt);
+
         m_outcomeDelay -= dt;
         const bool confirmed = ctx.input->wasPressed(Action::Interact) ||
                                ctx.input->wasPressed(Action::Jump);
@@ -469,7 +486,7 @@ void PlayingState::update(StateContext& ctx, double fixedDelta)
     }
 
     // --- animation -----------------------------------------------------------
-    updatePlayerAnimation(dt);
+    updatePlayerAnimation(dt, shiftHeld);
     updateEnemyAnimations(dt);
 
     // --- camera -------------------------------------------------------------
@@ -497,47 +514,6 @@ void PlayingState::update(StateContext& ctx, double fixedDelta)
 // ---------------------------------------------------------------------------
 namespace {
 
-/// Picks the clip for the player from what the simulation is doing.
-///
-/// The switch is on simulation state, not on input, which is the whole point:
-/// the animation cannot get ahead of the physics or fall behind it, because it
-/// has no clock of its own to get ahead with. Where a single action spans
-/// several simulation phases - a swing, which is windup then active then
-/// recovery - one clip covers all of it and its time is driven from
-/// `attackProgress()`.
-AnimId playerClipFor(const Game::World& world, bool charging)
-{
-    const Game::Player& player = world.player();
-
-    if (!player.alive()) {
-        return AnimId::Death;
-    }
-    if (player.attacking() || player.attackPhase() != Game::AttackPhase::Idle) {
-        return AnimId::Attack;
-    }
-    if (player.dashing()) {
-        return AnimId::Dash;
-    }
-    if (charging) {
-        return AnimId::ShiftCharge;
-    }
-    if (!player.body().onGround) {
-        if (player.body().velocity.y < -40.0f) {
-            return AnimId::Jump;
-        }
-        if (player.body().velocity.y > 220.0f) {
-            return AnimId::Fall;
-        }
-        return AnimId::JumpStart;
-    }
-    const float speed = std::fabs(player.body().velocity.x);
-    if (speed < 12.0f) {
-        return AnimId::Idle;
-    }
-    return speed > 190.0f ? AnimId::Run : AnimId::Walk;
-}
-
-/// The same for an enemy, from its AI state.
 /// Applies a rig pose to a rectangle: squash about the feet, then lean about
 /// the centre.
 ///
@@ -566,36 +542,21 @@ Rect poseRect(const Rect& base, const Game::Pose& pose, float facing)
     return out;
 }
 
-AnimId enemyClipFor(const Game::Enemy& enemy)
-{
-    if (enemy.state() == Game::EnemyState::Dying) {
-        return AnimId::EDie;
-    }
-    switch (enemy.state()) {
-        case Game::EnemyState::Asleep:  return AnimId::EIdle;
-        case Game::EnemyState::Idle:    return AnimId::EIdle;
-        case Game::EnemyState::Patrol:  return AnimId::EPatrol;
-        case Game::EnemyState::Chase:   return AnimId::EChase;
-        case Game::EnemyState::Windup:  return AnimId::EWindup;
-        case Game::EnemyState::Attack:  return AnimId::EAttack;
-        case Game::EnemyState::Recover: return AnimId::ERecover;
-        // The enemy's hurt state is a frame, not a state: `takeDamage` sets a
-        // flash timer rather than entering a phase, so the hurt animation is
-        // selected from that flag instead of from the AI state.
-        case Game::EnemyState::Dying:   return AnimId::EDie;
-    }
-    return enemy.hurt() ? AnimId::EHurt : AnimId::EIdle;
-}
-
 } // namespace
 
-void PlayingState::updatePlayerAnimation(float dt)
+void PlayingState::updatePlayerAnimation(float dt, bool shiftHeld)
 {
     const Game::Player& player = m_world.player();
-    const bool charging = m_world.player().chrono() > 0.0f;
+    const AnimId wanted = Game::playerClipFor(player, shiftHeld);
 
-    const AnimId wanted = playerClipFor(m_world, charging);
-    m_playerAnim.play(wanted);
+    // A reaction is forced. `play` refuses to cut a short action short, which is
+    // right for two actions competing for the same gesture - a swing must not be
+    // visually restarted by mashing - and wrong for a reaction, which has to be
+    // seen or the game has failed to tell the player they were hit. Dying is the
+    // same argument with more behind it: the death clip is the last thing anyone
+    // sees of that run, and it must not queue behind a swing.
+    const bool reaction = (wanted == AnimId::Hurt || wanted == AnimId::Death);
+    m_playerAnim.play(wanted, reaction);
 
     // A swing is one clip covering all three simulation phases, so its time is
     // set from the simulation rather than advanced. Everything else free-runs on
@@ -628,7 +589,12 @@ void PlayingState::updateEnemyAnimations(float dt)
         // Only enemies in the current era animate; a sleeping one is drawn as an
         // outline, and a running walk cycle behind an outline would be odd.
         if (enemy.inCurrentEra()) {
-            it->second.play(enemyClipFor(enemy));
+            // A hurt enemy is forced for the same reason the player's is: an
+            // enemy that is visibly struck and visibly unchanged reads as a miss,
+            // which is the single most damaging thing this game can get wrong
+            // about its own combat.
+            const AnimId wanted = Game::enemyClipFor(enemy);
+            it->second.play(wanted, wanted == AnimId::EHurt || wanted == AnimId::EDie);
             it->second.update(dt);
         }
         live.emplace(enemy.id(), it->second);
@@ -1141,7 +1107,6 @@ void PlayingState::drawPlayer(const StateContext& ctx, const Vec2& interpolated)
 
     renderer.setBlendMode(BlendMode::None);
 }
-
 
 void PlayingState::drawHud(const StateContext& ctx, const Rect& area) const
 {

@@ -63,6 +63,12 @@ int zeroCrossings(const SampleBuffer& buffer, int stride = 2)
     return count;
 }
 
+/// One fixed simulation step's worth of audio, which is the block size the game
+/// actually feeds the beds. Using the real one keeps the timings in these tests
+/// honest: a transition has to be measured in the units it happens in.
+constexpr int kBlock = kSampleRate / 60;
+constexpr int kBlocksPerSecond = 60;
+
 /// Renders a one second block of the music bed.
 SampleBuffer renderMusic(MusicParams params)
 {
@@ -314,13 +320,22 @@ TEST_CASE("a tempo change moves the bed's clock")
     fastParams.tempo = 180.0f;
 
     SampleBuffer buffer;
-    slow.render(slowParams, kSampleRate, buffer);
-    slow.render(slowParams, kSampleRate, buffer);
-    const float slowPosition = slow.positionSeconds();
+    for (int i = 0; i < 2; ++i) {
+        slow.render(slowParams, kSampleRate, buffer);
+        fast.render(fastParams, kSampleRate, buffer);
+    }
 
-    fast.render(fastParams, kSampleRate, buffer);
-    fast.render(fastParams, kSampleRate, buffer);
-    CHECK(fast.positionSeconds() != doctest::Approx(slowPosition));
+    // The step count, not the position clock. Both synths were handed the same
+    // wall time, so they have run for the same number of seconds - what a tempo
+    // change moves is how many eighth-notes fit into it, and at 180bpm that is
+    // three times as many as at 60.
+    //
+    // This used to compare `positionSeconds()`, which was returning the wrapped
+    // beat clock, so it passed for the wrong reason: the two values differed
+    // because each had been rounded a different number of times, not because the
+    // tempo did anything.
+    CHECK(fast.steps() > slow.steps() * 2);
+    CHECK(fast.positionSeconds() == doctest::Approx(slow.positionSeconds()).epsilon(0.01f));
 }
 
 TEST_CASE("instability is audible and bounded")
@@ -385,6 +400,162 @@ TEST_CASE("ambience survives a change of era without restarting")
     second.era = Era::Future;
     synth.render(second, kSampleRate, buffer);
     CHECK(synth.positionSeconds() > after);
+}
+
+TEST_CASE("an era shift glides, and the glide can be heard")
+{
+    // The regression. `MusicSynth` carried an `eraBlend` member which was eased
+    // every block and then read by nothing, and `MusicParams` carried a matching
+    // `eraBlend` parameter which the manager set to the constant 1.0 - because a
+    // caller has no way to know how far through a shift it is, so any value it
+    // passed could only ever be a constant.
+    //
+    // So the harmony was resolved straight out of `params.era`: the triad, the
+    // bass under it and the arpeggio all moved to the new era's notes inside a
+    // single 16ms block. It did not click, because oscillator phases are
+    // accumulated rather than computed - it snapped. The era shift is the loudest
+    // moment in the game and it is the one time the beds were allowed to cut.
+    //
+    // Two synths are given byte-identical histories and then told to shift, and
+    // the only difference between them is how long afterwards they are asked to
+    // render. Before the fix they produced identical audio, which is the whole
+    // defect in one line: there was no difference between "just shifted" and
+    // "long since shifted".
+    MusicParams past;
+    past.era       = Era::Past;
+    past.intensity = 0.0f;
+    MusicParams future = past;
+    future.era = Era::Future;
+
+    MusicSynth justAfter;
+    MusicSynth settled;
+    MusicSynth halfway;
+    SampleBuffer earlyBlock;
+    SampleBuffer lateBlock;
+    for (int i = 0; i < kBlocksPerSecond * 2; ++i) {
+        justAfter.render(past, kBlock, earlyBlock);
+        settled.render(past, kBlock, lateBlock);
+        halfway.render(past, kBlock, earlyBlock);
+    }
+    REQUIRE(justAfter.eraBlend() == doctest::Approx(1.0f).epsilon(0.001f));
+    // All three have sung the same bar, so this is one number: the pitch of the
+    // Past's chord.
+    const float pastNote = justAfter.padNote(0);
+    CHECK(settled.padNote(0) == doctest::Approx(pastNote).epsilon(0.001f));
+    CHECK(halfway.padNote(0) == doctest::Approx(pastNote).epsilon(0.001f));
+
+    justAfter.render(future, kBlock, earlyBlock);
+    for (int i = 0; i < kBlocksPerSecond * 2; ++i) {
+        settled.render(future, kBlock, lateBlock);
+    }
+    // And this is the Future's chord, over the same bar.
+    const float futureNote = settled.padNote(0);
+    REQUIRE(futureNote != doctest::Approx(pastNote).epsilon(0.5f));
+
+    CHECK(justAfter.eraBlend() < 0.2f);
+    CHECK(settled.eraBlend() > 0.95f);
+    // The audio differs, trivially - the two are seconds apart in the bar.
+    CHECK(earlyBlock != lateBlock);
+
+    // The property that matters: on the frame the shift is requested, the bed is
+    // still singing the era it was in. Before the fix this was the Future's note
+    // the instant the era changed, which is the whole defect - not a click, since
+    // the phases are continuous, but a jump of several semitones in 16ms.
+    CHECK_MESSAGE(justAfter.padNote(0) == doctest::Approx(pastNote).epsilon(0.02f),
+                  "the harmony jumped to the new era in a single block");
+    CHECK(settled.padNote(0) == doctest::Approx(futureNote).epsilon(0.02f));
+
+    // And half way through the transition it is genuinely between the two, rather
+    // than parked at one end or the other.
+    halfway.render(future, kBlock, earlyBlock);   // request the shift
+    while (halfway.eraBlend() < 0.5f) {
+        halfway.render(future, kBlock, earlyBlock);
+    }
+    const float low  = std::min(pastNote, futureNote);
+    const float high = std::max(pastNote, futureNote);
+    const float atHalfway = halfway.padNote(0);
+    // doctest wants one comparison per assertion, so this is two: above the old
+    // era's chord and below the new one's.
+    INFO("halfway note " << atHalfway << ", past " << low << ", future " << high);
+    CHECK(atHalfway > low + 0.5f);
+    CHECK(atHalfway < high - 0.5f);
+}
+
+TEST_CASE("the ambience glides between eras too")
+{
+    // Same defect, same shape, on the other bed: the wind's filter coefficient
+    // went from one era's to the other's inside a block, at the exact moment the
+    // rest of the world was dissolving.
+    AmbienceParams past;
+    past.era = Era::Past;
+    AmbienceParams future = past;
+    future.era = Era::Future;
+
+    AmbienceSynth justAfter;
+    AmbienceSynth settled;
+    SampleBuffer earlyBlock;
+    SampleBuffer lateBlock;
+    for (int i = 0; i < kBlocksPerSecond * 2; ++i) {
+        justAfter.render(past, kBlock, earlyBlock);
+        settled.render(past, kBlock, lateBlock);
+    }
+
+    justAfter.render(future, kBlock, earlyBlock);
+    for (int i = 0; i < kBlocksPerSecond * 2; ++i) {
+        settled.render(future, kBlock, lateBlock);
+    }
+
+    CHECK(justAfter.eraBlend() < 0.2f);
+    CHECK(settled.eraBlend() > 0.95f);
+    CHECK(earlyBlock != lateBlock);
+}
+
+TEST_CASE("two shifts in quick succession glide from where the music is")
+{
+    // `m_fromEra` is the era the bed was last *rendering*, not the era it was
+    // last asked for. Getting that wrong means a second shift partway through the
+    // first jumps back to an era the player has already left - which is a cut, in
+    // the middle of a transition that was supposed to be a glide.
+    MusicSynth synth;
+    MusicParams params;
+    params.era       = Era::Past;
+    params.intensity = 0.0f;
+    SampleBuffer buffer;
+    for (int i = 0; i < kBlocksPerSecond * 2; ++i) {
+        synth.render(params, kBlock, buffer);
+    }
+
+    params.era = Era::Future;
+    synth.render(params, kBlock, buffer);
+    for (int i = 0; i < kBlocksPerSecond / 2; ++i) {
+        synth.render(params, kBlock, buffer);
+    }
+    // Halfway through the first shift.
+    const float between = synth.eraBlend();
+    CHECK(between > 0.6f);
+    CHECK(between < 0.9f);
+
+    // Straight into a second shift, to the third era.
+    //
+    // The pitch is the property that has to hold, not the blend: a note that has
+    // been sliding for half a second cannot jump when the next shift lands. It
+    // cannot jump *visibly* in the waveform either, because oscillator phases are
+    // accumulated rather than computed - so the defect this protects is invisible
+    // to a sample-level test and obvious to a player.
+    const float noteBefore = synth.padNote(0);
+    params.era = Era::Present;
+    synth.render(params, kBlock, buffer);
+    CHECK(synth.padNote(0) == doctest::Approx(noteBefore).epsilon(0.02f));
+    // A new transition is genuinely under way - it is not the first one still
+    // running - and it continues sliding rather than restarting.
+    CHECK(synth.eraBlend() < 0.2f);
+
+    // And the slide carries on all the way to the third era.
+    for (int i = 0; i < kBlocksPerSecond * 2; ++i) {
+        synth.render(params, kBlock, buffer);
+    }
+    CHECK(synth.eraBlend() > 0.95f);
+    CHECK(synth.padNote(0) != doctest::Approx(noteBefore).epsilon(0.5f));
 }
 
 TEST_CASE("a zero-length render is safe")

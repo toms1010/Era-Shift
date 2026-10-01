@@ -62,6 +62,112 @@ behaviour that was hardcoded, so those three are now wired to the values they we
 always meant to change; the other five were deleted rather than left looking
 functional. Every key in the file now has a consumer.
 
+**Paradox never reached the audio at all (BUG-022, high).** No music or ambience
+parameter responded to paradox, ever: the tempo never destabilised, the tremolo
+never widened, the ambience never dropped out. `Engine::update` pumped the manager
+with the manager's *own* eased values — `m_audio.update(dt, m_audio.era(),
+m_audio.musicState(), m_audio.tension())` — and `update` wrote all three straight
+back into the continuous controls. `setTension` sets the *target*; the current
+value is a second, eased field, so the round trip made
+`m_tension += (m_tensionTarget - m_tension) * rate` identically zero. Not
+approaching zero, from the first frame to the last. `setEra` and `setMusicState`
+were being fed back too but have no easing filter in front of them, so the
+destruction was specific to the one parameter that had one. `update` now takes
+only `dt` and each continuous control has exactly one way in; tension reads 0.97
+after two seconds at full paradox, and comes back down.
+
+**A shift snapped the music to the new era instead of gliding it (BUG-023,
+medium).** `MusicSynth` and `AmbienceSynth` each eased an `eraBlend` member that
+nothing read, fed by a `MusicParams::eraBlend` the only caller set to the constant
+`1.0` — the only value it could have had, because a caller cannot know how far
+through a shift it is. The notes were resolved straight out of `params.era`, so
+the whole harmony jumped inside one 16ms block at the loudest moment in the game.
+It did not click, which is exactly why it survived: a phase-continuous oscillator
+does not click when its frequency changes, it slides. The pad now portamentos
+between eras — the note being *sounded* is latched when a shift is requested, so
+two shifts in quick succession continue the slide instead of jumping back to the
+previous target — and the parameter is gone rather than fixed, since a parameter
+that cannot be answered can only ever be a constant.
+
+**The player was permanently in the shift-charge pose (BUG-018, high).** The clip
+selector took a `charging` flag derived from `chrono() > 0`, which is true for
+essentially all of play, and the charge branch sat above the grounded checks, so
+`Idle`, `Walk` and `Run` were three clips with no path that could select them. The
+charge clip is translucent by design, so the player was also a permanent ghost:
+a probe against the attract script read `ShiftCharge` at alpha 0.70–0.99 where it
+should have read `Idle` or `Run` at 1.00. The flag now means what it says and the
+state passes the shift key, which is the condition `FeedbackSystem` already used
+for the charge aura, so the pose and the particles cannot disagree about what
+charging is.
+
+**Being hit played no animation at all (BUG-019, medium).** `AnimId::Hurt` had
+three keys and its own 40ms blend time and was unreachable: the player selector
+had no hurt case, and the only signal available was `PlayerStepEvents::hurt`, an
+edge that is true for exactly one step. `Player` now carries a `hurt` timer the
+way `Enemy` already did, on its own 0.22s clock rather than the 0.9s
+invulnerability window — a flinch held for most of a second is a character
+wincing, not a reaction. Reactions are also forced past `play`'s refuse-to-cut-an-
+action-short rule, which is right for a mash and wrong for the game failing to
+tell you that you were hit.
+
+**A struck enemy did not react either (BUG-020, medium).** Same defect, sharper
+form: `enemyClipFor` had its hurt check *after* a `switch` that is exhaustive
+over `EnemyState`, so every path had already returned and the line was dead code.
+Being struck now outranks the AI state, which matters most during a windup — a
+telegraph an enemy can shrug off is not a telegraph.
+
+**The death animation never played (BUG-021, high).** `PlayingState::update`
+returned from its outcome branch before the animation updates, so the 1.4-second
+hold that exists to show the player what killed them instead showed them one frame
+of the death clip, frozen. The settled path now runs feedback and animation before
+returning, which is the same arrangement the code already uses for hit-stop: the
+simulation stops, the picture finishes what it started. This is the only fix here
+without a regression test — the branch returns before it does anything unless it
+has a renderer, and adding a seam for a three-line ordering fix would be a larger
+change than the fix. It is called out in `BUG_TRACKER.md` as the entry most likely
+to come back, because the early return still looks correct.
+
+**Unmuting restarted the music from the top of the bar (BUG-024, low).** The
+muted and paused paths called `MusicSynth::reset()` under a comment claiming they
+were advancing the synths. A reset looks like it does nothing, because the bed is
+silent either way, and then unpausing replays the first step of the first bar
+mid-fight. "Produce audio" and "give the audio to the mixer" are now separate
+operations, so a muted or paused game keeps its phase, its bar and its place in
+the era transition.
+
+**`positionSeconds` reported a position that went backwards (BUG-025, low).**
+`MusicSynth` returned its beat clock, which is wrapped every eighth-note, so it
+reported 0–0.36s no matter how long the bed had played and jumped backwards every
+bar. A monotonic `m_elapsed` is returned instead, and a new `steps()` accessor
+exposes the counter the existing tempo test was *about*. That test passed for the
+wrong reason: two synths at different tempos had each been wrapped a different
+number of times, so the values differed, which it read as the tempo moving the
+clock.
+
+### Changed
+
+- **`playerClipFor` and `enemyClipFor` now live in `Game/Animation.cpp`**, next to
+  the clip table, instead of the anonymous namespace of `PlayingState.cpp`. They
+  are pure logic over the simulation and neither needs a renderer. A selection
+  function no test can call is a selection function that gets its argument wrong,
+  which is what happened three separate times.
+- **`AudioManager::update` takes only `dt`.** The era, music state and tension
+  enter through their setters, one way each. It has a new `positionSeconds` pair
+  in `Diagnostics`, which is the only thing that can tell a bed that is still
+  running from one that has been restarted: both are audible, both keep
+  `musicPlaying` true, and both keep the peak hold high.
+- **`MusicParams` and `AmbienceParams` no longer have an `eraBlend` field**, and
+  both synths expose `eraBlend()` as a read-only progress value instead. `reset()`
+  no longer presumes `Present`: a fresh bed adopts its first era rather than
+  treating it as a transition, so a run that begins in the Past no longer fades in
+  from the Present's harmony.
+- **`Player` gained `hurt()` and `PlayerTuning::hurtTime`**, a 0.22s flinch clock
+  separate from the 0.9s invulnerability window.
+- **`AudioManager::shutdown` resets the synths**, so a manager that is shut down
+  and initialised again starts its beds at the top of a bar instead of halfway
+  through the last one. This is the caller `reset()` was always for; the muted
+  path was calling it for a different reason and wrongly.
+
 ### Added
 
 **`--audio-test`** plays every documented sound in sequence through the real

@@ -9,12 +9,14 @@
 | --- | --- |
 | 🔴 Open | 0 |
 | 🟡 In progress | 0 |
-| 🟢 Fixed | 12 |
+| 🟢 Fixed | 20 |
 | ⚪ Closed | 0 |
-| 📝 **Total** | **12** |
+| 📝 **Total** | **20** |
 
-Eleven of these twelve were found by tests added alongside the system that had
-the bug. The twelfth was reported by a player.
+Eighteen of these twenty were found by tests added alongside the system that had
+the bug. One was reported by a player. One — the death animation — was found by
+reading the order of two branches, and is the only one here with no regression
+test, which is noted where it appears rather than papered over.
 
 Their shared characteristic is worth stating once: **they compiled, they ran, and
 they were wrong.** A defect of that shape cannot be found by running the game and
@@ -485,17 +487,417 @@ that says it matters.
 
 ---
 
+## 🟢 BUG-018 · The player was permanently in the shift-charge pose
+
+**Severity**: High · **Status**: Fixed
+
+**Symptom** The player never walked. They did not idle either — they stood
+there, faintly see-through, in the pose used for gathering a shift, for the whole
+game. `Idle`, `Walk` and `Run` were unreachable.
+
+**Root cause** The clip selector took a `charging` flag, and derived it from the
+one thing that was cheap to reach:
+
+```cpp
+const bool charging = m_world.player().chrono() > 0.0f;
+```
+
+Chrono is a regenerating resource that is above zero for essentially every second
+of play, so "charging" was true permanently. The charge branch also sat *above*
+the grounded checks, so it won every comparison. `AnimId::Idle`, `AnimId::Walk`
+and `AnimId::Run` were three clips with no path that could ever select them.
+
+The charge clip is translucent by design — `alpha` runs 0.9 → 0.7 → 0.9 so a
+charging player looks half-formed. So the bug was not only a missing walk cycle;
+the player was a ghost.
+
+**Fix** The flag now means what it says, and the state passes the key rather than
+inferring the intent:
+
+```cpp
+const bool shiftHeld = ctx.input->isDown(Action::ShiftEra);
+const AnimId wanted  = Game::playerClipFor(player, shiftHeld);
+```
+
+which is the same condition `FeedbackSystem` already used for the charge aura, so
+the pose and the particles cannot disagree about whether the player is charging.
+
+**Verification** A probe against the attract script, at a point where it holds the
+move key and not the shift key:
+
+| | clip | pose alpha |
+| --- | --- | --- |
+| before | `ShiftCharge` | 0.700 – 0.992 |
+| after | `Idle` / `Run` | 1.000 |
+
+A full run of the attract script now goes `JumpStart → Idle → Run →
+ShiftCharge → Run → Attack`, and `ShiftCharge` appears only on the frames where
+the shift key is actually down.
+
+**Why it was invisible** No crash, no log line, no wrong-coloured frame. The
+character animated; it just animated wrong, forever. It also took a screenshot to
+notice, because the charge pose is only 70–90% opaque and on a light background
+at the top of its cycle it looks almost solid. Only a number showed it.
+
+**Regression test** `tests/gameplay/TestAnimation.cpp` — *"a standing player
+animates as idle, walking and running"*, *"the charge pose is only for a player
+who is charging"* and *"the charge pose and the charge aura agree on what
+charging is"*.
+
+**Also in this fix** `playerClipFor` and `enemyClipFor` moved out of the anonymous
+namespace in `PlayingState.cpp` and into `Game/Animation.cpp`, next to the clip
+table. They are pure logic over the simulation, and the gameplay suite is the only
+thing that can reach them. A selection function no test can call is a selection
+function that gets its argument wrong, which is exactly what happened.
+
+---
+
+## 🟢 BUG-019 · Being hit played no animation at all
+
+**Severity**: Medium · **Status**: Fixed
+
+**Symptom** Taking a hit produced a flash, a knockback, a sound, a number and
+particles — and no change to the character. `AnimId::Hurt` existed, had three
+keys, and had its own 40ms blend time in `defaultBlendTime`, and nothing ever
+selected it.
+
+**Root cause** The player selector had no hurt case at all. The obvious source of
+the information is `PlayerStepEvents::hurt`, which is set by `takeDamage` and
+cleared at the top of the next `Player::update` — it is an *edge* that is true for
+exactly one step. A reaction selected from a one-frame flag is a reaction that
+never appears, no matter how the selector is written.
+
+**Fix** `Player` now carries a real timer, the way `Enemy` already did:
+
+```cpp
+[[nodiscard]] bool hurt() const noexcept { return m_hurtTimer > 0.0f; }
+```
+
+It is deliberately *not* the invulnerability window. `invulnTime` is 0.9 seconds,
+and a flinch held for 0.9 seconds is a character standing around wincing; the
+pose is a 0.22s clip and the timer is 0.22s. Two different rules, two different
+lengths, and a test asserts they are not the same number.
+
+`Hurt` is also selected *before* the swing, and `PlayingState` forces the play for
+reactions. `play` refuses to cut a short action short, which is right for two
+actions competing for one gesture — mashing attack must not visually restart the
+swing — and wrong for a reaction, which has to be seen or the game has failed to
+tell the player they were hit.
+
+**Regression test** `tests/gameplay/TestAnimation.cpp` — *"being hit plays the
+hurt clip, and it is not the i-frames"* and *"a hurt reaction interrupts a swing
+rather than queueing behind it"*.
+
+---
+
+## 🟢 BUG-020 · A struck enemy did not react either
+
+**Severity**: Medium · **Status**: Fixed
+
+**Symptom** Identical to BUG-019, on the other half of the cast: an enemy that was
+visibly struck flashed and recoiled and carried on animating as though nothing had
+happened.
+
+**Root cause** The hurt check was the last line of the function, after a `switch`
+over `EnemyState`:
+
+```cpp
+switch (enemy.state()) {
+    ...
+}
+return enemy.hurt() ? AnimId::EHurt : AnimId::EIdle;   // never reached
+```
+
+The switch is exhaustive over the enum, so every path had already returned. The
+line was dead code and `AnimId::EHurt` was unreachable. This is a sharper version
+of the same mistake as BUG-019: not "nobody calls it" but "the code that would
+call it is after a `return`".
+
+**Fix** The check moved above the switch, and the tail became an explicit
+unreachable branch. Being struck now outranks the AI state, which matters most
+during a windup: a windup is the fair-play contract this game's combat rests on,
+and an enemy that shrugs off a hit while winding up is telling the player the
+telegraph does not mean anything.
+
+**Regression test** `tests/gameplay/TestAnimation.cpp` — *"an enemy that is
+struck reacts, including mid-windup"*, which walks a sentinel into a windup,
+strikes it, and asserts the reaction wins.
+
+---
+
+## 🟢 BUG-021 · The death animation never played
+
+**Severity**: High · **Status**: Fixed · **No regression test**
+
+**Symptom** On dying, the player was frozen one frame into the death clip for the
+whole 1.4 seconds the results screen waits behind. The 1-second death animation —
+the collapse, the fall, the fade to nothing — never ran. The last thing a player
+saw of their own run was a single frame of it.
+
+**Root cause** An early return, ordered one branch too early:
+
+```cpp
+if (m_world.outcome() != Game::Outcome::Running) {
+    m_outcomeDelay -= dt;
+    ...
+    return;                      // <- before the animation updates, every frame
+}
+...
+updatePlayerAnimation(dt);       // never reached once the run is over
+```
+
+The hold is deliberate and the comment above it says why: cutting straight to a
+panel the instant the player dies takes away the moment of what killed them. But
+the state returns before the presentation updates, so the hold froze everything —
+including the one thing it was holding *for*.
+
+**Fix** The settled path now runs presentation before returning:
+
+```cpp
+m_feedback.update(ctx, fixedDelta, m_world);
+updatePlayerAnimation(dt, shiftHeld);
+updateEnemyAnimations(dt);
+m_outcomeDelay -= dt;
+...
+return;
+```
+
+This is the same arrangement the code already uses for hit-stop, and for the same
+stated reason, in a comment thirty lines above the bug: *"the world is frozen and
+the spark that caused it keeps travelling."* The simulation stops; the picture
+finishes what it started.
+
+**Why there is no test** The defect is control flow inside `PlayingState::update`,
+which returns before it does anything unless it has a renderer and an input
+device — it is the one part of the game with no headless seam, and adding a seam
+for a three-line ordering fix would be a larger change than the fix. It is
+verified by reading the branch and by the two screenshots in `docs/screenshots/`.
+This is the only entry in this tracker without a regression test, and it is the
+one most likely to come back: the early return still looks correct.
+
+---
+
+## 🟢 BUG-022 · Paradox never reached the audio at all
+
+**Severity**: High · **Status**: Fixed
+
+**Symptom** No music and no ambience parameter ever responded to paradox. The
+tempo never destabilised, the tremolo never widened, the ambience never dropped
+out. The whole "you can hear it going wrong before you can see it" half of the
+audio design was inert, in every state, for the whole session.
+
+**Root cause** A parameter being fed its own value. `Engine::update` pumped the
+manager like this:
+
+```cpp
+m_audio.update(dt, m_audio.era(), m_audio.musicState(), m_audio.tension());
+```
+
+and `update` began by writing all three straight back into the continuous
+controls:
+
+```cpp
+void AudioManager::update(float dt, Era era, MusicState state, float tension)
+{
+    setEra(era);            // idempotent
+    setMusicState(state);   // idempotent
+    setTension(tension);    // NOT idempotent
+    ...
+}
+```
+
+`setTension` sets the *target*; the current value is a second, eased field.
+`FeedbackSystem` sets the target from the world's paradox every frame, and then
+`Engine` overwrote that target with the value from the previous frame's ease. So
+`m_tensionTarget == m_tension` every frame, which makes
+
+```cpp
+m_tension += (m_tensionTarget - m_tension) * std::min(1.0f, dt * 2.0f);
+```
+
+identically zero. Not small. Not eventually-approaching. Zero, forever, from the
+first frame to the last.
+
+The era and the music state were also being fed back, but they have no easing
+filter in front of them, so writing them back was a harmless no-op. Tension was
+the only one of the three where the round trip was destructive, which is why this
+looked like a working pipeline for so long.
+
+**Fix** `update` now takes only `dt`. The era, the music state and the tension each
+have exactly one way in:
+
+```cpp
+void AudioManager::update(float dt);
+```
+
+A parameter that can be a no-op is a parameter that will be, and the reason it was
+a no-op was invisible in the signature — `update(dt, era, state, tension)` reads
+like a complete per-frame description of the audio system's state.
+
+**Regression test** `tests/input/TestAudio.cpp` — *"paradox tension reaches the
+audio, and only through its setter"*. Before the fix: `tension() == 0` after 120
+updates. After: 0.97, and it comes back down when paradox is resolved.
+
+---
+
+## 🟢 BUG-023 · A shift snapped the music to the new era instead of gliding
+
+**Severity**: Medium · **Status**: Fixed
+
+**Symptom** The era shift — the loudest moment in the game — cut. Not a click:
+the whole harmony changed inside one 16ms block. The triad, the bass under it and
+the arpeggio all jumped to the new era's notes at once, and the ambience's wind
+changed filter coefficient at the same instant, at exactly the moment the rest of
+the world was dissolving.
+
+**Root cause** `MusicSynth` and `AmbienceSynth` each held an `eraBlend` member
+which was eased every block and then read by nothing at all. The parameter that
+fed it lived in the same two structs:
+
+```cpp
+struct MusicParams {
+    Game::Era era;
+    float    eraBlend = 1.0f;   // "How far the era has shifted"
+    ...
+};
+```
+
+and the only caller set it to a constant:
+
+```cpp
+music.eraBlend = 1.0f;
+```
+
+Which is the only value it could ever have had. A caller has no way to know how
+far through a shift it is — the shift is a 0.35s dissolve owned by the
+simulation, and by the time a frame reaches the mixer the visual transition is
+already a fifth done. So the parameter was not mis-set; it was unanswerable, and
+a parameter that cannot be answered can only be a constant. Notes were resolved
+straight out of `params.era`, so the switch was instant by construction.
+
+**Fix** The synths own the transition, and the parameter is gone.
+
+- `m_fromEra` / `m_toEra` replaced by the *sounding* note latched as
+  `m_padFrom` / `m_leadFrom`, and the target as `m_padTo` / `m_leadTo`. The pad
+  slides from one to the other in semitones: a portamento, which is what a
+  crossfade of an instrument should be.
+- Latching the sounding note rather than resolving it from an era is what makes
+  two shifts in quick succession continue the slide. Resolving from an era would
+  send the bed back to the *previous target's* pure pitch for a block.
+- The blend is held for the latch frame. Easing it first and then latching means
+  the first block after the request is already a few percent along the new slide,
+  which on a double shift is a fifth of a semitone of pitch jump inside 16ms.
+  Holding the note for one block costs nothing and makes the transition continuous
+  by construction rather than by a small enough constant.
+- The first era a synth ever sees is adopted rather than transitioned to. A bed
+  that has never rendered anything has not come *from* anywhere, and defaulting to
+  `Present` meant a run that began in the Past faded in from the Present's harmony
+  over its first second — a shift heard at the start of the game, for a shift that
+  never happened.
+
+**Regression tests** `tests/gameplay/TestSynth.cpp` — *"an era shift glides, and
+the glide can be heard"* (on the frame the shift is requested the bed is still
+singing the old era's chord, and halfway through the transition the chord is
+genuinely between the two), *"the ambience glides between eras too"*, and *"two
+shifts in quick succession glide from where the music is"*.
+
+**A note on how this was found** The bed *clicking* had already been measured and
+cleared — see "Era transitions do not click" below. That investigation was
+correct and it missed this, because a phase-continuous oscillator does not click
+when its frequency changes. It slides. The bug was a several-semitone jump in
+*pitch* inside one block, which is smooth as a waveform and glaring as music, and
+no amount of measuring sample-to-sample steps will ever see it. It needed an
+assertion on the note the synth says it is playing.
+
+---
+
+## 🟢 BUG-024 · Unmuting restarted the music from the top of the bar
+
+**Severity**: Low · **Status**: Fixed
+
+**Symptom** Muting and then unmuting mid-fight made the music start again from the
+first step of the first bar, as though the bed had been restarted.
+
+**Root cause** A comment that said the opposite of the code, three lines above it:
+
+```cpp
+if (m_muted || !m_bedsPlaying) {
+    // Still advance the synths so the beds are where they should be when
+    // unmuted, rather than jumping forward from wherever they were.
+    m_music.reset();
+    m_ambience.reset();
+    return;
+}
+```
+
+`reset()` does not advance anything. It zeroes the phase, the bar position, the
+step counter and the era blend, which is exactly the state that makes a bed sound
+like it has just started. A reset looks like it does nothing here, because the bed
+is silent either way — and then unpausing replays the top of the bar, which in the
+middle of a fight sounds like the game skipped.
+
+**Fix** "Produce audio" and "give the audio to the mixer" are now separate
+operations. `advanceBeds(dt, feed)` renders a block for each bed and only pushes
+it into the stream when `feed` is set, so a muted or paused game keeps its phase,
+its bar and its place in the era transition and resumes exactly where it stopped.
+
+**Regression test** `tests/input/TestAudio.cpp` — *"a muted or paused bed resumes
+where it left off"*, which pauses the beds for a second and asserts the bed's own
+clock kept running and did not rewind.
+
+**Knock-on** `reset()` lost its only caller, so it now has the one it was always
+for: `AudioManager::shutdown` resets the synths, so a manager that is shut down
+and initialised again starts its beds at the top of a bar rather than halfway
+through the last one. `initialise` already documented itself as safe to call twice,
+which implies the object survives a shutdown — it did not, quite.
+
+---
+
+## 🟢 BUG-025 · `positionSeconds` reported a position that went backwards
+
+**Severity**: Low · **Status**: Fixed
+
+**Root cause** `MusicSynth::positionSeconds()` returned `m_time`, which is the
+*beat* clock — deliberately wrapped every eighth-note, because the step scheduler
+needs a position within the current step. So it reported a value between 0 and
+about 0.36 seconds no matter how long the bed had been playing, and it jumped
+backwards to zero on every bar line.
+
+The existing test that used it passed, for the wrong reason: two synths at
+different tempos had each been wrapped a different number of times, so the values
+differed — which the test read as "the tempo moved the clock".
+
+**Fix** A separate monotonic `m_elapsed` accumulated in `advance`, which is what
+`positionSeconds()` now returns. A new `steps()` accessor exposes the step
+counter, and the tempo test uses it, because a tempo change does not move elapsed
+seconds — it moves how many eighth-notes fit into them.
+
+**Why it mattered** `Diagnostics` has no other way to tell a bed that is *still
+running* from one that has been *restarted*. Both are audible, both keep
+`musicPlaying` true, and both keep the peak hold high; only the clock separates
+them. That is the observation BUG-024's test needs.
+
+---
+
 ## Investigated, measured, and *not* bugs
 
 Recorded so nobody re-investigates them. Each of these looked like a defect and
 was measured rather than assumed.
 
-**Era transitions do not click.** A phase-continuous oscillator whose frequency
-changes discontinuously *should* click, and the era is an enum switched inside
-`MusicSynth::render` while only `brightness` is eased. Measured across a
-Present → Future boundary in single-sample renders: step across the seam 0.0570
-versus 0.0604 for a run with no era change at all — the transition is *quieter*
-than steady state. No click.
+**Era transitions do not click — and finding that out is what hid BUG-023.** A
+phase-continuous oscillator whose frequency changes discontinuously *should* click,
+and the era was an enum switched inside `MusicSynth::render` while only
+`brightness` was eased. Measured across a Present → Future boundary in
+single-sample renders: step across the seam 0.0570 versus 0.0604 for a run with no
+era change at all — the transition is *quieter* than steady state. No click.
+
+The measurement was right and the conclusion it invited was too narrow. A
+phase-continuous oscillator does not click when its frequency changes, because
+nothing about the waveform is discontinuous — it *slides*, several semitones, in
+one block. So BUG-023 was real, audible, and structurally invisible to a
+sample-to-sample test. It took an assertion on the note the synth says it is
+singing. **A pitch jump is not a signal discontinuity**, and no amount of
+measuring edges will find one.
 
 **Music state transitions do not click.** Exploring → Combat measured a 3.8x
 larger step than a steady Exploring, which looked conclusive until the probe was
@@ -513,6 +915,17 @@ samples in 153,600, pool never exceeded six voices. The edges are already faded.
 the *existing* track and stream rather than building new ones, so a watchdog
 restart cannot leak. Checked because a watchdog that re-allocated per restart
 would have the same 77.6 kB problem as BUG-016.
+
+**The walk cycle is a transient at the default tuning, and that is a tuning
+observation rather than a defect.** `playerClipFor` switches to `Run` above 190px/s
+and `PlayerTuning::moveSpeed` is 250, so holding a direction crosses from `Walk`
+to `Run` in about four frames of acceleration and never comes back. `Walk` is
+nonetheless reachable in play, because `moveAxis` is continuous: a stick or a demo
+script at 0.4 gives ~100px/s and walks, which is what the regression test uses.
+Recorded rather than changed, because the obvious fix — moving the threshold above
+`moveSpeed` — would mean nothing in the game is ever a run, and that is a decision
+about how the game should feel rather than a repair. Whoever tunes `moveSpeed`
+should know the threshold is a hard-coded 190 sitting underneath it.
 
 **Tempo is now eased, which was not a bug fix.** `MusicSynth` derived
 `secondsPerStep` from `params.tempo` independently in both `advance()` and
@@ -536,6 +949,8 @@ Recorded to show what was looked at, not to pad the list.
 | A very long single step (1 second) | Every emitter has a per-step cap, so a hitch cannot request hundreds of particles at once |
 | Synthesis determinism | Two identical calls produce bit-identical output. Without this, a report of the form "the sparks looked wrong" would be unanswerable |
 | The particle pool running out | Recycles the oldest rather than dropping. A busy screen that silently loses every effect is worse than one that drops a footstep |
+| `setMuted` and `setBedsPlaying` having no caller in the game | Real API, exercised by the audio tests, with no UI bound to it yet. Mute is not on the settings page and pause does not pause the music. Noted rather than wired: a mute control is a settings question, and inventing one here would be a feature |
+| `playPriority` being identical to `play` | Deliberate, and documented at the call site: the distinction is intent, kept as a separate name so the policy can diverge without touching every caller |
 
 ---
 
@@ -560,29 +975,39 @@ Recorded to show what was looked at, not to pad the list.
   checks. The floor immediately caught two footsteps I had written 15 dB below
   the stone one, which would have been inaudible in play.
 
+- **The clip selectors could not be tested at all.** → Fixed. `playerClipFor` and
+  `enemyClipFor` moved from the anonymous namespace of `PlayingState.cpp` into
+  `Game/Animation.cpp`, so the gameplay suite can call them. Both are pure logic
+  over the simulation and neither needed the renderer. This is the seam whose
+  absence cost BUG-018, BUG-019 and BUG-020, and it took three bugs to build.
+
 ### Still open
 
-1. **SDL's audio backends are a build-time decision, and nothing checks it.**
-   The drivers are compiled in, not loaded at runtime, so "no sound" is not a
-   configuration problem and no amount of in-game setting will fix it. Add a
-   post-build self-check that inspects SDL's driver list for `pulseaudio` or
-   `alsa` and fails loudly if neither is present. A game that runs silently is
-   much worse than a build that stops.
-
-2. **`graphics.maxParticles` is a ceiling, not a setting.** It is now wired up
+1. **`graphics.maxParticles` is a ceiling, not a setting.** It is now wired up
    (it was dead config) but raising it above the pool's capacity will not make the
    game busier. Either make it meaningful or delete it — a setting that looks
    live and does nothing is worse than no setting.
 
-3. **Footstep pitch is a linear function of speed.** Stepping on metal and
-   stepping on grass are the same sound. `TileKind` already carries enough
-   information to tell them apart.
-
-4. **There is no loudness test for the mixer.** The tests assert `peak <= 1.0`, but
-   an effect that is uniformly 20dB below the peak passes every test and is
-   inaudible in the game. A per-effect loudness floor would catch a sound that was
-   scaled too far down.
-
-5. **`-DERASHIFT_AUDIO_TRACE` is not documented in the build docs.** It is the
+2. **`-DERASHIFT_AUDIO_TRACE` is not documented in the build docs.** It is the
    only thing that found BUG-009, which is an argument for documenting it
-   properly rather than leaving it as a flag in a source file.
+   properly rather than leaving it as a flag in a source file. It is also the
+   flag that *should* have caught BUG-022: the trace prints `tension=` every
+   second, and it read `0.00` for the whole session.
+
+3. **Nothing measures pitch.** BUG-023 was a several-semitone jump inside one
+   16ms block that is smooth as a waveform and obvious to a player. Every
+   transition test in `TestSynth.cpp` measures sample-to-sample steps, which is
+   the wrong instrument for a musical parameter. `padNote()` exists so one test
+   can assert on pitch directly, and the general lesson is that a synthesiser
+   needs a pitch assertion, not only a continuity one.
+
+4. **The `Walk` threshold is a hard-coded 190 sitting under a `moveSpeed` of
+   250.** See "The walk cycle is a transient" above. Whoever tunes movement speed
+   should know the animation bands are not derived from it.
+
+5. **`PlayingState` has no headless seam.** BUG-021 is an ordering bug in a
+   function that returns immediately without a renderer and an input device, and
+   it is the only fix in this tracker with no regression test. The other three
+   bugs in this batch were all found by tests; this one was found by reading. A
+   test that can drive `PlayingState` with a null renderer would be the single
+   highest-value addition to the suite.
