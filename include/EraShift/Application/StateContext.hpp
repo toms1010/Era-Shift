@@ -73,6 +73,15 @@ struct StateContext {
     /// level to load would be a back door round the state machine.
     std::filesystem::path levelPath;
 
+    /// Directory the level select lists, and the directory `levelPath` is
+    /// resolved against.
+    ///
+    /// Relative paths elsewhere in the context are resolved against the
+    /// content root, so this belongs next to them. Defaulting to
+    /// `data/levels` rather than leaving it empty means a caller that sets only
+    /// this gets the shipped regions.
+    std::filesystem::path levelDirectory = "data/levels";
+
     /// A context is usable once the log and the renderer exist.
     [[nodiscard]] bool valid() const noexcept
     {

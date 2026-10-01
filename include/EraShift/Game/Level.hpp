@@ -95,6 +95,36 @@ struct Level {
 [[nodiscard]] bool loadLevelFromFile(const std::filesystem::path& path, Level& out,
                                      std::string& errorOut);
 
+/// Victory and defeat, with the run's numbers.
+///
+/// Declared here rather than in `ResultState.hpp` because `PlayingState` reads
+/// the region a level select handed over and does not otherwise need that
+/// translation unit. Same declaration, one include instead of two.
+class LevelSelectState;
+
+/// A level the player can pick, as listed by `listLevels`.
+struct LevelEntry {
+    /// File name without the extension, which is also the level's `id`.
+    std::string id;
+    /// The level's display name, falling back to the id.
+    std::string name;
+    /// Path relative to the directory that was listed.
+    std::filesystem::path file;
+};
+
+/// Lists the levels in a directory, sorted by name.
+///
+/// Every `*.json` in `directory` is a candidate. A file that does not parse is
+/// **skipped rather than reported**, because a level select must not be
+/// unopenable on account of one bad file — the level that is merely missing is
+/// the one the player notices. `brokenOut`, when non-null, collects the paths
+/// that were skipped so a caller that wants to log them can.
+///
+/// The directory itself missing is not an error: the result is simply empty,
+/// which is what a shipped game with no `data/` directory should show.
+[[nodiscard]] std::vector<LevelEntry> listLevels(const std::filesystem::path& directory,
+                                                 std::vector<std::filesystem::path>* brokenOut = nullptr);
+
 /// The vertical slice the game ships with, built in code.
 ///
 /// It exists so the game is playable even if `data/` has been deleted, and so a

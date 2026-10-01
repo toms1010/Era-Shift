@@ -127,7 +127,9 @@ void PausedState::update(StateContext& ctx, double fixedDelta)
 {
     m_time += static_cast<float>(fixedDelta);
 
-    if (ctx.input == nullptr) {
+    // Both are needed to lay the panel out for hit testing, so neither being
+    // present means there is nothing to hit test against.
+    if (ctx.input == nullptr || ctx.renderer == nullptr || ctx.text == nullptr) {
         return;
     }
     syncScale(ctx);
@@ -145,12 +147,27 @@ void PausedState::update(StateContext& ctx, double fixedDelta)
         m_menu.move(1);
     }
 
+    // The mouse has to select and activate here, exactly as it does on the main
+    // menu and the results screen. The rows are drawn with a hover highlight, so
+    // a pause menu that ignores the pointer shows the player a button that
+    // lights up when pointed at and then does nothing when clicked.
+    const Rect area = fullArea(*ctx.renderer);
+    const PanelLayout layout =
+        layoutPanel(area, m_styles, m_menu.items().size(), "PAUSED", "ESC to resume", *ctx.text);
+    const auto hovered = m_menu.hitTest(layout.list, ctx.input->mousePosition(), m_styles);
+    if (hovered != static_cast<std::size_t>(-1)) {
+        m_menu.select(hovered);
+    }
+
     const MenuItem* item = m_menu.currentItem();
     if (item == nullptr) {
         return;
     }
 
-    const bool confirm = ctx.input->wasPressed(Action::Interact) || ctx.input->wasPressed(Action::Jump);
+    const bool confirm = ctx.input->wasPressed(Action::Interact) ||
+                         ctx.input->wasPressed(Action::Jump) ||
+                         (hovered != static_cast<std::size_t>(-1) &&
+                          ctx.input->wasMousePressed(Input::MouseButton::Left));
     if (!confirm) {
         return;
     }
@@ -345,6 +362,22 @@ const std::vector<Input::Action>& SettingsState::controlActions()
     return kActions;
 }
 
+const char* SettingsState::pageTitle() const noexcept
+{
+    switch (m_page) {
+        case Page::General:  return "SETTINGS";
+        case Page::Graphics: return "GRAPHICS";
+        case Page::Controls: return "CONTROLS";
+    }
+    return "SETTINGS";
+}
+
+const char* SettingsState::pageFooter() const noexcept
+{
+    return m_page == Page::Controls ? "Enter to rebind      Esc to go back"
+                                    : "Left / right to change      Esc to go back";
+}
+
 void SettingsState::setPage(Page page, StateContext& ctx)
 {
     m_page   = page;
@@ -487,7 +520,8 @@ void SettingsState::update(StateContext& ctx, double fixedDelta)
 {
     m_time += static_cast<float>(fixedDelta);
 
-    if (ctx.input == nullptr) {
+    // As in `PausedState`: hit testing needs the renderer to measure the panel.
+    if (ctx.input == nullptr || ctx.renderer == nullptr || ctx.text == nullptr) {
         return;
     }
     syncScale(ctx);
@@ -518,6 +552,17 @@ void SettingsState::update(StateContext& ctx, double fixedDelta)
         m_menu.move(1);
     }
 
+    // The pointer selects and activates, as on every other menu. A settings row
+    // that highlights under the cursor and ignores the click is a dead control,
+    // and the settings screen is where a player most expects the mouse to work.
+    const Rect area = fullArea(*ctx.renderer);
+    const PanelLayout layout = layoutPanel(area, m_styles, m_menu.items().size(), pageTitle(),
+                                           pageFooter(), *ctx.text);
+    const auto hovered = m_menu.hitTest(layout.list, ctx.input->mousePosition(), m_styles);
+    if (hovered != static_cast<std::size_t>(-1)) {
+        m_menu.select(hovered);
+    }
+
     // Left/right adjust the highlighted value. Repeat is handled by the input
     // system reporting presses, so holding a key is a series of discrete steps.
     if (ctx.input->wasPressed(Action::MoveLeft)) {
@@ -532,7 +577,10 @@ void SettingsState::update(StateContext& ctx, double fixedDelta)
         return;
     }
 
-    const bool confirm = ctx.input->wasPressed(Action::Interact) || ctx.input->wasPressed(Action::Jump);
+    const bool confirm = ctx.input->wasPressed(Action::Interact) ||
+                         ctx.input->wasPressed(Action::Jump) ||
+                         (hovered != static_cast<std::size_t>(-1) &&
+                          ctx.input->wasMousePressed(Input::MouseButton::Left));
     if (!confirm) {
         return;
     }
@@ -563,20 +611,13 @@ void SettingsState::render(StateContext& ctx, double alpha)
     const Rect area = fullArea(renderer);
     static_cast<void>(alpha);
 
-    const char* title = "SETTINGS";
-    switch (m_page) {
-        case Page::General:  title = "SETTINGS"; break;
-        case Page::Graphics: title = "GRAPHICS"; break;
-        case Page::Controls: title = "CONTROLS"; break;
-    }
+    const char* title = pageTitle();
 
     renderer.setCameraEnabled(false);
     renderer.setBlendMode(BlendMode::Alpha);
     renderer.drawRect(area, Color{0, 0, 0, 0xB0});
 
-    const char* footer = m_page == Page::Controls
-                             ? "Enter to rebind      Esc to go back"
-                             : "Left / right to change      Esc to go back";
+    const char* footer = pageFooter();
     const PanelLayout layout = layoutPanel(area, m_styles, m_menu.items().size(), title, footer,
                                            text);
 

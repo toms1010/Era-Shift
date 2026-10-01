@@ -401,9 +401,9 @@ void MainMenuState::buildMenu(StateContext& ctx)
     }
 
     m_menu.setItems({
-        {"NEW GAME", "begin a new timeline",   true},
+        {"NEW GAME", "choose a region",       true},
         {"CONTINUE", m_hasSave ? "resume where you left off" : "no saved run", m_hasSave},
-        {"SETTINGS", "graphics and input", true},
+        {"SETTINGS", "graphics and input",    true},
         {"CREDITS",  "about Era Shift",        true},
         {"QUIT",     "exit to desktop",        true},
     });
@@ -503,7 +503,10 @@ void MainMenuState::activateSelection(StateContext& ctx)
     }
 
     if (item->label == "NEW GAME") {
-        ctx.states->switchTo(std::make_shared<PlayingState>());
+        // The region is chosen next, not here: a menu that starts the run
+        // immediately would commit to the default region without ever showing
+        // the player that there are others.
+        ctx.states->push(std::make_shared<LevelSelectState>());
         return;
     }
 

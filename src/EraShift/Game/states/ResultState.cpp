@@ -1,5 +1,6 @@
 #include "EraShift/Game/states/ResultState.hpp"
 
+#include "EraShift/Game/Level.hpp"
 #include "EraShift/Game/states/MainMenuState.hpp"
 #include "EraShift/Game/states/PausedState.hpp"
 #include "EraShift/Game/states/PlayingState.hpp"
@@ -10,6 +11,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <utility>
 
 namespace EraShift::Game {
 
@@ -46,6 +49,34 @@ std::string formatTime(double seconds)
     const auto total = static_cast<int>(seconds);
     return std::to_string(total / 60) + ":" + std::string(total % 60 < 10 ? "0" : "") +
            std::to_string(total % 60);
+}
+
+/// How many stat rows sit above the options, and the height of each.
+///
+/// Named rather than inlined because `update` needs the same number to find
+/// where the options begin: a layout measured in one place and re-derived in
+/// another is exactly the bug this pair of helpers exists to prevent.
+constexpr std::size_t kStatRows = 6;
+
+/// The top of the stats grid.
+float optionsTop(const Rect&, const UiScale& scale) noexcept
+{
+    return scale.px(178.0f);
+}
+
+/// The strip of the screen the options panel is laid out in.
+///
+/// The options sit *below* the stats grid, not centred in the viewport, so this
+/// is deliberately not `area`.
+Rect optionsArea(const Rect& area, const UiScale& scale) noexcept
+{
+    const float gridBottom = optionsTop(area, scale) +
+                             static_cast<float>(kStatRows) * scale.px(24.0f);
+    const float y = gridBottom + scale.px(16.0f);
+    // Never negative: a short window must not produce an inverted rectangle,
+    // which would make every point "contained" and every click land somewhere.
+    const float h = std::max(area.h - y, scale.px(80.0f));
+    return Rect{area.x, y, area.w, h};
 }
 
 } // namespace
@@ -104,8 +135,13 @@ void ResultState::update(StateContext& ctx, double fixedDelta)
         m_menu.move(1);
     }
 
+    // The panel has to be measured the same way `render` measures it. The
+    // options sit *below* the stats grid rather than centred in the viewport, so
+    // hit-testing a viewport-centred layout put every row in the wrong place: the
+    // rows are drawn low on the screen and were clicked high on it.
     const Rect area  = fullArea(*ctx.renderer);
-    const auto panel = layoutPanel(area, m_styles, m_menu.items().size(), "", "", *ctx.text);
+    const auto panel = layoutPanel(optionsArea(area, m_styles.scale), m_styles,
+                                   m_menu.items().size(), "", "", *ctx.text);
     const auto hovered = m_menu.hitTest(panel.list, ctx.input->mousePosition(), m_styles);
     if (hovered != static_cast<std::size_t>(-1)) {
         m_menu.select(hovered);
@@ -207,7 +243,7 @@ void ResultState::render(StateContext& ctx, double alpha)
     const float rowH   = scale.px(24.0f);
     const float gridW  = std::min(scale.px(420.0f), area.w - scale.px(40.0f));
     const float gridX  = area.center().x - gridW * 0.5f;
-    float y            = scale.px(178.0f);
+    float y = optionsTop(area, scale);
     for (const Row& row : rows) {
         text.drawInRect(renderer, Rect{gridX, y, gridW * 0.55f, rowH}, row.label, label);
         text.drawInRect(renderer, Rect{gridX + gridW * 0.45f, y, gridW * 0.55f, rowH}, row.value,
@@ -217,8 +253,7 @@ void ResultState::render(StateContext& ctx, double alpha)
 
     // --- options ------------------------------------------------------------
     const PanelLayout panel =
-        layoutPanel(Rect{area.x, y + scale.px(16.0f), area.w, area.h - y - scale.px(16.0f)},
-                    m_styles, m_menu.items().size(), "", "", text);
+        layoutPanel(optionsArea(area, scale), m_styles, m_menu.items().size(), "", "", text);
     renderer.drawRect(panel.panel, Palette::PanelFill);
     renderer.drawRect(panel.panel, Palette::PanelBorder.withAlpha(0x90));
     m_menu.render(renderer, *ctx.text, panel.list,
@@ -238,6 +273,188 @@ void ResultState::render(StateContext& ctx, double alpha)
         const Vec2 centre{area.center().x, scale.px(110.0f)};
         BitmapFont::drawCentered(renderer, centre.x, centre.y,
                                  won ? "THE GATE OPENS" : "TIMELINE COLLAPSED",
+                                 Palette::TextPrimary, fallback);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LevelSelectState
+// ---------------------------------------------------------------------------
+namespace {
+
+/// The region the player picked, waiting to be read by the state that replaces
+/// this one. A function rather than a member because the `PlayingState` built
+/// on the far side of the transition needs it and this state is destroyed by
+/// that transition.
+std::filesystem::path g_chosenLevel;
+
+} // namespace
+
+const std::filesystem::path& LevelSelectState::chosenLevel() noexcept
+{
+    return g_chosenLevel;
+}
+
+void LevelSelectState::clearChosenLevel() noexcept
+{
+    g_chosenLevel.clear();
+}
+
+LevelSelectState::LevelSelectState(Core::GameState id)
+    : IGameState(id)
+{
+}
+
+void LevelSelectState::onEnter(StateContext& ctx)
+{
+    m_time = 0.0f;
+    m_viewportScale = uiScaleFor(ctx);
+    m_styles = MenuStyles::make(m_viewportScale);
+    m_menu.setMetrics(m_styles.rowHeight, m_styles.rowSpacing);
+    rebuild(ctx);
+    ctx.log->info("Game", "entered LevelSelect with {} region(s)", m_levels.size());
+}
+
+void LevelSelectState::rebuild(StateContext& ctx)
+{
+    // The list is built from the directory every time this state is entered
+    // rather than cached in `onEnter` alone: the directory is cheap to read and
+    // the alternative is a select that shows a stale list after a player adds a
+    // region mid-session.
+    const std::filesystem::path directory =
+        ctx.levelDirectory.empty() ? std::filesystem::path{"data/levels"} : ctx.levelDirectory;
+
+    std::vector<std::filesystem::path> broken;
+    m_levels = Game::listLevels(directory, &broken);
+    for (const auto& path : broken) {
+        // One unreadable file is worth a line, and worth *not* being fatal: the
+        // remaining regions still have to be playable.
+        ctx.log->warn("Game", "skipping unreadable level '{}'", path.string());
+    }
+
+    std::vector<MenuItem> items;
+    items.reserve(m_levels.size() + 1);
+    for (const Game::LevelEntry& level : m_levels) {
+        items.emplace_back(level.name, "begin here", level.id);
+    }
+    // BACK is unconditional. A level select with no BACK is a trap, and an empty
+    // directory is exactly the case where the player most needs a way out.
+    items.emplace_back("BACK", "return to the title screen", "");
+
+    m_menu.setItems(std::move(items));
+    m_built = true;
+}
+
+void LevelSelectState::update(StateContext& ctx, double fixedDelta)
+{
+    m_time += static_cast<float>(fixedDelta);
+    if (ctx.input == nullptr || ctx.renderer == nullptr || ctx.text == nullptr) {
+        return;
+    }
+
+    const UiScale latest = uiScaleFor(ctx);
+    if (latest.factor != m_viewportScale.factor) {
+        m_viewportScale = latest;
+        m_styles = MenuStyles::make(latest);
+        m_menu.setMetrics(m_styles.rowHeight, m_styles.rowSpacing);
+    }
+
+    if (ctx.input->wasPressed(Action::Pause)) {
+        ctx.states->pop();
+        return;
+    }
+    if (ctx.input->wasPressed(Action::MoveUp)) {
+        m_menu.move(-1);
+    }
+    if (ctx.input->wasPressed(Action::MoveDown)) {
+        m_menu.move(1);
+    }
+
+    const Rect area = fullArea(*ctx.renderer);
+    const PanelLayout layout = layoutPanel(area, m_styles, m_menu.items().size(), "SELECT REGION",
+                                           "Esc to go back", *ctx.text);
+    const auto hovered = m_menu.hitTest(layout.list, ctx.input->mousePosition(), m_styles);
+    if (hovered != static_cast<std::size_t>(-1)) {
+        m_menu.select(hovered);
+    }
+
+    const bool confirmed = ctx.input->wasPressed(Action::Interact) ||
+                           ctx.input->wasPressed(Action::Jump) ||
+                           (hovered != static_cast<std::size_t>(-1) &&
+                            ctx.input->wasMousePressed(Input::MouseButton::Left));
+    if (!confirmed) {
+        return;
+    }
+
+    const MenuItem* item = m_menu.currentItem();
+    if (item == nullptr) {
+        return;
+    }
+    if (item->label == "BACK") {
+        ctx.states->pop();
+        return;
+    }
+
+    // The item's *value* is the level id, so the row and the entry it stands for
+    // cannot drift apart: the menu is generated from the list, never matched
+    // back to it by index or by re-reading the label.
+    const std::string id = item->value;
+    const auto found = std::find_if(m_levels.begin(), m_levels.end(),
+                                    [&id](const Game::LevelEntry& e) { return e.id == id; });
+    if (found == m_levels.end()) {
+        ctx.log->warn("Game", "level '{}' vanished between listing and selection", id);
+        return;
+    }
+
+    g_chosenLevel = found->file;
+    ctx.log->info("Game", "region selected: {}", found->name);
+    ctx.states->push(std::make_shared<PlayingState>());
+}
+
+void LevelSelectState::render(StateContext& ctx, double alpha)
+{
+    Renderer2D& renderer = *ctx.renderer;
+    Graphics::TextRenderer& text = *ctx.text;
+    const Rect area = fullArea(renderer);
+    static_cast<void>(alpha);
+
+    renderer.setCameraEnabled(false);
+    renderer.setBlendMode(BlendMode::Alpha);
+
+    // The same backdrop as the main menu, so the select reads as part of it
+    // rather than as a separate screen the player has to learn.
+    renderer.drawRect(area, Palette::FutureSky.scaled(0.55f));
+    renderer.drawRect(area, Color{0, 0, 0, 0x90});
+
+    const PanelLayout layout = layoutPanel(area, m_styles, m_menu.items().size(), "SELECT REGION",
+                                           "Esc to go back", text);
+    renderer.drawRect(layout.panel, Palette::PanelFill);
+    renderer.drawRectOutline(layout.panel, Palette::PanelBorder, 2.0f);
+    text.drawInRect(renderer, layout.heading, "SELECT REGION", m_styles.heading);
+
+    m_menu.render(renderer, text, layout.list,
+                  ctx.input != nullptr ? ctx.input->mousePosition() : Vec2{}, m_styles);
+    text.drawInRect(renderer, layout.footer, "Esc to go back", m_styles.hint);
+
+    // An empty directory is a real state, not an error to hide: the player is
+    // told why the list is blank and given the way back out.
+    if (m_built && m_levels.empty()) {
+        const char* message = "No regions found in data/levels";
+        text.drawInRect(renderer, Rect{layout.panel.x, layout.panel.center().y,
+                                       layout.panel.w, m_styles.rowHeight},
+                        message, m_styles.detail);
+    }
+
+    if (ctx.overlay != nullptr && ctx.stats != nullptr) {
+        ctx.overlay->render(renderer, text, *ctx.stats, *ctx.states, ctx.loop->stats());
+    }
+
+    renderer.setBlendMode(BlendMode::None);
+
+    if (!text.ready()) {
+        FontStyle fallback;
+        fallback.scale = 5;
+        BitmapFont::drawCentered(renderer, area.center().x, area.center().y, "REGIONS",
                                  Palette::TextPrimary, fallback);
     }
 }

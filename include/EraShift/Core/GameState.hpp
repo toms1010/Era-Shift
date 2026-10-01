@@ -38,6 +38,8 @@ enum class GameState : std::uint8_t {
     /// Appended rather than inserted: the values above are written to save
     /// files, so their numbers must never move.
     Credits,
+    /// Also appended for the same reason.
+    LevelSelect,
 };
 
 [[nodiscard]] std::string_view stateName(GameState state) noexcept;

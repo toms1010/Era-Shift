@@ -61,6 +61,9 @@ void GameApp::initialise(StateContext& context)
             machine.push(std::make_shared<CreditsState>());
         } else if (requested == "paused") {
             machine.push(std::make_shared<PausedState>());
+        } else if (requested == "levelselect" || requested == "levels" ||
+                   requested == "regions") {
+            machine.push(std::make_shared<LevelSelectState>());
         } else {
             context.log->warn("Game", "unknown --start-state '{}', using the title screen",
                               m_startState);

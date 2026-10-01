@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <fstream>
+#include <system_error>
 #include <sstream>
 
 namespace EraShift::Game {
@@ -284,6 +286,56 @@ bool loadLevelFromFile(const std::filesystem::path& path, Level& out, std::strin
     std::ostringstream buffer;
     buffer << file.rdbuf();
     return loadLevelFromJson(buffer.str(), out, errorOut);
+}
+
+std::vector<LevelEntry> listLevels(const std::filesystem::path& directory,
+                                   std::vector<std::filesystem::path>* brokenOut)
+{
+    std::vector<LevelEntry> entries;
+
+    std::error_code ec;
+    if (!std::filesystem::is_directory(directory, ec) || ec) {
+        // No directory is not a failure. A shipped build with no `data/` shows an
+        // empty level list, which is honest; returning an error here would make
+        // every caller treat "no extra levels" as "something is broken".
+        return entries;
+    }
+
+    // Sorted so the list order does not depend on the filesystem's. An
+    // unsorted directory listing is the kind of thing that looks fine until a
+    // player gets a different order on a different machine.
+    std::vector<std::filesystem::path> files;
+    for (const auto& item : std::filesystem::directory_iterator(directory, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!item.is_regular_file() || item.path().extension() != ".json") {
+            continue;
+        }
+        files.push_back(item.path());
+    }
+    std::sort(files.begin(), files.end());
+
+    for (const auto& file : files) {
+        Level level;
+        std::string error;
+        if (!loadLevelFromFile(file, level, error)) {
+            // Skipped, not fatal: one unreadable file must not make the whole
+            // level select unopenable.
+            if (brokenOut != nullptr) {
+                brokenOut->push_back(file);
+            }
+            continue;
+        }
+        LevelEntry entry;
+        entry.file = file.filename();
+        entry.id   = file.stem().string();
+        // The file's own `name` wins, because that is what the author wrote for
+        // players. The stem is only the fallback for a file that omits it.
+        entry.name = level.name.empty() ? entry.id : level.name;
+        entries.push_back(std::move(entry));
+    }
+    return entries;
 }
 
 Level builtInLevel()

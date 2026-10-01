@@ -75,6 +75,13 @@ private:
                         const Input::InputBinding& binding);
     /// Actions offered on the controls page, in the order they are listed.
     [[nodiscard]] static const std::vector<Input::Action>& controlActions();
+    /// The heading for the current page.
+    ///
+    /// Shared with `update`, which hit tests the rows and so has to measure the
+    /// same panel `render` draws.
+    [[nodiscard]] const char* pageTitle() const noexcept;
+    /// The hint line for the current page. Shares `pageTitle`'s reason.
+    [[nodiscard]] const char* pageFooter() const noexcept;
 
     MenuList   m_menu;
     MenuStyles m_styles;

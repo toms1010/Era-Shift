@@ -188,11 +188,24 @@ UiScale PlayingState::currentUiScale(const StateContext& ctx) const
 
 void PlayingState::syncLevel(StateContext& ctx)
 {
-    // The data file is the source of truth. If it is missing or malformed the
-    // built-in level is used instead, so a broken checkout still starts.
-    const std::filesystem::path path =
-        ctx.levelPath.empty() ? std::filesystem::path{"data/levels/ancient_forest.json"}
-                              : ctx.levelPath;
+    // Three sources, in order of specificity: a region the player just picked
+    // from the level select, an explicit `--level`, and finally the default.
+    //
+    // The picked region wins over `--level` because choosing a region in the
+    // menu is a more recent instruction than a flag typed at launch, and a
+    // player who picked one and then watched the game load a different one would
+    // be right to call it a bug.
+    const std::filesystem::path picked = LevelSelectState::chosenLevel();
+    std::filesystem::path path;
+    if (!picked.empty()) {
+        path = ctx.levelDirectory.empty() ? picked : ctx.levelDirectory / picked;
+        LevelSelectState::clearChosenLevel();
+    } else if (!ctx.levelPath.empty()) {
+        path = ctx.levelPath;
+    } else {
+        path = std::filesystem::path{"data/levels/ancient_forest.json"};
+    }
+
     Game::Level level;
     std::string error;
 
