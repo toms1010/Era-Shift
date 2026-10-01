@@ -229,7 +229,41 @@ public:
     /// Restores the run counters. Takes plain values rather than the save
     /// struct so the gameplay layer never has to know the save format.
     void applyRunStats(double elapsed, int shifts, int kills, float paradox);
+
+    /// How many seals the finish line needs, resolved.
+    ///
+    /// `Level::requiresSeals` when the file states it, otherwise every seal
+    /// placed. Resolved once at load rather than read per frame, because "how many
+    /// seals does this level need" is a question about the level and answering it
+    /// from the live seal list would let a level that places two seals quietly ask
+    /// for one.
+    [[nodiscard]] int requiredSeals() const noexcept { return m_requiredSeals; }
+
+    /// Whether the finish line will open for the seals collected so far.
+    ///
+    /// Requires a positive requirement: a level with no seals and no stated
+    /// requirement has nothing to collect, and calling that "open" would complete
+    /// the level by walking into it.
     [[nodiscard]] bool gateOpen() const noexcept;
+
+    /// How many more seals the finish line needs, or 0 when it is open.
+    [[nodiscard]] int sealsRemaining() const noexcept;
+
+    /// Whether the player is standing in the finish marker right now.
+    ///
+    /// Separate from the outcome because the two are asked at different times and
+    /// for different reasons: the HUD asks "is the player at the gate" every frame
+    /// to decide whether to prompt, while the outcome is decided once. Asking the
+    /// question through one predicate is what stops the prompt and the completion
+    /// rule from disagreeing about where the gate is.
+    [[nodiscard]] bool atFinish() const noexcept;
+
+    /// The finish marker as the player approaches it: 0 far away, 1 on top of it.
+    ///
+    /// Drives the marker brightening and pulsing harder as the player closes in, so
+    /// the gate announces itself before it is reached rather than only when it is
+    /// already underfoot.
+    [[nodiscard]] float finishProximity() const noexcept;
     /// Rect of the goal marker, empty when the level has none.
     [[nodiscard]] Rect goalBounds() const noexcept { return m_goalBounds; }
 
@@ -264,6 +298,8 @@ private:
     void updateOutcome();
 
     Level              m_level;
+    /// Resolved from `Level::requiresSeals` at load; see `requiredSeals`.
+    int                m_requiredSeals = 0;
     TileMap            m_map;
     Player             m_player;
     std::vector<Enemy> m_enemies;

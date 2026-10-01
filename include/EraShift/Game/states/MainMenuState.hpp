@@ -58,6 +58,20 @@ struct PanelLayout {
     Rect heading;  ///< Where the title line sits. Empty when there is none.
     Rect list;     ///< Where the rows sit, inset by the panel padding.
     Rect footer;   ///< Where the hint line sits. Empty when there is none.
+
+    /// How many rows fit in `list` without being cut by its bottom edge.
+    ///
+    /// Always at least one, even on a viewport too short for a whole row: a panel
+    /// showing nothing is worse than one showing a cropped row.
+    std::size_t visibleRows = 0;
+
+    /// True when the list is taller than the frame it was given.
+    ///
+    /// Every screen with more rows than fit — the twelve-row controls page at any
+    /// window size, and any list at 320x180 — must scroll, and this is what tells
+    /// it to. A caller that ignores it shows a list whose tail is unreachable,
+    /// because the rows exist and the selection can still move onto them.
+    bool clipped = false;
 };
 
 /// Lays out a panel for `rowCount` entries, centred in `area`.
@@ -136,14 +150,37 @@ public:
 
     /// Draws the list. The row geometry is derived from the entry style so hit
     /// testing and drawing can never disagree.
+    ///
+    /// `visibleRows` is how many fit in `bounds`; rows past it are not drawn, and
+    /// `ensureVisible` should have been called first so the selection is one of the
+    /// ones on screen. Zero means "no limit", for a caller that has not measured.
+    ///
+    /// `elapsed` drives the selected row's pulse. Passed in rather than read from a
+    /// clock so the animation is a function of the simulation clock the caller
+    /// already owns, and is therefore deterministic and frame-rate independent.
+    ///
+    /// `revealStagger` > 0 makes the rows arrive one after another, each fading and
+    /// rising into place. Used by the screens that are entered *because* something
+    /// happened — the results screen after a death, a victory — so the options read
+    /// as a list the player is being offered rather than as a slab that was already
+    /// there. Left at zero for menus that were always there and need no ceremony.
     void render(Graphics::Renderer2D& renderer, Graphics::TextRenderer& text,
-                const Rect& bounds, Vec2 mouse, const MenuStyles& styles) const;
+                const Rect& bounds, Vec2 mouse, const MenuStyles& styles,
+                std::size_t visibleRows = 0, float elapsed = 0.0f,
+                float revealStagger = 0.0f) const;
 
-    /// Height one row occupies, in pixels.
+    /// Height one row occupies, in pixels, excluding the gap below it.
     [[nodiscard]] float rowHeight(const MenuStyles& styles) const noexcept;
+    /// Vertical distance from one row's top to the next's: the row plus its gap.
+    /// Layout code needs this to size a frame that holds a given number of rows.
+    [[nodiscard]] float rowStride(const MenuStyles& styles) const noexcept;
     /// Bounds of a single row, or an empty rect when the index is out of range.
     [[nodiscard]] Rect rowBounds(std::size_t index, const Rect& bounds,
                                  const MenuStyles& styles) const noexcept;
+    /// How many entries fit in `bounds` at the current scroll, and are therefore
+    /// both drawn and clickable.
+    [[nodiscard]] std::size_t rowCountFor(const Rect& bounds,
+                                           const MenuStyles& styles) const noexcept;
 
     void setMetrics(float rowHeight, float spacing) noexcept
     {
@@ -151,9 +188,31 @@ public:
         m_spacing   = spacing;
     }
 
+    /// Scrolls so the selected row is inside `visibleRows` rows of `bounds`.
+    ///
+    /// The minimum number of rows kept visible when scrolling; a longer list moves
+    /// by this much so the row above or below the selection stays on screen as
+    /// context. A no-op when everything already fits.
+    ///
+    /// Must be called whenever the selection or the visible height changes, and
+    /// *before* rendering — a scrolled list whose selection is off-screen draws a
+    /// list with nothing highlighted on it, which reads as a broken menu rather than
+    /// as a scrolled one.
+    void ensureVisible(std::size_t visibleRows, const MenuStyles& styles) noexcept;
+
+    /// How many rows are drawn and clickable inside `bounds` right now. Pass zero
+    /// `visibleRows` to `ensureVisible` and the whole list counts as visible.
+    [[nodiscard]] std::size_t visibleRowCount(const Rect& bounds,
+                                               const MenuStyles& styles) const noexcept;
+
+    /// First row drawn, as an index. Zero when the list is not scrolled.
+    [[nodiscard]] std::size_t scrollOffset() const noexcept { return m_scroll; }
+    void setScrollOffset(std::size_t offset) noexcept { m_scroll = offset; }
+
 private:
     std::vector<MenuItem> m_items;
     std::size_t m_selected  = 0;
+    std::size_t m_scroll     = 0;
     float m_rowHeight = 46.0f;
     float m_spacing   = 8.0f;
 };
@@ -190,6 +249,10 @@ private:
         Rect detail;
         Rect hints;
         float totalHeight = 0.0f;
+        /// Rows that fit in `list`. See `PanelLayout::visibleRows`; the main menu
+        /// computes its own panel rather than using `layoutPanel`, so it has to
+        /// carry the same figure.
+        std::size_t visibleRows = 0;
     };
     [[nodiscard]] Layout computeLayout(const StateContext& ctx) const;
     void drawTitleBlock(const StateContext& ctx, const Layout& layout) const;

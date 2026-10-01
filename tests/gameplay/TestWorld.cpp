@@ -83,6 +83,53 @@ World loadedWorld()
     return world;
 }
 
+/// The same arena with one seal instead of three, and a finish that needs one.
+///
+/// The tutorial region is this shape: a single objective, and a gate that asks for
+/// that objective rather than for a quota. Written as a variant of `arena` rather
+/// than as its own hand-built level so the two cannot drift apart in their geometry
+/// and make a difference in the result attributable to the wrong edit.
+Level singleSealArena(int sealsPlaced, int required)
+{
+    Level level = arena();
+    level.id   = "single";
+
+    // Keep only the first `sealsPlaced` seals.
+    int kept = 0;
+    std::vector<PlacedEntity> keptEntities;
+    for (const PlacedEntity& entity : level.entities) {
+        if (entity.kind != EntityKind::Seal) {
+            keptEntities.push_back(entity);
+            continue;
+        }
+        if (kept < sealsPlaced) {
+            keptEntities.push_back(entity);
+            ++kept;
+        }
+    }
+    level.entities       = std::move(keptEntities);
+    level.requiresSeals  = required;
+    return level;
+}
+
+/// Moves the player onto a tile and resolves them out of any geometry there.
+void standAt(World& world, int tileX, int tileY)
+{
+    world.mutablePlayer().body().position =
+        Vec2{static_cast<float>(tileX) * TileMap::kTileSize,
+             static_cast<float>(tileY) * TileMap::kTileSize};
+    resolvePenetration(world.map(), world.mutablePlayer().body(), world.player().era());
+}
+
+/// Walks the player onto the goal tile.
+void standOnFinish(World& world)
+{
+    const Rect goal = world.goalBounds();
+    standAt(world, static_cast<int>(goal.center().x / TileMap::kTileSize),
+            static_cast<int>(goal.center().y / TileMap::kTileSize));
+}
+
+
 /// Steps the world until `predicate` holds or the budget runs out.
 template <typename Predicate>
 bool stepUntil(World& world, Predicate predicate, int budget = 600)
@@ -108,6 +155,42 @@ WorldCommands interact()
     WorldCommands commands;
     commands.interactPressed = true;
     return commands;
+}
+
+/// Shifts era until the world is in `wanted`.
+///
+/// A loop rather than a single press because the shift cycles rather than
+/// selecting: from the Present, one press goes to the Future, not to the Past.
+/// A helper that pressed once would only work for whichever era happened to be one
+/// step away, which is the kind of test that passes until the level changes.
+void shiftToEra(World& world, Era wanted, int budget = 8)
+{
+    for (int i = 0; i < budget && world.era() != wanted; ++i) {
+        world.update(PlayerInput{}, shift(), kStep);
+        static_cast<void>(world.takeEvents());
+    }
+}
+
+/// Takes every seal, shifting to each one's era first.
+void takeEverySeal(World& world)
+{
+    for (int guard = 0; guard < 8; ++guard) {
+        const Seal* next = nullptr;
+        for (const Seal& seal : world.seals()) {
+            if (!seal.collected) {
+                next = &seal;
+                break;
+            }
+        }
+        if (next == nullptr) {
+            return;
+        }
+        shiftToEra(world, next->era);
+        standAt(world, static_cast<int>(next->position.x / TileMap::kTileSize),
+                static_cast<int>(next->position.y / TileMap::kTileSize));
+        world.update(PlayerInput{}, interact(), kStep);
+        static_cast<void>(world.takeEvents());
+    }
 }
 
 /// Shifts until the world is in `wanted`, up to a few steps.
@@ -581,4 +664,291 @@ TEST_CASE("a zero or non-finite step is ignored")
     CHECK(world.stats().elapsed == doctest::Approx(elapsed));
     world.update(PlayerInput{}, shift(), -1.0f);
     CHECK(world.era() == Era::Present);
+}
+
+
+// ---------------------------------------------------------------------------
+// The finish line
+//
+// Two questions the player can get wrong, and which are worth separating because
+// they fail differently:
+//
+//   "does standing on the gate without the seal complete the level?"  must be NO
+//   "does standing on the gate with the seal complete the level?"       must be YES
+//
+// A level that completes on contact is a level that skips its own objective, and a
+// level that never completes is a level that cannot be finished. Both are silent
+// failures: nothing crashes and nothing looks wrong.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("standing on the finish without the objective does not complete the level")
+{
+    World world;
+    world.load(singleSealArena(1, 1));
+
+    standOnFinish(world);
+    for (int i = 0; i < 30; ++i) {
+        world.update(PlayerInput{}, WorldCommands{}, kStep);
+    }
+
+    CHECK(world.sealsTaken() == 0);
+    CHECK_FALSE(world.gateOpen());
+    CHECK(world.outcome() == Outcome::Running);
+}
+
+TEST_CASE("standing on the finish without the objective says why, and still does not complete")
+{
+    World world;
+    world.load(singleSealArena(1, 1));
+    standOnFinish(world);
+
+    world.update(PlayerInput{}, interact(), kStep);
+    const std::vector<EventRecord> events = world.takeEvents();
+
+    bool refused = false;
+    for (const EventRecord& event : events) {
+        if (event.kind == WorldEvent::GateSealed) {
+            refused = true;
+        }
+    }
+    CHECK_MESSAGE(refused, "the player is told the gate is sealed");
+    CHECK(world.outcome() == Outcome::Running);
+    CHECK_FALSE(world.gateOpen());
+}
+
+TEST_CASE("the seal count in the refusal is what remains, not what exists")
+{
+    // Three seals placed, one required, one already taken: one remains. Reporting
+    // two here would send the player looking for a seal the finish does not want.
+    World world;
+    world.load(singleSealArena(3, 1));
+
+    standOnFinish(world);
+    world.update(PlayerInput{}, interact(), kStep);
+
+    CHECK(world.sealsRemaining() == 1);
+
+    // Take every seal: the point is that the *requirement* is what gates, so the
+    // gate opens on the first one even though two more are still available.
+    takeEverySeal(world);
+
+    CHECK(world.sealsTaken() == 3);
+    CHECK(world.gateOpen());
+    CHECK(world.sealsRemaining() == 0);
+}
+
+TEST_CASE("a level asks only for the seals its finish requires")
+{
+    // Three placed, one required: one taken is enough, and the objective line says
+    // 1/1 rather than 1/3.
+    World world;
+    world.load(singleSealArena(3, 1));
+
+    const Seal& first = world.seals().front();
+    shiftToEra(world, first.era);
+    standAt(world, static_cast<int>(first.position.x / TileMap::kTileSize),
+            static_cast<int>(first.position.y / TileMap::kTileSize));
+    world.update(PlayerInput{}, interact(), kStep);
+
+    CHECK(world.sealsTaken() == 1);
+    CHECK(world.objectiveText().find("1 / 1") != std::string::npos);
+    CHECK(world.gateOpen());
+}
+
+TEST_CASE("standing on the finish with the objective completes the level")
+{
+    World world;
+    world.load(singleSealArena(1, 1));
+
+    // Take the seal first.
+    takeEverySeal(world);
+    REQUIRE(world.sealsTaken() == 1);
+    REQUIRE(world.gateOpen());
+
+    standOnFinish(world);
+    // Several steps, not one. Taking a seal puts the world into hit-stop, and a
+    // frozen step returns before the outcome is evaluated - so a single step here
+    // would be testing the hit-stop rather than the finish. A player walks to the
+    // gate, which is many steps; the test should take as many.
+    for (int i = 0; i < 30; ++i) {
+        world.update(PlayerInput{}, WorldCommands{}, kStep);
+    }
+
+    CHECK(world.atFinish());
+    CHECK(world.outcome() == Outcome::Victory);
+}
+
+TEST_CASE("the objective done but the player nowhere near the finish does not complete")
+{
+    // The other half of the rule: collecting the seal is not the same as leaving.
+    World world;
+    world.load(singleSealArena(1, 1));
+
+    takeEverySeal(world);
+    REQUIRE(world.gateOpen());
+
+    // Stand well away from the gate and keep playing.
+    standAt(world, 2, 2);
+    for (int i = 0; i < 30; ++i) {
+        world.update(PlayerInput{}, WorldCommands{}, kStep);
+    }
+    CHECK(world.outcome() == Outcome::Running);
+}
+
+TEST_CASE("a level that asks for more seals than were taken keeps the gate shut")
+{
+    // Three placed, two required, exactly one taken.
+    World world;
+    world.load(singleSealArena(3, 2));
+
+    const Seal& first = world.seals().front();
+    shiftToEra(world, first.era);
+    standAt(world, static_cast<int>(first.position.x / TileMap::kTileSize),
+            static_cast<int>(first.position.y / TileMap::kTileSize));
+    world.update(PlayerInput{}, interact(), kStep);
+    REQUIRE(world.sealsTaken() == 1);
+
+    standOnFinish(world);
+    for (int i = 0; i < 30; ++i) {
+        world.update(PlayerInput{}, WorldCommands{}, kStep);
+    }
+
+    CHECK_FALSE(world.gateOpen());
+    CHECK(world.sealsRemaining() == 1);
+    CHECK(world.outcome() == Outcome::Running);
+}
+
+TEST_CASE("a level with no seals can never be completed by walking into the gate")
+{
+    // A level file with no seals and no stated requirement would otherwise resolve
+    // its requirement to zero, and "zero seals collected >= zero required" is true.
+    // That completes the level on the spawn tile.
+    Level level = arena();
+    std::vector<PlacedEntity> kept;
+    for (const PlacedEntity& entity : level.entities) {
+        if (entity.kind != EntityKind::Seal) {
+            kept.push_back(entity);
+        }
+    }
+    level.entities      = std::move(kept);
+    level.requiresSeals = 0;
+
+    World world;
+    world.load(level);
+
+    CHECK(world.requiredSeals() == 0);
+    CHECK_FALSE(world.gateOpen());
+    CHECK(world.sealsRemaining() == 0);
+
+    standOnFinish(world);
+    for (int i = 0; i < 30; ++i) {
+        world.update(PlayerInput{}, WorldCommands{}, kStep);
+    }
+    CHECK(world.outcome() == Outcome::Running);
+}
+
+TEST_CASE("a level with no seals reports no objective rather than dividing by zero")
+{
+    // The existing test for this asserted the old 0-of-0 line. The objective now
+    // reports the gate as sealed, which is the honest thing: there is no objective,
+    // and saying "0 / 0" reads as a counter that failed rather than as a fact.
+    Level level = arena();
+    std::vector<PlacedEntity> kept;
+    for (const PlacedEntity& entity : level.entities) {
+        if (entity.kind != EntityKind::Seal) {
+            kept.push_back(entity);
+        }
+    }
+    level.entities = std::move(kept);
+
+    World world;
+    world.load(level);
+    const std::string text = world.objectiveText();
+
+    CHECK(text.find("/ 0") == std::string::npos);
+    CHECK(world.outcome() == Outcome::Running);
+}
+
+// ---------------------------------------------------------------------------
+// Finish proximity
+//
+// Drives the marker's reaction. It has to be monotonic in distance, because the
+// gate brightening and then dimming as the player walks towards it would be read
+// as the gate closing.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("finish proximity rises as the player approaches")
+{
+    World world = loadedWorld();
+    const Rect goal = world.goalBounds();
+
+    standAt(world, 2, 2);
+    world.update(PlayerInput{}, WorldCommands{}, kStep);
+    const float far = world.finishProximity();
+
+    standAt(world, static_cast<int>(goal.center().x / TileMap::kTileSize) - 2,
+            static_cast<int>(goal.center().y / TileMap::kTileSize));
+    world.update(PlayerInput{}, WorldCommands{}, kStep);
+    const float near = world.finishProximity();
+
+    CHECK(far >= 0.0f);
+    CHECK(far <= 1.0f);
+    CHECK(near > far);
+}
+
+TEST_CASE("finish proximity saturates at the gate and falls off over distance")
+{
+    World world = loadedWorld();
+
+    // Not exactly 1 at the centre of the goal tile: the proximity is measured to
+    // the goal's *centre* and the player's body centre sits half a tile above the
+    // tile's centre after gravity resolves. Close enough to 1 that the marker is
+    // at full brightness, which is what the number is for.
+    standOnFinish(world);
+    world.update(PlayerInput{}, WorldCommands{}, kStep);
+    CHECK(world.finishProximity() > 0.95f);
+
+    // Far outside the 320px range entirely.
+    standAt(world, 2, 2);
+    world.update(PlayerInput{}, WorldCommands{}, kStep);
+    CHECK(world.finishProximity() == doctest::Approx(0.0f));
+}
+
+TEST_CASE("finish proximity is zero when the level has no gate")
+{
+    Level level = arena();
+    // Blank the goal marker out of all three layers.
+    for (std::string& row : level.presentRows) {
+        for (char& cell : row) {
+            if (cell == 'G') {
+                cell = '.';
+            }
+        }
+    }
+    level.pastRows   = level.presentRows;
+    level.futureRows = level.presentRows;
+
+    World world;
+    world.load(level);
+    CHECK(world.goalBounds().isEmpty());
+    CHECK(world.finishProximity() == doctest::Approx(0.0f));
+    CHECK_FALSE(world.atFinish());
+}
+
+TEST_CASE("being at the finish is asked through one predicate")
+{
+    // The HUD prompt and the completion rule must agree about where the gate is;
+    // asking twice is how they come to disagree.
+    World world = loadedWorld();
+    standOnFinish(world);
+    // No step between standing there and asking: `atFinish` answers "is the player
+    // in the marker", and standing in it and asking in the same frame is the case
+    // the completion rule depends on. A step here would let the player be standing
+    // on the gate and not yet "at" it, which is the off-by-one-frame bug this is
+    // meant to pin down.
+    CHECK(world.atFinish());
+
+    standAt(world, 2, 2);
+    world.update(PlayerInput{}, WorldCommands{}, kStep);
+    CHECK_FALSE(world.atFinish());
 }

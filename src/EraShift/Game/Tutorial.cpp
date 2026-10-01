@@ -1,5 +1,7 @@
 #include "EraShift/Game/Tutorial.hpp"
 
+#include "EraShift/Graphics/Math.hpp"
+
 namespace EraShift::Game {
 
 TutorialLesson lessonFor(TutorialStep step) noexcept
@@ -111,4 +113,23 @@ void Tutorial::restore(bool enabled, bool complete)
                          : (enabled ? TutorialStep::Move : TutorialStep::None);
 }
 
+
+bool lessonVisible(bool active, bool leaving) noexcept
+{
+    return active || leaving;
+}
+
+float lessonOpacity(bool active, bool leaving, float age) noexcept
+{
+    if (!lessonVisible(active, leaving)) {
+        return 0.0f;
+    }
+    if (leaving) {
+        // Counting *up* through the leave window, so this and the enter path meet at
+        // 1.0 rather than at some other shared value.
+        const float t = (age - kLessonEnter) / kLessonLeave;
+        return 1.0f - Graphics::clampValue(t, 0.0f, 1.0f);
+    }
+    return Graphics::clampValue(age / kLessonEnter, 0.0f, 1.0f);
+}
 } // namespace EraShift::Game

@@ -86,6 +86,12 @@ private:
     void drawParallax(const StateContext& ctx, const Rect& area) const;
     void drawTiles(const StateContext& ctx, float blend) const;
     void drawPickups(const StateContext& ctx) const;
+    /// The finish gate: a floating marker over a plinth, pulsing harder as the
+    /// player closes on it.
+    void drawFinishGate(const StateContext& ctx) const;
+    /// The checkpoint volumes, dim while dormant and lit once the player has
+    /// passed through one.
+    void drawCheckpoints(const StateContext& ctx) const;
     void drawSeals(const StateContext& ctx, float blend) const;
     void drawEnemies(const StateContext& ctx) const;
     void drawPlayer(const StateContext& ctx, const Vec2& interpolated) const;
@@ -146,6 +152,10 @@ private:
     /// Counts down after the run ends, so the player sees what happened before
     /// the results screen replaces the world.
     float m_outcomeDelay = 0.0f;
+    /// 0..0.72, how much the frame is darkened by a defeat. Rises while the death
+    /// settles and is cleared on the next run, so the results screen arrives out
+    /// of a darker picture rather than out of the same picture the player died in.
+    float m_darken = 0.0f;
     bool  m_ready       = false;
 
     /// HUD typography, built once from the scale so the bars, the objective and
@@ -166,6 +176,12 @@ private:
     /// The lesson to draw. A copy rather than a pointer so the panel cannot draw
     /// a half-updated tutorial during the same frame it advances.
     Game::TutorialLesson m_lesson{};
+    /// Staged while `m_lesson` plays its exit, so the two never swap on one frame.
+    Game::TutorialLesson m_nextLesson{};
+    /// True while the satisfied lesson is fading out.
+    bool m_tutorialLeaving = false;
+    /// Opacity of the lesson panel right now: in, held, or out.
+    [[nodiscard]] float tutorialFade() const noexcept;
 
     /// Records whatever the player just did, and advances the lesson if that was
     /// what it was asking for.

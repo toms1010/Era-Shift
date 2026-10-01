@@ -182,6 +182,12 @@ void World::load(const Level& level)
         }
     }
 
+    // Resolved here rather than only in the JSON loader, because a level built in
+    // code — `builtInLevel`, or one a test constructs — never goes through the
+    // loader and would otherwise require zero seals and complete on contact.
+    m_requiredSeals = m_level.requiresSeals > 0 ? m_level.requiresSeals
+                                               : static_cast<int>(m_seals.size());
+
     restart();
 }
 
@@ -321,7 +327,36 @@ void World::applyRunStats(double elapsed, int shifts, int kills, float paradox)
 
 bool World::gateOpen() const noexcept
 {
-    return !m_seals.empty() && sealsTaken() == static_cast<int>(m_seals.size());
+    // A requirement of zero means "unstated", which resolves at load to the number
+    // of seals placed. So by the time this is asked, zero genuinely means the level
+    // has no seals at all — and then the gate must stay shut, because "open"
+    // would complete the level on contact.
+    return m_requiredSeals > 0 && sealsTaken() >= m_requiredSeals;
+}
+
+int World::sealsRemaining() const noexcept
+{
+    return gateOpen() ? 0 : std::max(0, m_requiredSeals - sealsTaken());
+}
+
+bool World::atFinish() const noexcept
+{
+    return !m_goalBounds.isEmpty() && m_map.rectOverGoal(m_player.body().rect());
+}
+
+float World::finishProximity() const noexcept
+{
+    if (m_goalBounds.isEmpty()) {
+        return 0.0f;
+    }
+    // 320px is about ten tiles: far enough that the gate is already visible and
+    // reacting by the time the player can read it, near enough that the reaction
+    // is not spent long before it is worth looking at.
+    constexpr float kRange = 320.0f;
+    const float dx = m_player.body().center().x - m_goalBounds.center().x;
+    const float dy = m_player.body().center().y - m_goalBounds.center().y;
+    const float d  = std::sqrt(dx * dx + dy * dy);
+    return Graphics::clampValue(1.0f - d / kRange, 0.0f, 1.0f);
 }
 
 std::vector<std::uint32_t> World::enemyIds() const
@@ -688,10 +723,7 @@ void World::updateSealsAndGate(const WorldCommands& commands)
         emit(WorldEvent::SealTaken, seal.label + " RECOVERED");
     }
 
-    if (m_goalBounds.isEmpty()) {
-        return;
-    }
-    if (!m_map.rectOverGoal(m_player.body().rect())) {
+    if (!atFinish()) {
         return;
     }
 
@@ -700,7 +732,11 @@ void World::updateSealsAndGate(const WorldCommands& commands)
         return;
     }
     if (commands.interactPressed) {
-        const int remaining = static_cast<int>(m_seals.size()) - sealsTaken();
+        // Against the *requirement*, not the number of seals placed: a region with
+        // three seals where only one is required should say one seal remains, not
+        // two, and "2 SEALS REMAIN" on a level that needs one is a lie the player
+        // will believe.
+        const int remaining = sealsRemaining();
         emit(WorldEvent::GateSealed,
              std::to_string(remaining) + (remaining == 1 ? " SEAL REMAINS" : " SEALS REMAIN"));
     }
@@ -717,7 +753,11 @@ void World::updateOutcome()
         emit(WorldEvent::PlayerDied, "TIMELINE COLLAPSED");
         return;
     }
-    if (gateOpen() && !m_goalBounds.isEmpty() && m_map.rectOverGoal(m_player.body().rect())) {
+    // Both halves matter and the order matters: the player must be *at* the finish,
+    // and the objective must actually be done. Either alone completes the level by
+    // accident — walking past an open gate, or standing in the gate with the seals
+    // still out there.
+    if (gateOpen() && atFinish()) {
         m_outcome = Outcome::Victory;
         emit(WorldEvent::Victory, "THE GATE OPENS");
     }
@@ -733,10 +773,16 @@ std::string World::objectiveText() const
     }
 
     const int taken = sealsTaken();
-    const int total = static_cast<int>(m_seals.size());
+    const int total = m_requiredSeals;
+
+    // A level with no seals has no objective to count. "Era seals  0 / 0" reads as
+    // a counter that failed rather than as a fact, so it says so instead.
+    if (total <= 0) {
+        return "Reach the gate";
+    }
 
     std::string text = "Era seals  " + std::to_string(taken) + " / " + std::to_string(total);
-    if (taken < total) {
+    if (!gateOpen()) {
         // Name the era of the nearest seal still outstanding. Telling the player
         // which button to press is the difference between a puzzle and a chore.
         const Vec2 here = m_player.body().center();

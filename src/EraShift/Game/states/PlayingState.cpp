@@ -44,7 +44,17 @@ constexpr float kToastLifetime = 2.2f;
 /// Distance at which the interact prompt appears.
 constexpr float kInteractRange = 96.0f;
 /// How long the finished world stays on screen before the results appear.
+///
+/// Long enough for the completion burst to play out and be read as a separate thing
+/// from the results screen, short enough that a player who has just won is not
+/// waiting. 1.4s: the burst is about 0.9s, so the results arrive as the last
+/// particles are still going rather than after a beat of nothing.
 constexpr float kOutcomeDelay = 1.4f;
+/// The same, for a defeat. Shorter: a death has nothing to watch, and the sooner
+/// the player can press RETRY the better. Still long enough for the death animation
+/// and the screen darkening to have happened.
+constexpr float kDefeatDelay = 0.9f;
+
 
 /// Camera look-ahead in the direction of travel, in world units.
 constexpr float kLookAhead = 56.0f;
@@ -258,6 +268,7 @@ void PlayingState::onEnter(StateContext& ctx)
     m_hurtFlash   = 0.0f;
     m_shiftFlash  = 0.0f;
     m_outcomeDelay = kOutcomeDelay;
+    m_darken       = 0.0f;
     m_toasts.clear();
     m_toastTimer  = 0.0f;
 
@@ -450,16 +461,19 @@ void PlayingState::syncPrompt()
         return;
     }
 
+    // The prompt is a *near* gate rather than the exact finish tile, so the player
+    // is told what the gate wants while there is still room to go and do it.
     const Rect goal = m_world.goalBounds();
     if (!goal.isEmpty()) {
         const Rect grown{goal.x - 48.0f, goal.y - 48.0f, goal.w + 96.0f, goal.h + 96.0f};
         if (grown.intersects(player.body().rect())) {
             m_showInteractPrompt = true;
-            m_interactPrompt = m_world.gateOpen() ? std::string("The gate is open")
-                                                  : std::string("The gate is sealed  -  " +
-                                                                std::to_string(m_world.seals().size() -
-                                                                               m_world.sealsTaken()) +
-                                                                " seals remain");
+            m_interactPrompt =
+                m_world.gateOpen()
+                    ? std::string("The gate is open  -  walk through")
+                    : std::string("The gate is sealed  -  ") +
+                          std::to_string(m_world.sealsRemaining()) +
+                          (m_world.sealsRemaining() == 1 ? " seal remains" : " seals remain");
         }
     }
 }
@@ -577,24 +591,95 @@ void PlayingState::syncTutorial(StateContext& ctx, const Game::PlayerInput& inpu
 
         case Game::TutorialStep::Enemy:
         case Game::TutorialStep::Seal:
-        case Game::TutorialStep::Gate:
-            // Not key-driven. These are taught by arriving, and the caller tells
-            // the tutorial so by calling `skip` at the right moment.
-            return;
+        case Game::TutorialStep::Gate: {
+            // Not key-driven: these are taught by arriving. Handled below, where
+            // the world's distances are known.
+            const Vec2 here  = m_world.player().body().center();
+            float    nearest = -1.0f;
+
+            if (current == Game::TutorialStep::Enemy) {
+                // The nearest enemy that exists in the era the player is in. An
+                // enemy frozen out of the world is not something the player can
+                // react to, so waiting for one would hold the lesson open in a
+                // level section where there is not one yet.
+                for (const Game::Enemy& enemy : m_world.enemies()) {
+                    if (!enemy.aliveIn(m_world.era())) {
+                        continue;
+                    }
+                    const Vec2  at = enemy.body().center();
+                    const float d  = std::sqrt((at.x - here.x) * (at.x - here.x) +
+                                             (at.y - here.y) * (at.y - here.y));
+                    nearest = (nearest < 0.0f) ? d : std::min(nearest, d);
+                }
+            } else if (current == Game::TutorialStep::Seal) {
+                for (const Game::Seal& seal : m_world.seals()) {
+                    if (seal.collected) {
+                        continue;
+                    }
+                    const float d = std::sqrt((seal.position.x - here.x) *
+                                                  (seal.position.x - here.x) +
+                                              (seal.position.y - here.y) *
+                                                  (seal.position.y - here.y));
+                    nearest = (nearest < 0.0f) ? d : std::min(nearest, d);
+                }
+            } else {
+                nearest = m_world.finishProximity() > 0.0f ? 0.0f : -1.0f;
+            }
+
+            // 320px is about ten tiles: far enough that the player has clearly
+            // arrived, close enough that the prompt is not dismissed by something
+            // glimpsed across the room.
+            constexpr float kArriveRange = 320.0f;
+            if (nearest < 0.0f || nearest > kArriveRange) {
+                return;
+            }
+            if (!m_tutorial.reachedSituation(true)) {
+                return;
+            }
+            break;
+        }
 
         default:
             return;
     }
 
-    if (matched && m_tutorial.perform(current)) {
-        m_lesson     = m_tutorial.lesson();
-        m_tutorialAge = 0.0f;
-        if (ctx.log != nullptr) {
-            ctx.log->debug("Game", "tutorial: {}", m_tutorial.step() == Game::TutorialStep::Complete
-                                             ? std::string("complete")
-                                             : std::string(m_lesson.title));
+    // Either route above — the key press, or having arrived — ends here.
+    if (!matched && current != Game::TutorialStep::Enemy &&
+        current != Game::TutorialStep::Seal && current != Game::TutorialStep::Gate) {
+        return;
+    }
+    if (matched && !m_tutorial.perform(current)) {
+        return;
+    }
+
+    // The lesson that *was* showing keeps its text while it leaves, and the next one
+    // is staged behind it. Swapping them on the same frame would make the player see
+    // a box change its mind without any animation in between.
+    //
+    // The last lesson leaves too, and gets its tick like every other one. Snapping
+    // the final prompt away while every earlier one animated would make the end of
+    // the tutorial look like the one step that went wrong.
+    m_tutorialLeaving = true;
+    m_nextLesson       = m_tutorial.complete() ? TutorialLesson{} : m_tutorial.lesson();
+    // The clock restarts here. It had been counting up since the lesson arrived, so
+    // without this the leave would be judged finished the instant it began — the
+    // prompt would still be on screen, and it would just vanish.
+    m_tutorialAge = 0.0f;
+
+    if (ctx.log != nullptr) {
+        if (m_tutorial.complete()) {
+            ctx.log->debug("Game", "tutorial: complete");
+        } else {
+            ctx.log->debug("Game", "tutorial: lesson done, next is '{}'", m_nextLesson.title);
         }
     }
+}
+
+float PlayingState::tutorialFade() const noexcept
+{
+    // The lifecycle arithmetic lives in `Tutorial`, where the gameplay suite can
+    // test it. This state only holds the clock.
+    return Game::lessonOpacity(m_tutorial.active(), m_tutorialLeaving, m_tutorialAge);
 }
 
 void PlayingState::say(std::string speaker, std::string message, float seconds)
@@ -717,30 +802,57 @@ void PlayingState::update(StateContext& ctx, double fixedDelta)
     // this step rather than the one after it.
     syncTutorial(ctx, input, commands);
 
-    // The lesson panel's fade-in runs on the presentation clock, not the
-    // simulation's, so a player standing in hit-stop does not see the prompt
-    // freeze half-transparent.
-    if (m_tutorial.active()) {
+    // The lesson panel's enter/leave runs on the fixed step, like everything else
+    // in `update`. The simulation always advances in whole fixed steps whatever the
+    // frame rate, so the animation is frame-rate independent; and it is deliberately
+    // not gated on the player having control, so a prompt stays legible through the
+    // hit-stop at the end of a run.
+    if (m_tutorial.active() || m_tutorialLeaving) {
         m_tutorialAge += dt;
+        if (m_tutorialLeaving && m_tutorialAge >= Game::kLessonEnter + Game::kLessonLeave) {
+            // The leave finished. An empty next lesson means there was no next
+            // lesson, so the panel is cleared and the tutorial is over.
+            m_lesson          = m_nextLesson;
+            m_nextLesson      = TutorialLesson{};
+            m_tutorialLeaving = false;
+            m_tutorialAge     = 0.0f;
+        }
     }
 
     // --- outcomes -----------------------------------------------------------
     if (m_world.outcome() != Game::Outcome::Running) {
+        const bool lost = m_world.outcome() == Game::Outcome::Defeat;
+
+        // The wait before the results screen depends on how the run ended. Set
+        // once, on the first frame the outcome is seen, rather than at level load:
+        // loading cannot know which way the run will end. A defeat waits less
+        // because a death has nothing to watch and the player wants to retry.
+        if (m_outcomeDelay > 0.0f) {
+            m_outcomeDelay = lost ? kDefeatDelay : kOutcomeDelay;
+        }
+
         // The world keeps rendering behind the results screen, so hold it for a
         // moment: cutting straight to a panel the instant the player dies takes
         // away the last frame of what killed them. A keypress skips the wait.
         //
-        // The *animation* keeps running through that hold, which is the point of
-        // holding at all. Returning here before the presentation updates froze the
-        // player's rig one frame into the death clip for the whole 1.4 seconds, so
-        // the last thing the player ever saw of their own run was a single frame of
-        // it. Same arrangement as hit-stop: the simulation stops, the picture
-        // finishes what it started.
+        // Presentation keeps running under the outcome, which is the point of
+        // holding at all. Returning before these updates froze the player's rig one
+        // frame into the death clip for the whole wait, so the last thing the
+        // player saw of their own run was a single frame of it. Same arrangement
+        // as hit-stop: the simulation stops, the picture finishes what it started.
         m_feedback.update(ctx, fixedDelta, m_world);
         updatePlayerAnimation(dt, shiftHeld);
         updateEnemyAnimations(dt);
 
+        // A defeat darkens the frame as it settles, so the results screen appears
+        // out of a picture rather than out of the same picture the player died in.
+        m_darken = Graphics::clampValue(m_darken + (lost ? dt * 2.2f : -dt * 3.0f), 0.0f,
+                                       lost ? 0.72f : 0.0f);
+
         m_outcomeDelay -= dt;
+        // Any confirm key skips the wait. On a victory that is fine and on a defeat
+        // it is the fast-retry path: the player who died knows what they want to do
+        // and should not have to watch an animation twice.
         const bool confirmed = ctx.input->wasPressed(Action::Interact) ||
                                ctx.input->wasPressed(Action::Jump);
         if (confirmed || m_outcomeDelay <= 0.0f) {
@@ -883,16 +995,28 @@ void PlayingState::updateEnemyAnimations(float dt)
         if (inserted) {
             it->second.play(AnimId::EIdle, true);
         }
-        // Only enemies in the current era animate; a sleeping one is drawn as an
-        // outline, and a running walk cycle behind an outline would be odd.
-        if (enemy.inCurrentEra()) {
+        // Every enemy keeps animating, not only the ones in the current era.
+        //
+        // A death is animated wherever it happens: `enemyClipFor` puts a dying
+        // enemy on EDie regardless of era, and gating on `inCurrentEra` meant that
+        // an enemy killed in one era and then watched through a shift froze on
+        // whatever frame it died on. It stayed frozen for the rest of the run,
+        // because the player only ever runs *away* from a corpse - so a corpse
+        // mid-death-animation was the most permanent thing on screen.
+        //
+        // A frozen enemy is still posed once and held, which is correct: it is not
+        // happening, so it is not moving.
+        {
             // A hurt enemy is forced for the same reason the player's is: an
             // enemy that is visibly struck and visibly unchanged reads as a miss,
             // which is the single most damaging thing this game can get wrong
             // about its own combat.
             const AnimId wanted = Game::enemyClipFor(enemy);
-            it->second.play(wanted, wanted == AnimId::EHurt || wanted == AnimId::EDie);
-            it->second.update(dt);
+            const bool forced = wanted == AnimId::EHurt || wanted == AnimId::EDie;
+            it->second.play(wanted, forced);
+            if (enemy.inCurrentEra() || forced) {
+                it->second.update(dt);
+            }
         }
         live.emplace(enemy.id(), it->second);
     }
@@ -1198,6 +1322,125 @@ void PlayingState::drawPickups(const StateContext& ctx) const
                               Palette::White);
         }
     }
+    renderer.setBlendMode(BlendMode::None);
+}
+
+void PlayingState::drawFinishGate(const StateContext& ctx) const
+{
+    const Rect goal = m_world.goalBounds();
+    if (goal.isEmpty()) {
+        return;
+    }
+
+    Renderer2D& renderer = *ctx.renderer;
+    renderer.setBlendMode(BlendMode::Alpha);
+    renderer.setCameraEnabled(true);
+
+    const EraTheme theme = blendThemes(themeFor(m_world.previousEra()), themeFor(m_world.era()),
+                                       Graphics::clampValue(m_world.eraBlend(), 0.0f, 1.0f));
+
+    const float time  = static_cast<float>(m_time);
+    const float near  = m_world.finishProximity();
+    const bool  open  = m_world.gateOpen();
+
+    // The marker bobs, and it bobs *faster* the closer the player is: the gate is
+    // meant to pull the eye as they approach, so its motion has to carry distance.
+    // A fixed-rate bob reads the same at forty tiles as at two, which is exactly
+    // backwards - the far-off gate is the one that needs the help.
+    const float bobSpeed = Graphics::lerp(1.6f, 4.2f, near);
+    const float bob      = std::sin(time * bobSpeed) * Graphics::lerp(3.0f, 7.0f, near);
+
+    // Brighter when it is usable, and brighter again as the player arrives: the two
+    // answers a player needs are "can I finish?" and "is that it?", and both are
+    // legible from the colour and the pulse without reading any text.
+    const auto tint = open ? theme.accent : Palette::TextDim;
+    const auto alpha = static_cast<std::uint8_t>(
+        Graphics::lerp(0x80, 0xFF, Graphics::clampValue(near * (open ? 1.6f : 1.0f), 0.0f, 1.0f)));
+
+    // The diamond. The shape the design calls for, drawn as a rotated square in
+    // four triangles' worth of rectangles' stead - a diamond outline reads as a
+    // marker at any size and is not mistaken for a platform.
+    const float size = Graphics::lerp(20.0f, 34.0f, near);
+    const Vec2  top{goal.center().x, goal.y + 18.0f - bob};
+    const float half = size * 0.5f;
+
+    renderer.drawRect(Rect{top.x - half * 0.5f, top.y, half, half}, tint.withAlpha(alpha));
+    renderer.drawRect(Rect{top.x, top.y, half * 0.5f, half}, tint.withAlpha(alpha));
+    renderer.drawRect(Rect{top.x - half * 0.5f, top.y + half * 0.5f, half * 0.5f, half * 0.5f},
+                      tint.withAlpha(alpha));
+    renderer.drawRect(Rect{top.x + half * 0.5f, top.y + half * 0.5f, half * 0.5f, half * 0.5f},
+                      tint.withAlpha(alpha));
+
+    // A ring that expands and fades, faster and brighter on approach. Two rings at
+    // different phases so the effect never has a visible "restart".
+    const float ringPhase = (time * Graphics::lerp(0.7f, 1.9f, near)) - std::floor(time *
+                                                    Graphics::lerp(0.7f, 1.9f, near));
+    const float ringR    = half + ringPhase * Graphics::lerp(14.0f, 30.0f, near);
+    const auto  ringA    = static_cast<std::uint8_t>((1.0f - ringPhase) * 0.55f * alpha);
+    renderer.drawRectOutline(Rect{top.x - ringR, top.y - ringR + half, ringR * 2.0f, ringR * 2.0f},
+                             tint.withAlpha(ringA), 2.0f);
+
+    // The plinth under it, so the marker is standing on something rather than
+    // floating in the middle of the screen.
+    const Rect plinth{goal.x - 6.0f, goal.y + goal.h - 10.0f, goal.w + 12.0f, 10.0f};
+    renderer.drawRect(plinth, Palette::PanelBorder.withAlpha(
+                                  static_cast<std::uint8_t>(0x60 + 0x80 * alpha / 255.0f)));
+
+    // Sealed, the marker is ringed in the era-neutral dim and the plinth is not lit:
+    // the gate is visibly *there* and visibly *not for you yet*, which is the two
+    // things a player approaching an unfinished objective needs to know.
+    renderer.setBlendMode(BlendMode::None);
+}
+
+void PlayingState::drawCheckpoints(const StateContext& ctx) const
+{
+    if (ctx.renderer == nullptr || ctx.text == nullptr) {
+        return;
+    }
+
+    Renderer2D& renderer = *ctx.renderer;
+    renderer.setBlendMode(BlendMode::Alpha);
+    renderer.setCameraEnabled(true);
+
+    const float time = static_cast<float>(m_time);
+
+    for (const Game::PlacedEntity& entity : m_level.entities) {
+        if (entity.kind != Game::EntityKind::Checkpoint) {
+            continue;
+        }
+
+        const Vec2 at = m_level.worldPosition(entity);
+
+        // The one the player just wrote, or the one they are standing in, is lit.
+        // "Lit" rather than "tall" because the trigger volume is invisible: without
+        // a light there is nothing to tell the player a checkpoint exists at all.
+        const bool reached =
+            m_lastCheckpointVolume == std::make_pair(entity.x, entity.y);
+
+        const auto colour = reached ? Palette::Accent : Palette::TextDim;
+        const auto alpha  = reached ? std::uint8_t{0xFF} : std::uint8_t{0x70};
+
+        const float bob = std::sin(time * 2.4f + static_cast<float>(entity.x) * 0.05f) * 3.0f;
+        const float h   = reached ? 30.0f : 20.0f;
+        const Rect  body{at.x - 5.0f, at.y + 20.0f - h - bob, 10.0f, h};
+
+        renderer.drawRect(body, Palette::PanelFill.withAlpha(alpha));
+        renderer.drawRectOutline(body, colour.withAlpha(alpha), 2.0f);
+
+        // A dormant checkpoint has no glow at all. A dim one is indistinguishable
+        // from a decorative pillar, which is worse than obviously-not-a-checkpoint.
+        if (reached) {
+            const float pulse = 0.5f + 0.5f * std::sin(time * 3.0f);
+            renderer.drawRect(Rect{body.center().x - 3.0f, body.y + 4.0f, 6.0f, 6.0f},
+                              colour.withAlpha(
+                                  static_cast<std::uint8_t>(0x60 + 0xA0 * pulse)));
+            const float ring = 6.0f + 5.0f * pulse;
+            renderer.drawRectOutline(
+                Rect{body.center().x - ring, body.center().y - ring, ring * 2.0f, ring * 2.0f},
+                colour.withAlpha(static_cast<std::uint8_t>(0x50 * (1.0f - pulse))), 1.0f);
+        }
+    }
+
     renderer.setBlendMode(BlendMode::None);
 }
 
@@ -1676,7 +1919,11 @@ void PlayingState::drawHud(const StateContext& ctx, const Rect& area) const
 
 void PlayingState::drawTutorialPanel(const StateContext& ctx, const Rect& area) const
 {
-    if (!m_tutorial.active() || m_lesson.title == nullptr || m_lesson.title[0] == '\0') {
+    // `active()` goes false the moment the tutorial completes, which is before the
+    // last prompt has finished leaving — so the leaving flag has to count too, or
+    // the final lesson is the one that snaps away.
+    if ((!m_tutorial.active() && !m_tutorialLeaving) || m_lesson.title == nullptr ||
+        m_lesson.title[0] == '\0') {
         return;
     }
     if (ctx.renderer == nullptr || ctx.text == nullptr) {
@@ -1687,15 +1934,25 @@ void PlayingState::drawTutorialPanel(const StateContext& ctx, const Rect& area) 
     Graphics::TextRenderer& text = *ctx.text;
     const UiScale scale = currentUiScale(ctx);
 
-    // Fades in over its first third of a second. A panel that appears at full
-    // opacity on a single frame reads as a pop-up the game threw at the player;
-    // one that is already 40% faded reads as arriving.
-    const float fade = Graphics::clampValue(m_tutorialAge / 0.30f, 0.0f, 1.0f);
+    // Three states on one clock, rather than a single fade: arrive, hold, leave.
+    //
+    //   < kLessonEnter   fading and rising into place
+    //   < kLessonLeave   fading back out, after the lesson was satisfied
+    //
+    // The leave is the part that matters. A prompt that vanishes on the same frame
+    // the action registered reads as a glitch — the player pressed the key and the
+    // box blinked out. Holding it for a moment afterwards, with a tick, says "yes,
+    // that is what I asked for".
+    const float fade = tutorialFade();
+    if (fade <= 0.0f) {
+        return;
+    }
+    const float rise = (1.0f - fade) * scale.px(12.0f);
 
     // Top-left, below the toasts, so it never covers the player or the objective.
     const float panelW = std::min(scale.px(300.0f), area.w - scale.px(24.0f));
     const float panelH = scale.px(62.0f);
-    const Rect panel{area.x + scale.px(12.0f), area.y + scale.px(12.0f), panelW, panelH};
+    const Rect panel{area.x + scale.px(12.0f), area.y + scale.px(12.0f) - rise, panelW, panelH};
 
     const auto faded = [fade](Color colour) {
         return colour.withAlpha(static_cast<std::uint8_t>(
@@ -1725,15 +1982,46 @@ void PlayingState::drawTutorialPanel(const StateContext& ctx, const Rect& area) 
                          panel.w - scale.px(20.0f), scale.px(28.0f)},
                     m_lesson.body, body);
 
+    // The key chip, drawn as a real box rather than a line of text. It is the one
+    // piece of the tutorial that has to be readable at a glance from across a room,
+    // and a chip reads faster than "LEFT SHIFT".
     if (m_lesson.key != nullptr && m_lesson.key[0] != '\0') {
-        TextStyle key = m_labelStyle;
-        key.color     = faded(Palette::TextDim);
-        key.align     = TextAlign::Right;
-        text.drawInRect(renderer,
-                        Rect{panel.x, panel.bottom() - scale.px(15.0f), panel.w - scale.px(10.0f),
-                             scale.px(12.0f)},
-                        m_lesson.key, key);
+        const std::string key = m_lesson.key;
+        TextStyle chipText = m_labelStyle;
+        chipText.align     = TextAlign::Center;
+        chipText.color     = faded(Palette::Accent);
+        chipText.bold      = true;
+
+        const float chipW = std::min(text.measure(key, chipText).x + scale.px(14.0f),
+                                     panel.w - scale.px(20.0f));
+        const float chipH = scale.px(16.0f);
+        const Rect chip{panel.x + panel.w - scale.px(10.0f) - chipW,
+                        panel.bottom() - chipH - scale.px(6.0f), chipW, chipH};
+
+        renderer.drawRect(chip, faded(Palette::Accent.withAlpha(0x22)));
+        renderer.drawRectOutline(chip, faded(Palette::Accent.withAlpha(0x66)), 1.0f);
+        text.drawInRect(renderer, chip, key, chipText);
     }
+
+    // The tick, while the lesson is on its way out. Drawn rather than faded because
+    // a box that just gets dimmer is ambiguous — the player cannot tell a satisfied
+    // lesson from one that is merely behind something.
+    if (m_tutorialLeaving) {
+        const float tick = Graphics::clampValue(
+            (m_tutorialAge - Game::kLessonEnter) / Game::kLessonLeave, 0.0f, 1.0f);
+        TextStyle mark = m_labelStyle;
+        mark.color     = Palette::Positive.withAlpha(
+            static_cast<std::uint8_t>(255.0f * tick));
+        mark.bold      = true;
+        mark.align     = TextAlign::Right;
+        const float boxW = scale.px(20.0f);
+        text.drawInRect(
+            renderer,
+            Rect{panel.x + panel.w - scale.px(10.0f) - boxW, panel.y + scale.px(4.0f), boxW,
+                 scale.px(16.0f)},
+            "\xE2\x9C\x93", mark);   // a check mark, if the face has one
+    }
+
     renderer.setBlendMode(BlendMode::None);
 }
 
@@ -1791,6 +2079,8 @@ void PlayingState::render(StateContext& ctx, double alpha)
     drawTiles(ctx, blend);
     drawSeals(ctx, blend);
     drawPickups(ctx);
+    drawCheckpoints(ctx);
+    drawFinishGate(ctx);
     drawEnemies(ctx);
     drawPlayer(ctx, interpolated);
 
@@ -1812,6 +2102,21 @@ void PlayingState::render(StateContext& ctx, double alpha)
     // Toasts last, so the newest thing that happened is the clearest thing on
     // screen no matter what the run looks like underneath it.
     drawToasts(ctx, area);
+
+    // The defeat darkening, over the whole frame and under everything else.
+    //
+    // Placed after the toasts rather than before them so the toast a death emits
+    // is dimmed too: the message is part of the picture the player is leaving,
+    // and leaving one bright element on a darkening screen looks like a bug rather
+    // than like the world closing down. It is a flat multiply rather than a
+    // vignette because the vignette the paradox system already draws is *tension*,
+    // and a player must be able to tell the two apart at a glance.
+    if (m_darken > 0.001f) {
+        const auto shade = static_cast<std::uint8_t>(255.0f * m_darken);
+        renderer.setBlendMode(BlendMode::Alpha);
+        renderer.drawRect(area, Palette::Black.withAlpha(shade));
+        renderer.setBlendMode(BlendMode::None);
+    }
 
     if (ctx.stats != nullptr) {
         // The overlay's Entities row is the simulation's to report: only the

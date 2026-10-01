@@ -12,6 +12,12 @@ namespace {
 /// default 250px/s this is a step roughly every third of a second.
 constexpr float kStrideLength = 76.0f;
 
+/// Vertical speed above which a landing counts as an impact rather than a step.
+///
+/// Just over the speed gravity reaches in a fifth of a second, so the recovery is
+/// for jumps and drops rather than for walking down a slope.
+constexpr float kLandRecoverySpeed = 320.0f;
+
 } // namespace
 
 void Player::reset(const Vec2& spawn, Era era)
@@ -154,8 +160,21 @@ bool Player::update(const TileMap& map, const PlayerInput& input, float dt)
         m_body.velocity.y = std::min(m_body.velocity.y, m_tuning.maxFallSpeed);
     }
 
+    // The landing recovery, counted down every step. Scaled movement rather than
+    // none, so the player keeps control the instant they land.
+    if (m_landTimer > 0.0f) {
+        m_landTimer = std::max(0.0f, m_landTimer - dt);
+    }
+
     // --- integrate ----------------------------------------------------------
     const bool wasGrounded = m_body.onGround;
+    // Captured *before* the body is integrated. `moveBody` clamps the vertical
+    // velocity to zero on the step it lands, so reading it afterwards - which is
+    // what this used to do - reported every landing as a dead stop. The landing
+    // dust has therefore been at its weakest possible strength for every landing
+    // in the game, from the gentlest step to a drop off the top of the level.
+    const float impactSpeed = std::fabs(m_body.velocity.y);
+
     moveBody(map, m_body, m_era, dt);
     resolvePenetration(map, m_body, m_era);
 
@@ -164,10 +183,15 @@ bool Player::update(const TileMap& map, const PlayerInput& input, float dt)
             // Landing refreshes the coyote window, so bouncing off a floor
             // immediately does not need the button pressed again.
             m_coyoteTimer = m_tuning.coyoteTime;
-            // The impact speed is captured before gravity stops adding to it,
-            // because after the landing it is zero and everything sounds soft.
             m_events.landed   = true;
-            m_events.landSpeed = std::fabs(m_body.velocity.y);
+            m_events.landSpeed = impactSpeed;
+            m_lastLandSpeed   = impactSpeed;
+            // Only a real landing gets a recovery. A one-tile step off a ledge
+            // triggers the same edge, and playing a squash for that would make
+            // every step down a stair look like an impact.
+            if (impactSpeed > kLandRecoverySpeed) {
+                m_landTimer = m_tuning.landRecovery;
+            }
         }
     } else if (wasGrounded) {
         m_coyoteTimer = m_tuning.coyoteTime;

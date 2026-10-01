@@ -199,6 +199,20 @@ bool loadLevelFromJson(std::string_view json, Level& out, std::string& errorOut)
     // rather than sorting before level 1.
     const int order = document.value("order", 0);
     level.order = order > 0 ? order : 0;
+    level.tutorial = document.value("tutorial", false);
+
+    // The finish requirement is nested under "finish" so the block can grow (a
+    // later region may want a second objective) without the top level filling up
+    // with one-off keys. A missing block means "every seal placed".
+    level.requiresSeals = 0;
+    if (document.contains("finish") && document.at("finish").is_object()) {
+        const Json& finish = document.at("finish");
+        // Negative would ask for a number of seals that cannot exist, which would
+        // leave the gate open from the start. Clamped rather than rejected: the
+        // rest of the file is usable and a player should still be able to play it.
+        const int required = finish.value("requires_seals", 0);
+        level.requiresSeals = required > 0 ? required : 0;
+    }
 
     const auto readRows = [&](const char* key, std::vector<std::string>& target) -> bool {
         if (!document.contains(key)) {
@@ -268,6 +282,21 @@ bool loadLevelFromJson(std::string_view json, Level& out, std::string& errorOut)
             }
             level.entities.push_back(entity);
         }
+    }
+
+    // Resolved from the placement list *after* the entities have been read, so a
+    // file that states no requirement falls back to "every seal placed" against the
+    // seals that were actually placed rather than against an empty list. Doing it
+    // here rather than only in `World::load` means every caller — the level select,
+    // the validator, a test — sees the same number the simulation will use.
+    if (level.requiresSeals <= 0) {
+        int placed = 0;
+        for (const PlacedEntity& entity : level.entities) {
+            if (entity.kind == EntityKind::Seal) {
+                ++placed;
+            }
+        }
+        level.requiresSeals = placed;
     }
 
     // A level without a spawn point would drop the player into nowhere, so the

@@ -188,3 +188,163 @@ TEST_CASE("simulation is frozen for the whole time a menu is open")
     machine.update(0.016);
     CHECK(playing->updateCount() == 2);
 }
+
+
+// ---------------------------------------------------------------------------
+// What stops when
+//
+// The rule the pause screen depends on: a menu on top freezes the *simulation*
+// and leaves the *presentation* running. Confusing the two is what produces a
+// pause screen where the world keeps moving underneath it, or one where the menu's
+// own animation is frozen mid-pulse.
+//
+// This is checked with a state that separates the two explicitly rather than with
+// a real PlayingState, which would need a renderer and would be testing that the
+// renderer exists rather than that the freeze is in the right place.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Counts simulation steps and presentation steps separately, so a test can say
+/// which of the two it expects to move.
+class SplitClockState final : public IGameState {
+public:
+    SplitClockState(GameState id, int* simulations, int* presentations)
+        : IGameState(id), m_simulations(simulations), m_presentations(presentations) {}
+
+    void update(StateContext&, double) override { ++*m_simulations; }
+    void render(StateContext&, double) override { ++*m_presentations; }
+
+private:
+    int* m_simulations;
+    int* m_presentations;
+};
+
+} // namespace
+
+TEST_CASE("render draws every state bottom-up, so an overlay covers the world")
+{
+    // The freeze stops the world simulating; rendering is a different question. A
+    // menu that rendered nothing would freeze the world *and* leave the previous
+    // frame on screen, which looks identical to a freeze but is a different bug -
+    // and is invisible in a test that only counts updates.
+    int plays = 0;
+    int paused = 0;
+    int playRenders = 0;
+    int pauseRenders = 0;
+    StateContext ctx{};
+    StateMachine machine(ctx);
+
+    machine.push(std::make_shared<SplitClockState>(GameState::Playing, &plays, &playRenders));
+    machine.push(std::make_shared<SplitClockState>(GameState::Paused, &paused, &pauseRenders));
+    machine.render(0.5);
+
+    CHECK(playRenders == 1);
+    CHECK(pauseRenders == 1);
+}
+
+TEST_CASE("a paused game simulates nothing while the menu animates")
+{
+    int sims = 0;
+    int menuRenders = 0;
+    StateContext ctx{};
+    StateMachine machine(ctx);
+
+    auto playing = std::make_shared<SplitClockState>(GameState::Playing, &sims, &menuRenders);
+    machine.push(playing);
+    machine.update(0.016);
+    CHECK(sims == 1);
+
+    // The pause menu is its own state here, and it renders: a menu that does not
+    // animate while the game is paused looks like the game has hung on the pause.
+    int pauseRenders = 0;
+    int pauseSims = 0;
+    machine.push(std::make_shared<SplitClockState>(GameState::Paused, &pauseSims, &pauseRenders));
+
+    for (int i = 0; i < 100; ++i) {
+        machine.update(0.016);
+    }
+
+    CHECK_MESSAGE(sims == 1, "the world does not step while paused");
+    CHECK_MESSAGE(pauseRenders == 0, "render is not called by update");
+
+    // Unpausing resumes exactly where it left off, with no drift: the frozen period
+    // must not be integrated in one lump on the way back in.
+    machine.pop();
+    machine.update(0.016);
+    CHECK(sims == 2);
+}
+
+TEST_CASE("a state on top of the stack is the only one updated")
+{
+    // Two states with their own counters, so "the top one runs" is checkable
+    // without either of them knowing about the other.
+    int bottomSims = 0;
+    int topSims = 0;
+    int bottomRenders = 0;
+    StateContext ctx{};
+    StateMachine machine(ctx);
+
+    machine.push(std::make_shared<SplitClockState>(GameState::Playing, &bottomSims, &bottomRenders));
+    // A step before the second state goes on, so the bottom one is known to have
+    // run at all - otherwise "zero" would be true whether or not the freeze works.
+    machine.update(0.016);
+    REQUIRE(bottomSims == 1);
+
+    machine.push(std::make_shared<SplitClockState>(GameState::Paused, &topSims, &topSims));
+    for (int i = 0; i < 10; ++i) {
+        machine.update(0.016);
+    }
+
+    CHECK(bottomSims == 1);
+    CHECK(topSims == 10);
+}
+
+TEST_CASE("the results screen does not let the game underneath keep running")
+{
+    // The Game Over case: gameplay stops, but the state beneath it is not stepped.
+    // A game-over screen drawn over a world that is still being simulated is a
+    // game that is still playing while telling you it is over.
+    int worldSims = 0;
+    int resultSims = 0;
+    int resultRenders = 0;
+    StateContext ctx{};
+    StateMachine machine(ctx);
+
+    machine.push(std::make_shared<SplitClockState>(GameState::Playing, &worldSims, &resultSims));
+    machine.update(0.016);
+    REQUIRE(worldSims == 1);
+
+    // A push, not a switch: the results screen covers the world rather than
+    // replacing it, which is what makes the freeze observable.
+    machine.push(std::make_shared<SplitClockState>(GameState::GameOver, &resultSims, &resultRenders));
+    for (int i = 0; i < 50; ++i) {
+        machine.update(0.016);
+    }
+
+    CHECK_MESSAGE(worldSims == 1, "the world stops under Game Over");
+    CHECK(resultSims == 50);
+}
+
+TEST_CASE("switching to the results screen resets the stack rather than stacking on it")
+{
+    // `reset` replaces everything, which is what stops a Game Over screen being
+    // pushed on top of the world that is being reported on and then left behind
+    // when the player retries.
+    int a = 0;
+    int b = 0;
+    StateContext ctx{};
+    StateMachine machine(ctx);
+
+    machine.push(std::make_shared<SplitClockState>(GameState::Playing, &a, &a));
+    machine.update(0.016);
+    REQUIRE(machine.depth() == 1);
+
+    machine.switchTo(std::make_shared<SplitClockState>(GameState::GameOver, &b, &b));
+    CHECK(machine.depth() == 1);
+    CHECK(machine.currentId() == GameState::GameOver);
+
+    machine.update(0.016);
+    CHECK(a == 1);
+    CHECK(b == 1);
+}

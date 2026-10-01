@@ -36,6 +36,7 @@ add_library(erashift_core STATIC
     # the simulation does: it is fully testable headlessly.
     EraShift/Game/Animation.cpp
     EraShift/Game/Tutorial.cpp
+    EraShift/Game/SettingsDraft.cpp
     EraShift/Game/Dialogue.cpp
     EraShift/Graphics/ParticleSystem.cpp
 )

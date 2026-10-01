@@ -112,7 +112,7 @@ and prints a clean shutdown, so it works as a smoke test in CI.
 ctest --preset debug --output-on-failure
 ```
 
-348 cases across four binaries. All headless, no display required.
+407 cases across four binaries. All headless, no display required.
 
 ### Validate the regions
 
@@ -176,6 +176,20 @@ this repository were produced.
 | `F12` | Screenshot |
 
 Everything is rebindable in Settings → Controls, and the bindings persist.
+
+### Settings are staged, not live
+
+Changing a setting changes the **row**, not the game. Nothing is written until you
+press **APPLY**, and **BACK** or `Esc` throws the staged values away. This is on
+purpose: a settings screen you cannot try a setting on is not much use, and `Esc`
+is the button that means *I changed my mind* — it must never be the button that
+saved your change anyway. **APPLY** is disabled and says so when nothing has
+moved.
+
+**SKIP TUTORIAL** is in the pause menu while the first-run lessons are still
+running. It takes two presses, and it marks the tutorial *complete* rather than
+merely switching the toggle off — switching the toggle off would bring the lessons
+straight back on the next region.
 
 ---
 
@@ -581,9 +595,9 @@ The four binaries, and what each is for:
 
 | Binary | Cases | Covers |
 | --- | --- | --- |
-| `erashift_tests_unit` | 119 | Maths, logging, config, timing, the game loop, the state machine, the fonts, line breaking, menus |
+| `erashift_tests_unit` | 165 | Maths, logging, config, timing, the game loop, the state machine, the fonts, line breaking, menus, staged settings, and the options each screen offers |
 | `erashift_tests_integration` | 10 | The documented state flow, config round trips and migrations |
-| `erashift_tests_gameplay` | 209 | The whole simulation, plus the animation controller, the particle pool, the tutorial, every region, and the progression database |
+| `erashift_tests_gameplay` | 222 | The whole simulation, plus the animation controller, the particle pool, the tutorial and its prompt lifecycle, every region, and the progression database |
 
 Line breaking has its own tests because it is where "text stays inside the panel"
 is actually enforced: `wrapLines` takes its measurement as a callback, so the

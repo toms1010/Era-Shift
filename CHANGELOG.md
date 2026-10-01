@@ -10,11 +10,14 @@ All notable changes to Era Shift are recorded here. The format follows
 
 > This release has two independent stories. The audio subsystem was **removed**
 > earlier in the same cycle, which is why the *Removed* section below is unusually
-> long and why the test count drops. What was *added* is the ten-region
-> progression, a local SQLite progression store, checkpoints, a first-run
-> tutorial and a dialogue panel. The older *Fixed* entries in this release
-> describe audio work that no longer ships and are kept as a record of what that
-> subsystem was.
+> long. What was *added* is the ten-region progression, a local SQLite progression
+> store, checkpoints, a first-run tutorial and a dialogue panel, and then a pass
+> over the UI itself: staged settings, scrolling menus, a results screen that
+> names its region, and an animated tutorial prompt. The older *Fixed* entries in
+> this release describe audio work that no longer ships and are kept as a record
+> of what that subsystem was.
+>
+> 407 test cases across four binaries, all headless.
 
 ### Added
 
@@ -90,6 +93,46 @@ unlocks from the database, refuses a locked row on activation rather than trusti
 a stale flag, shows best time and score for completed regions, and lands the
 selection on the first unlocked one. Settings → Game holds the tutorial toggle and
 a two-press **RESET PROGRESS**; a single stray press cannot wipe ten regions.
+
+**Settings are staged, not applied as you go** (`Game/SettingsDraft.hpp`). Pressing
+LEFT on VSYNC now changes the row and nothing else: the game keeps running the old
+value, the config file is untouched, and **APPLY** is the only thing that writes.
+**BACK** and ESC drop the staged values, so the screen can be used to *try* a
+setting — which is the thing a settings screen exists for and which the old
+immediate-write behaviour made impossible. `SettingsDraft` holds no store and no
+window, only numbers, which is what makes "editing writes nothing" a property a
+test can check without a filesystem. APPLY is disabled, and says so, when nothing
+has moved: a screen that reports a save it did not make is worse than no screen.
+
+**A long menu scrolls, and clicks land on the row that is drawn there.**
+`MenuList` takes a visible-row count and drops what does not fit; `hitTest` applies
+the same scroll offset the renderer does, so a scrolled list no longer selects a
+different entry than the one under the cursor. Previously every row was drawn
+regardless of the frame, so entries below a panel were visible over the world and
+entries the selection could reach were not on screen at all.
+
+**The results screen names its region, and can leave for another one.** The
+headline is followed by the region's name — eleven regions is too many to match
+against memory — and **LEVEL SELECT** is offered on every outcome, including a
+victory, because clearing a region usually means wanting the next one. It is
+pushed rather than reset, so BACK from the region list returns to the statistics.
+The options arrive one after another and the headline fades in ahead of them: a
+title and a menu appearing in the same frame read as a wall.
+
+**A tutorial prompt arrives, holds and leaves, with a key chip and a tick.** The
+panel no longer fades in once and then blinks out on the frame the action
+registers — which read as a glitch rather than as an answer. It now plays its exit
+with a check mark, and the next lesson arrives behind it instead of replacing it on
+one frame. The last lesson animates out like every other one; snapping only the
+final prompt away made the end of the tutorial look like the step that went wrong.
+**SKIP TUTORIAL** is offered from the pause menu, on two presses and only while the
+lessons are actually running, and marks the tutorial *complete* rather than merely
+switching the toggle off — otherwise the lessons came back on the next region.
+
+The prompt's lifecycle lives in `Tutorial` as pure arithmetic (`lessonOpacity`,
+`lessonVisible`) rather than as booleans inside `PlayingState`, because the
+interesting failures are off-by-one-frame ones and a screenshot taken at the wrong
+moment shows nothing wrong at all.
 
 ### Fixed
 

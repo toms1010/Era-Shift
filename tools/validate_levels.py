@@ -17,10 +17,11 @@ What is checked, and why each one matters:
                  `Level::buildMap` reads off the end of the shorter ones
   spawn          exactly one, and standing on something
   gate           present in every era, or the level cannot be completed
-  seals          one per era, or the gate can never open
+  seals          as many as the finish requires, or the gate can never open
   reachability   a flood fill per era from the spawn, which is the only way to
                  prove a level is completable rather than merely well-formed
   placement      no enemy inside solid rock, nothing floating over a pit
+  metadata       a stated seal requirement that the level cannot satisfy
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 ERAS = ("past", "present", "future")
+
 
 # Matches Tile::of() in include/EraShift/Game/TileMap.hpp.
 SOLID_CHARS = set("#=cbx")
@@ -133,6 +135,15 @@ def check_structure(document: dict, report: Report) -> tuple[list[str], int, int
         report.error(f"era layers differ in shape: {shapes}")
         return None
 
+    finish = document.get("finish")
+    if finish is not None:
+        if not isinstance(finish, dict):
+            report.error("'finish' must be an object")
+        elif "requires_seals" in finish and not isinstance(finish["requires_seals"], int):
+            report.error("'finish.requires_seals' must be an integer")
+    if "tutorial" in document and not isinstance(document["tutorial"], bool):
+        report.error("'tutorial' must be true or false")
+
     height, width = shapes["past"]
     for era in ERAS:
         for y, row in enumerate(document[era]):
@@ -158,9 +169,19 @@ def check_entities(document: dict, report: Report, height: int, width: int) -> l
         report.error(f"needs exactly one player spawn, found {len(spawns)}")
 
     seals = [e for e in entities if e.get("type") == "seal"]
-    seal_eras = sorted(e.get("era") for e in seals)
-    if seal_eras != ["Future", "Past", "Present"]:
-        report.error(f"needs one seal per era, found {seal_eras}")
+    # A level that states how many seals its finish needs is held to that; one
+    # that does not is held to the older rule of one per era, which is what the
+    # non-tutorial regions all want.
+    finish = document.get("finish") or {}
+    required = finish.get("requires_seals") if isinstance(finish, dict) else None
+    if required is None:
+        seal_eras = sorted(e.get("era") for e in seals)
+        if seal_eras != ["Future", "Past", "Present"]:
+            report.error(f"needs one seal per era, found {seal_eras}")
+    elif not isinstance(required, int) or required < 1:
+        report.error(f"finish.requires_seals must be 1 or more, got {required!r}")
+    elif len(seals) < required:
+        report.error(f"needs {required} seals but places {len(seals)}")
 
     for entity in entities:
         x, y = entity.get("x"), entity.get("y")
@@ -264,6 +285,8 @@ def check_completion(document: dict, entities: list[dict], report: Report,
             )
 
     # A gate that needs one specific era and nothing else is a hidden requirement.
+    # Only meaningful when the level actually asks for every seal: a tutorial with
+    # a single Present seal is meant to be a single-era requirement.
     era_counts = {era: 0 for era in ERAS}
     for entity in entities:
         if entity.get("type") != "seal":
@@ -274,6 +297,17 @@ def check_completion(document: dict, entities: list[dict], report: Report,
                 era_counts[era] += 1
     if all(count == 0 for count in era_counts.values()):
         report.note("no seal is reachable in any single era on its own")
+
+    # Checkpoints and the finish should be reachable too. A level whose gate opens
+    # is not completable if the player cannot get back to it after the last seal.
+    for entity in entities:
+        if entity.get("type") != "checkpoint":
+            continue
+        key = (entity["y"], entity["x"])
+        if key not in union:
+            report.error(
+                f"checkpoint at {entity['x']},{entity['y']} is unreachable in any era"
+            )
 
 
 def check_placement(document: dict, entities: list[dict], report: Report,

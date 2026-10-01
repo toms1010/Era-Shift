@@ -66,6 +66,29 @@ struct Level {
     /// is what keeps `Awakening` first and `Convergence` last instead of the two
     /// ends swapping with the alphabet.
     int order = 0;
+
+    /// Whether this region runs the first-play tutorial.
+    ///
+    /// Read from the file's `tutorial` field. The tutorial itself is driven by the
+    /// progression database's flag rather than by this — a player who has finished
+    /// the lessons should not see them again, and a player who has not should see
+    /// them in a region that is not the first one. What this *does* decide is
+    /// whether the region is laid out to teach, which is a design fact about the
+    /// map rather than a fact about the player.
+    bool tutorial = false;
+
+    /// How many seals the finish line needs before it will open.
+    ///
+    /// Read from `finish.requires_seals`. Zero means "every seal placed", which is
+    /// what an older file with no `finish` block means and is what every region
+    /// except the tutorial wants.
+    ///
+    /// Separate from the seal *count* on purpose. A tutorial with one seal should
+    /// not have to place three of them and then ignore two, and a region whose
+    /// seals are optional collectables wants a gate that needs one of them rather
+    /// than all of them.
+    int requiresSeals = 0;
+
     /// One row of characters per era, Past first. Empty when built in code.
     std::vector<std::string> pastRows;
     std::vector<std::string> presentRows;

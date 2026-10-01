@@ -5,6 +5,7 @@
 // damage. Each of them exists because its absence produces a specific,
 // recognisable complaint from a player.
 
+#include "EraShift/Game/Animation.hpp"
 #include "EraShift/Game/Player.hpp"
 
 #include <doctest/doctest.h>
@@ -446,4 +447,169 @@ TEST_CASE("a non-finite step is ignored rather than corrupting the player")
     f.player.update(f.map, held(1.0f), -1.0f);
     CHECK(f.player.body().position.x == doctest::Approx(x));
     CHECK(std::isfinite(f.player.body().position.x));
+}
+
+
+// ---------------------------------------------------------------------------
+// The landing recovery
+//
+// `AnimId::Land` existed as a clip with its own blend time and its own test, and
+// nothing selected it: a fall went straight from Fall to Walk, so a hard landing
+// read as the character snapping upright on the frame it touched the floor.
+//
+// The recovery is what gives the clip something to show, and it scales movement
+// rather than stopping it - a landing costs momentum, not control.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A fixture with the player dropped from above the floor, for landing tests.
+Fixture dropFrom(float heightTiles)
+{
+    Fixture fixture;
+    fixture.player.reset(
+        Vec2{160.0f, kFloorY - 44.0f - TileMap::kTileSize * heightTiles}, Era::Present);
+    return fixture;
+}
+
+/// Runs until `predicate` holds, or the budget runs out.
+template <typename Predicate>
+bool runUntil(Fixture& fixture, Predicate predicate, int budget = 300)
+{
+    for (int i = 0; i < budget; ++i) {
+        if (predicate(fixture.player)) {
+            return true;
+        }
+        fixture.run(1, PlayerInput{});
+    }
+    return predicate(fixture.player);
+}
+
+} // namespace
+
+TEST_CASE("a hard landing puts the player into the landing recovery")
+{
+    Fixture fixture = dropFrom(5.0f);
+    CHECK(runUntil(fixture, [](const Player& p) { return p.landing(); }));
+    CHECK(fixture.player.landing());
+}
+
+TEST_CASE("a one-tile step down is not a landing recovery")
+{
+    // Walking off a one-tile ledge fires the same landing edge as a jump, but it is
+    // not an impact. Playing a squash for every stair would make ordinary walking
+    // look like a run of collisions.
+    Fixture fixture = dropFrom(1.0f);
+    CHECK(runUntil(fixture, [](const Player& p) { return p.body().onGround; }));
+    CHECK_FALSE(fixture.player.landing());
+}
+
+TEST_CASE("the landing recovery runs out on its own")
+{
+    Fixture fixture = dropFrom(5.0f);
+    REQUIRE(runUntil(fixture, [](const Player& p) { return p.landing(); }));
+
+    CHECK(runUntil(fixture, [](const Player& p) { return !p.landing(); }));
+    CHECK_FALSE(fixture.player.landing());
+}
+
+TEST_CASE("the recovery is short enough not to cost control")
+{
+    Fixture fixture = dropFrom(5.0f);
+    REQUIRE(runUntil(fixture, [](const Player& p) { return p.landing(); }));
+
+    float remaining = 0.0f;
+    while (fixture.player.landing()) {
+        fixture.run(1, PlayerInput{});
+        remaining += kStep;
+    }
+    // Generous: the tuning value is 0.14s and this allows twice that.
+    CHECK(remaining < 0.30f);
+}
+
+TEST_CASE("the player keeps moving while landing")
+{
+    // The recovery must not be a stun. A player who lands and cannot steer for a
+    // sixth of a second dies to something they were already walking away from.
+    Fixture fixture = dropFrom(5.0f);
+    REQUIRE(runUntil(fixture, [](const Player& p) { return p.landing(); }));
+
+    const float before = fixture.player.body().velocity.x;
+    fixture.run(1, held(1.0f));
+    CHECK(fixture.player.body().velocity.x > before);
+}
+
+TEST_CASE("the landing clip is selected while landing and not otherwise")
+{
+    // The actual fix: `playerClipFor` returns Land during the recovery, Idle after.
+    Fixture fixture = dropFrom(5.0f);
+    REQUIRE(runUntil(fixture, [](const Player& p) { return p.landing(); }));
+    CHECK(static_cast<int>(playerClipFor(fixture.player, false)) ==
+          static_cast<int>(AnimId::Land));
+
+    REQUIRE(runUntil(fixture, [](const Player& p) { return !p.landing(); }));
+    CHECK(static_cast<int>(playerClipFor(fixture.player, false)) ==
+          static_cast<int>(AnimId::Idle));
+}
+
+TEST_CASE("a falling player is on Fall, then Land, then Idle")
+{
+    // The whole chain the animation audit asked for, in order.
+    Fixture fixture = dropFrom(6.0f);
+
+    const AnimId whileRising = playerClipFor(fixture.player, false);
+    const int id = static_cast<int>(whileRising);
+    const bool airborne = (id == static_cast<int>(AnimId::Fall)) ||
+                          (id == static_cast<int>(AnimId::Jump)) ||
+                          (id == static_cast<int>(AnimId::JumpStart));
+    CHECK(airborne);
+
+    REQUIRE(runUntil(fixture, [](const Player& p) { return p.landing(); }));
+    CHECK(static_cast<int>(playerClipFor(fixture.player, false)) ==
+          static_cast<int>(AnimId::Land));
+
+    REQUIRE(runUntil(fixture, [](const Player& p) { return !p.landing(); }));
+    CHECK(static_cast<int>(playerClipFor(fixture.player, false)) ==
+          static_cast<int>(AnimId::Idle));
+}
+
+TEST_CASE("the landing recovery does not hide a swing")
+{
+    // Landing while attacking must still show the attack: the player pressed the
+    // button and needs to see what it did.
+    Fixture fixture = dropFrom(5.0f);
+    REQUIRE(runUntil(fixture, [](const Player& p) { return p.landing(); }));
+
+    PlayerInput attack;
+    attack.attackPressed = true;
+    fixture.run(1, attack);
+    CHECK(static_cast<int>(playerClipFor(fixture.player, false)) ==
+          static_cast<int>(AnimId::Attack));
+}
+
+
+TEST_CASE("the reported landing speed is the impact, not the speed after landing")
+{
+    // `moveBody` zeroes the vertical velocity on the landing step, so reading it
+    // after integration reports every landing as a dead stop - which is how the
+    // landing dust came out at its weakest for every drop in the game. Caught by
+    // dropping from two different heights and comparing.
+    Fixture gentle = dropFrom(2.0f);
+    REQUIRE(runUntil(gentle, [](const Player& p) { return p.landing(); }));
+
+    Fixture hard = dropFrom(8.0f);
+    REQUIRE(runUntil(hard, [](const Player& p) { return p.landing(); }));
+
+    // The taller drop must report the harder landing. With the velocity read after
+    // integration both report zero and this comparison cannot be made at all.
+    CHECK(hard.player.lastLandSpeed() > gentle.player.lastLandSpeed());
+}
+
+TEST_CASE("a landing speed is reported at all")
+{
+    // The degenerate version of the above: a nonzero impact speed is the minimum
+    // bar, and a zero here means something is reading the wrong variable.
+    Fixture fixture = dropFrom(4.0f);
+    REQUIRE(runUntil(fixture, [](const Player& p) { return p.landing(); }));
+    CHECK(fixture.player.lastLandSpeed() > 0.0f);
 }

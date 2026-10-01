@@ -34,6 +34,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LEVEL_DIR = ROOT / "data" / "levels"
 
+# The default grid every region was authored against. A region may override it:
+# Level 1 is a long, vertically varied tutorial and cannot be expressed on the
+# short corridor the later regions use.
 WIDTH = 120
 HEIGHT = 24
 
@@ -52,6 +55,20 @@ class Region:
     # level select can present the regions in the order they are meant to be
     # played rather than in filename order, which would shuffle them alphabetically.
     order: int = 0
+    # Grid size and the two rows the ground geometry hangs off. Per region rather
+    # than module-level so Level 1 can be long and tall while the others stay
+    # corridors; see `Region.size`.
+    width: int = WIDTH
+    height: int = HEIGHT
+    floor: int = FLOOR
+    stand: int = STAND
+    # Whether this region runs the first-play tutorial.
+    tutorial: bool = False
+    # How many seals the finish line requires. Defaults to "every seal placed",
+    # which is what every region except the tutorial wants: the tutorial has one
+    # seal and one gate, and asking for three there would be asking for a level
+    # it does not have.
+    requires_seals: int | None = None
     # (y, x, char) edits applied to the Past layer, then edited per era below.
     edits: list[tuple[int, int, str]] = field(default_factory=list)
     # Same, applied only to one era's layer.
@@ -59,7 +76,7 @@ class Region:
     entities: list[dict] = field(default_factory=list)
 
     def layer(self, era: str) -> list[str]:
-        grid = [["." for _ in range(WIDTH)] for _ in range(HEIGHT)]
+        grid = [["." for _ in range(self.width)] for _ in range(self.height)]
         for y, x, ch in self.edits:
             grid[y][x] = ch
         for y, x, ch in self.per_era.get(era, []):
@@ -71,6 +88,15 @@ class Region:
             "id": self.id,
             "name": self.name,
             "order": self.order,
+            "tutorial": self.tutorial,
+            "finish": {
+                "requires_seals": (
+                    self.requires_seals
+                    if self.requires_seals is not None
+                    else sum(1 for e in self.entities if e.get("type") == "seal")
+                )
+            },
+            "checkpoint": any(e.get("type") == "checkpoint" for e in self.entities),
             "past": self.layer("past"),
             "present": self.layer("present"),
             "future": self.layer("future"),
@@ -81,23 +107,29 @@ class Region:
 def walls_and_floor(region: Region) -> Region:
     """The border, the floor and the ceiling every region shares."""
     edits: list[tuple[int, int, str]] = []
-    for y in range(HEIGHT):
+    for y in range(region.height):
         edits.append((y, 0, "#"))
-        edits.append((y, WIDTH - 1, "#"))
-    for x in range(WIDTH):
+        edits.append((y, region.width - 1, "#"))
+    for x in range(region.width):
         edits.append((0, x, "#"))
-        edits.append((HEIGHT - 1, x, "#"))
-        edits.append((FLOOR, x, "#"))
-        edits.append((HEIGHT - 2, x, "#"))
+        edits.append((region.height - 1, x, "#"))
+        edits.append((region.floor, x, "#"))
+        edits.append((region.height - 2, x, "#"))
     region.edits.extend(edits)
     return region
 
 
 def gap(region: Region, x0: int, x1: int, ch: str = "^") -> Region:
-    """A pit in the floor, filled with spikes. Inclusive of both ends."""
+    """A pit in the floor, filled with spikes. Inclusive of both ends.
+
+    The pit is carved down to the bottom row so the player cannot land inside it
+    and be stuck: a pit with a floor two rows down is a pit the player survives,
+    which turns a mistake into an unearned second chance.
+    """
     for x in range(x0, x1 + 1):
-        region.edits.append((FLOOR, x, ch))
-        region.edits.append((HEIGHT - 2, x, " "))
+        region.edits.append((region.floor, x, ch))
+        for y in range(region.floor + 1, region.height):
+            region.edits.append((y, x, " "))
     return region
 
 
@@ -116,60 +148,209 @@ def tower(region: Region, x: int, y0: int, y1: int, ch: str = "#") -> Region:
 
 
 def build_awakening() -> Region:
-    """LEVEL 1 — the tutorial. One mechanic at a time, in the order they are taught.
+    """LEVEL 1 - THE FIRST SHIFT. The tutorial, and a level in its own right.
 
-    The shape is a corridor that widens into a room at each lesson, so a player
-    who does exactly what the prompt says can never be asked to do something they
-    have not been taught. The three crossings come last and are gated one per era.
+    Ten sections rather than a corridor with lessons dropped along it. Each one is
+    a small room with a single idea, and the rooms are joined by doorways rather
+    than a single corridor, so the player is walking *somewhere* rather than
+    walking *forwards*. The vertical range is deliberately generous - the map is
+    seven rows taller than the regions after it - because "the world is one world"
+    is easier to believe when the same space is visible from two heights.
+
+    The order is fixed and each section can only be completed the way it was
+    taught, so a player who does nothing but follow the prompts finishes the level
+    and understands every mechanic in it:
+
+        1  spawn and movement        an open room; nothing can hurt you here
+        2  jumping                   a gap and platforms that need a jump
+        3  the era shift             a chasm crossed only in the Past
+        4  the first enemy           one Sentinel, in the open, unhurried
+        5  combat and the dash       an arena, with the dash taught by a gap
+        6  the checkpoint            a safe alcove, off the main route
+        7  multi-era traversal       vertical, alternating eras as you climb
+        8  the seal                  the objective, in a chamber
+        9  the final challenge       the shift used as a weapon, not a key
+       10  the finish gate           the Ancient Gate, and the level ends
+
+    The one seal is in the Present, so the player learns in section 3 that the
+    shift is about *which* era, and in section 8 that a seal answers to one era
+    only. `requires_seals` is 1: the gate asks for the objective, not for a quota.
     """
     region = Region(
         id="awakening",
-        name="Awakening",
+        name="The First Shift",
+        width=200,
+        height=32,
+        floor=25,
+        stand=24,
+        tutorial=True,
+        requires_seals=1,
         entities=[
-            {"type": "player", "x": 3, "y": STAND, "label": "Threshold"},
-            # Seals last, so the player has been taught everything before the
-            # objective appears.
-            {"type": "seal", "era": "Past", "x": 24, "y": STAND, "label": "PAST SEAL"},
-            {"type": "seal", "era": "Present", "x": 60, "y": STAND, "label": "PRESENT SEAL"},
-            {"type": "seal", "era": "Future", "x": 96, "y": STAND, "label": "FUTURE SEAL"},
-            # Checkpoints before each new idea, so a death costs a moment rather
-            # than the whole lesson.
-            {"type": "checkpoint", "x": 16, "y": STAND},
-            {"type": "checkpoint", "x": 40, "y": STAND},
-            {"type": "checkpoint", "x": 76, "y": STAND},
-            # One enemy, and only after the player has been taught to attack.
-            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 33, "y": STAND},
-            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 68, "y": STAND},
-            # The first wisp, so the Future is visibly a different place and not
-            # just a different colour.
-            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 90, "y": STAND},
-            {"type": "pickup", "kind": "chrono", "x": 10, "y": STAND},
-            {"type": "pickup", "kind": "chrono", "x": 46, "y": STAND},
-            {"type": "pickup", "kind": "health", "x": 80, "y": STAND},
-            {"type": "pickup", "kind": "chrono", "x": 108, "y": STAND},
+            {"type": "player", "x": 4, "y": 24, "label": "Threshold"},
+            # The seal is placed with the chamber geometry further down, so the two
+            # cannot drift apart: a seal at a position the geometry does not support
+            # is an objective the level cannot be finished for.
+            # A checkpoint per third. Section 6 is the *taught* one - the alcove
+            # exists to be found - and the others are quietly placed so a death
+            # costs a section rather than the level.
+            {"type": "checkpoint", "x": 12, "y": 24},
+            {"type": "checkpoint", "x": 74, "y": 24},
+            {"type": "checkpoint", "x": 122, "y": 24},
+            # Before the seal chamber, so the objective is not re-earned after a
+            # death in the hardest fight in the level.
+            {"type": "checkpoint", "x": 152, "y": 24},
+            # One enemy at a time, escalating. Section 4 is a lone Sentinel with
+            # room to retreat; section 5 adds a second and platforms to lose them
+            # on; section 9 is the only place two different kinds are alive at once.
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 62, "y": 24},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 88, "y": 24},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 88, "y": 17},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 178, "y": 24},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 183, "y": 24},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 190, "y": 17},
+            # Pickups: a chrono cell before each section that spends energy, and one
+            # health cell before the two hardest fights. Two optional ones sit off
+            # the main route, high enough that getting them is a choice.
+            {"type": "pickup", "kind": "chrono", "x": 20, "y": 24},
+            {"type": "pickup", "kind": "chrono", "x": 44, "y": 24},
+            {"type": "pickup", "kind": "chrono", "x": 70, "y": 24},
+            {"type": "pickup", "kind": "health", "x": 90, "y": 24},
+            {"type": "pickup", "kind": "chrono", "x": 104, "y": 24},
+            {"type": "pickup", "kind": "chrono", "x": 126, "y": 24},
+            {"type": "pickup", "kind": "health", "x": 146, "y": 24},
+            {"type": "pickup", "kind": "chrono", "x": 172, "y": 24},
+            # Optional: one on the high route in section 7, one on the seal
+            # chamber's shelf. Both sit on ground, so both can be stood next to -
+            # a pickup in mid-air can be touched while jumping past, which is a
+            # collectable the player cannot choose to collect deliberately; neither
+            # is on the critical path.
+            {"type": "pickup", "kind": "chrono", "x": 140, "y": 9},
+            {"type": "pickup", "kind": "health", "x": 166, "y": 24},
         ],
     )
     walls_and_floor(region)
+    FLOOR, STAND, W = region.floor, region.stand, region.width
 
-    # Three crossings, one per era, each after the lesson that prepares for it.
-    # The first is the masonry that teaches "shift" in the least lethal way
-    # possible: a gap the player can see from the spawn.
-    gap(region, 28, 32)
-    gap(region, 64, 70)
-    gap(region, 100, 106)
-    for x in range(29, 32):
+    # --- 1. spawn and movement ---------------------------------------------
+    # An open room with a raised step to walk up. No hazard, no enemy: the player
+    # is given the controls on ground where being bad at them cannot hurt.
+    ledge(region, 8, 14, 22)
+    region.entities.append({"type": "pickup", "kind": "chrono", "x": 11, "y": 21})
+
+    # --- 2. jumping ---------------------------------------------------------
+    # A pit that a jump clears comfortably, then a staircase of ledges. The steps
+    # are two rows apart, which is inside a single jump's reach with room to spare.
+    gap(region, 16, 19)
+    ledge(region, 21, 24, 22)
+    ledge(region, 26, 29, 20)
+    ledge(region, 31, 34, 18)
+
+    # --- 3. the era shift ---------------------------------------------------
+    # A wide chasm with rubble in the Past and nothing else anywhere. The player
+    # can see it from the spawn section, so the first shift is a decision rather
+    # than a surprise.
+    gap(region, 36, 45)
+    for x in range(37, 45):
         region.per_era.setdefault("past", []).append((FLOOR, x, "c"))
-    for x in range(65, 70):
-        region.per_era.setdefault("present", []).append((FLOOR, x, "b"))
-    for x in range(101, 106):
-        region.per_era.setdefault("future", []).append((FLOOR, x, "x"))
+    # A hint rather than a tutorial prompt: the ledge above the chasm is the only
+    # way across in the Past, and standing on it shows what "solid in the Past"
+    # looks like before the player needs it.
+    ledge(region, 38, 44, 21)
 
-    # Flat, generous ground throughout. A tutorial that can kill you before it has
-    # explained anything is not a tutorial.
-    ledge(region, 36, 44, 14)
-    ledge(region, 72, 80, 14)
+    # --- 4. the first enemy -------------------------------------------------
+    # A single Sentinel in a wide room with a raised walkway to retreat to. It
+    # exists to be hit once and to not be a threat yet.
+    ledge(region, 48, 54, 21)
+    ledge(region, 56, 60, 22)
 
-    region.edits.append((STAND, 115, "G"))
+    # --- 5. combat and the dash --------------------------------------------
+    # A closed arena with two tiers. Both tiers are within one jump of the tier
+    # below - the earlier version put them four rows apart, which no jump clears,
+    # so the arena's platforms were scenery the player could never stand on.
+    #
+    # The gap out of the arena is six tiles, which a running jump plus a dash
+    # covers and a standing jump does not. That is the whole lesson: the dash is
+    # taught by a gap that is otherwise just slightly too wide.
+    gap(region, 80, 85)
+    ledge(region, 78, 86, 22)
+    ledge(region, 82, 88, 20)
+    ledge(region, 86, 92, 18)
+    tower(region, 92, 12, FLOOR - 1)
+    ledge(region, 94, 100, 18)
+
+    # --- 6. the checkpoint --------------------------------------------------
+    # An alcove below the main floor, reached by a short drop. Off the route by
+    # construction: a checkpoint the player cannot walk past is not a decision,
+    # and a decision is the whole point of teaching one.
+    for y in range(FLOOR + 1, region.height - 2):
+        region.edits.append((y, 112, "#"))
+    for y in range(FLOOR + 1, region.height - 2):
+        region.edits.append((y, 120, "#"))
+    region.edits.append((FLOOR + 1, 116, "."))
+    region.edits.append((FLOOR, 116, "."))
+    ledge(region, 110, 122, 26)
+
+    # --- 7. multi-era traversal --------------------------------------------
+    # A climb of one-way platforms. The tiers are in the *shared* layer, so the
+    # staircase exists in every era and can always be climbed: a traversal puzzle
+    # whose route disappears when you shift is not a traversal puzzle, it is a trap.
+    #
+    # The era-dependence is in the flanking blocks rather than the route. Each tier
+    # has a solid buttress beside it that is real in one era only, so shifting
+    # changes the shape of the room the player is climbing through - visible, and
+    # never load-bearing.
+    for y, x0, x1 in ((22, 126, 131), (19, 134, 139), (16, 142, 147), (13, 150, 153)):
+        ledge(region, x0, x1, y)
+
+    # The buttresses. One era each, chosen so that all three are seen on the climb
+    # and none of them blocks the platform the player is standing on.
+    for y, x0, era, tile in ((22, 132, "past", "c"), (19, 140, "future", "x"),
+                             (16, 148, "past", "c"), (13, 154, "future", "x")):
+        for x in range(x0, x0 + 2):
+            region.edits.append((y - 1, x, "#"))
+            region.edits.append((y, x, "#"))
+            region.per_era.setdefault(era, []).append((y - 1, x, tile))
+            region.per_era.setdefault(era, []).append((y, x, tile))
+
+    # The optional high route, reached by jumping up the same staircase and then
+    # stepping off the top tier. Reachable in every era, and it is where the
+    # optional chrono cell is - a detour rather than a step.
+    ledge(region, 130, 152, 10)
+    tower(region, 128, 10, 13)
+
+    # --- 8. the seal --------------------------------------------------------
+    # A chamber entered from above: the player climbs, steps off the top tier and
+    # drops in. Walls on both sides and a pillar down the middle, so the room is a
+    # room rather than a hole.
+    tower(region, 156, 11, FLOOR - 1)
+    tower(region, 170, 11, FLOOR - 1)
+    tower(region, 162, 11, 18)
+    ledge(region, 157, 169, 19)
+    ledge(region, 156, 170, 23)
+
+    # The seal sits *on* the chamber's shelf, not floating in the middle of it. The
+    # earlier position was two rows above the shelf, which is 64px away - outside
+    # the 52px reach - so the objective was genuinely uncollectable.
+    region.entities.append({"type": "seal", "era": "Present", "x": 160, "y": 19,
+                            "label": "PRESENT SEAL"})
+
+    # --- 9. the final challenge ---------------------------------------------
+    # Two enemies that cannot both exist at once in the way the player wants: a
+    # Warden only in the Past, a Wisp only in the Future, and a Sentinel in both.
+    # Fighting is possible in any era and better in two of them, which is the
+    # lesson the arena in section 5 was preparing for.
+    ledge(region, 174, 182, 21)
+    ledge(region, 186, 192, 18)
+    ledge(region, 188, 194, 15)
+
+    # --- 10. the finish gate ------------------------------------------------
+    # A plinth the player climbs to, with the gate on top of it. Visible from the
+    # seal chamber through the opening, so the last thing they do is obvious from
+    # most of the way back.
+    ledge(region, 194, 197, 21)
+    tower(region, 198, 18, 20)
+    region.edits.append((STAND, W - 2, "G"))
+
     return region
 
 
@@ -683,8 +864,13 @@ REGIONS = [
 ]
 
 
-def validate(document: dict, region_id: str) -> list[str]:
-    """Everything the loader would reject, checked before the file is written."""
+def validate(document: dict, region_id: str, expected: tuple[int, int] | None = None) -> list[str]:
+    """Everything the loader would reject, checked before the file is written.
+
+    `expected` is the (height, width) the builder believes it produced. Regions
+    differ in size, so the check is against the region rather than the module
+    constants.
+    """
     problems: list[str] = []
     layers = {era: document[era] for era in ("past", "present", "future")}
 
@@ -692,8 +878,8 @@ def validate(document: dict, region_id: str) -> list[str]:
     if len(set(shapes.values())) != 1:
         problems.append(f"{region_id}: era layers differ in shape: {shapes}")
     height, width = shapes["past"]
-    if (height, width) != (HEIGHT, WIDTH):
-        problems.append(f"{region_id}: expected {HEIGHT}x{WIDTH}, got {height}x{width}")
+    if expected is not None and (height, width) != expected:
+        problems.append(f"{region_id}: expected {expected[0]}x{expected[1]}, got {height}x{width}")
 
     for era, rows in layers.items():
         for y, row in enumerate(rows):
@@ -711,10 +897,22 @@ def validate(document: dict, region_id: str) -> list[str]:
     if sum(1 for e in entities if e["type"] == "player") != 1:
         problems.append(f"{region_id}: needs exactly one player spawn")
 
-    # The three seals must be one per era, or the gate can never open.
-    seal_eras = sorted(e.get("era") for e in entities if e["type"] == "seal")
-    if seal_eras != ["Future", "Past", "Present"]:
-        problems.append(f"{region_id}: needs one seal per era, got {seal_eras}")
+    # The seal set has to be openable by the finish. A level that states how many
+    # seals it needs is held to that number; one that does not is held to the older
+    # rule of one per era, which is what every non-tutorial region wants.
+    seals = [e for e in entities if e["type"] == "seal"]
+    required = (document.get("finish") or {}).get("requires_seals")
+    if required is None:
+        seal_eras = sorted(e.get("era") for e in seals)
+        if seal_eras != ["Future", "Past", "Present"]:
+            problems.append(f"{region_id}: needs one seal per era, got {seal_eras}")
+    else:
+        if not isinstance(required, int) or required < 1:
+            problems.append(f"{region_id}: finish.requires_seals must be 1 or more")
+        elif len(seals) < required:
+            problems.append(
+                f"{region_id}: needs {required} seals but places {len(seals)}"
+            )
 
     # The gate has to exist in every era, and something has to stand on it.
     for era, rows in layers.items():
@@ -763,7 +961,9 @@ def main() -> int:
         region = build()
         region.order = index
         document = region.document()
-        all_problems.extend(validate(document, region.id))
+        all_problems.extend(
+            validate(document, region.id, (region.height, region.width))
+        )
 
         path = LEVEL_DIR / f"{region.id}.json"
         if args.check:
@@ -772,7 +972,8 @@ def main() -> int:
             path.write_text(json.dumps(document, indent=2) + "\n")
             state = "written"
         rows = len(document["past"])
-        print(f"{index:2d}. {region.id:<18} {rows}x{WIDTH:<4} {state}")
+        cols = len(document["past"][0]) if rows else 0
+        print(f"{index:2d}. {region.id:<18} {rows}x{cols:<4} {state}")
 
     if all_problems:
         print("\nproblems:", file=sys.stderr)

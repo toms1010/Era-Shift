@@ -390,6 +390,14 @@ AnimId playerClipFor(const Player& player, bool shiftHeld) noexcept
         }
         return AnimId::JumpStart;
     }
+    // Landing, checked on the way to the ground clips and *below* them: a player
+    // who lands while swinging should still see the swing. The Land clip is the
+    // bottom of the Run -> Jump -> Fall -> Land -> Idle chain; without it the
+    // chain went Fall -> Walk, which reads as the character snapping upright the
+    // instant it touched the floor.
+    if (player.landing()) {
+        return AnimId::Land;
+    }
     const float speed = std::fabs(player.body().velocity.x);
     if (speed < 12.0f) {
         return AnimId::Idle;

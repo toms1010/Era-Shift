@@ -120,9 +120,20 @@ PanelLayout layoutPanel(const Rect& area, const MenuStyles& styles, std::size_t 
     const float availableW = std::max(area.w - scale.px(24.0f), scale.px(120.0f));
     const float width      = std::min(contentW + padding * 2.0f, availableW);
 
-    const float height = padding + headingH + headingGap + listH + footerGap + footerH + padding;
-    const float maxH   = std::max(area.h - scale.px(16.0f), scale.px(80.0f));
-    const float clampedH = std::min(height, maxH);
+    // The panel is never taller than the space available, so on a short window the
+    // list has to shrink with it — clamping the *panel* alone left the rows
+    // spilling out of the bottom, which at 640x360 happened on every page with more
+    // than six rows and on the twelve-row controls page at any size.
+    //
+    // Row height is a floor because a row shorter than its own text hides the text,
+    // so past this point the correct trade is a cropped list, not unreadable rows.
+    // The caller scrolls; `MenuList` reports what does not fit.
+    const float fixed = padding + headingH + headingGap + footerGap + footerH + padding;
+    const float maxH  = std::max(area.h - scale.px(16.0f), scale.px(80.0f));
+    const float listBudget = std::max(rowStride, maxH - fixed);
+    const float clampedListH = std::min(listH, listBudget);
+    const float clampedH = std::min(fixed + clampedListH, maxH);
+    const bool  listClipped = clampedListH < listH - 0.5f;
 
     layout.panel = Rect{area.center().x - width * 0.5f, area.center().y - clampedH * 0.5f, width,
                         clampedH};
@@ -132,13 +143,21 @@ PanelLayout layoutPanel(const Rect& area, const MenuStyles& styles, std::size_t 
         layout.heading = Rect{layout.panel.x, y, layout.panel.w, headingH};
         y += headingH + headingGap;
     }
-    layout.list = Rect{layout.panel.x + padding, y, layout.panel.w - padding * 2.0f, listH};
+    layout.list = Rect{layout.panel.x + padding, y, layout.panel.w - padding * 2.0f,
+                        clampedListH};
+    // Rows below the fold. A caller that scrolls uses this to decide whether to; a
+    // caller that does not at least knows the list is taller than the frame, which
+    // is the difference between "the last row is cut off" and "the last row is
+    // somewhere else entirely".
+    layout.visibleRows = static_cast<std::size_t>(
+        std::floor(clampedListH / std::max(1.0f, rowStride)));
     if (footerH > 0.0f) {
         // Anchored to the bottom of the panel so the gap above it absorbs any
         // shortfall between the requested and the clamped height.
         layout.footer = Rect{layout.panel.x, layout.panel.bottom() - padding - footerH,
                              layout.panel.w, footerH};
     }
+    layout.clipped = listClipped;
     return layout;
 }
 
@@ -260,6 +279,11 @@ float MenuList::rowHeight(const MenuStyles& styles) const noexcept
     return std::max(m_rowHeight, textHeight);
 }
 
+float MenuList::rowStride(const MenuStyles& styles) const noexcept
+{
+    return rowHeight(styles) + m_spacing;
+}
+
 Rect MenuList::rowBounds(std::size_t index, const Rect& bounds, const MenuStyles& styles) const noexcept
 {
     if (index >= m_items.size()) {
@@ -268,6 +292,21 @@ Rect MenuList::rowBounds(std::size_t index, const Rect& bounds, const MenuStyles
     const float stride = rowHeight(styles) + m_spacing;
     return Rect{bounds.x, bounds.y + static_cast<float>(index) * stride, bounds.w,
                 rowHeight(styles)};
+}
+
+std::size_t MenuList::rowCountFor(const Rect& bounds, const MenuStyles& styles) const noexcept
+{
+    if (m_items.empty()) {
+        return 0;
+    }
+    const float stride = rowHeight(styles) + m_spacing;
+    if (stride <= 0.0f) {
+        return 0;
+    }
+    // Rows that fit fully inside the frame. A row only half-visible at the bottom
+    // edge is not drawn, so it must not be clickable either.
+    const auto fitted = static_cast<std::size_t>((bounds.h + m_spacing) / stride);
+    return std::min(fitted, m_items.size() - m_scroll);
 }
 
 std::size_t MenuList::hitTest(const Rect& bounds, Vec2 point, const MenuStyles& styles) const noexcept
@@ -281,21 +320,90 @@ std::size_t MenuList::hitTest(const Rect& bounds, Vec2 point, const MenuStyles& 
     // The pointer can sit in the spacing below the last row; `floor` of the
     // stride would then report an index inside the list, so the index is
     // checked against the row rectangle as well.
-    const auto index = static_cast<std::size_t>((point.y - bounds.y) / stride);
-    if (index >= m_items.size() || !rowBounds(index, bounds, styles).contains(point)) {
+    const auto slot = static_cast<std::size_t>((point.y - bounds.y) / stride);
+
+    // `slot` is a position on screen, not an entry. The render pass draws entry
+    // `m_scroll + slot` in that slot, so hit testing has to apply the same offset
+    // or a scrolled list selects a different row than the one under the cursor.
+    if (slot >= rowCountFor(bounds, styles)) {
+        return static_cast<std::size_t>(-1);
+    }
+    const std::size_t index = m_scroll + slot;
+    if (index >= m_items.size() || !rowBounds(slot, bounds, styles).contains(point)) {
         return static_cast<std::size_t>(-1);
     }
     return m_items[index].enabled ? index : static_cast<std::size_t>(-1);
 }
 
-void MenuList::render(Renderer2D& renderer, Graphics::TextRenderer& text, const Rect& bounds,
-                      Vec2 mouse, const MenuStyles& styles) const
+std::size_t MenuList::visibleRowCount(const Rect& bounds, const MenuStyles& styles) const noexcept
 {
-    for (std::size_t i = 0; i < m_items.size(); ++i) {
+    const std::size_t fitted = rowCountFor(bounds, styles);
+    // With no window measured, nothing is clipped and every row is on screen.
+    return fitted == 0 && !m_items.empty() && m_scroll == 0 ? m_items.size() : fitted;
+}
+
+void MenuList::ensureVisible(std::size_t visibleRows, const MenuStyles&) noexcept
+{
+    if (visibleRows == 0 || m_items.size() <= visibleRows) {
+        m_scroll = 0;
+        return;
+    }
+    // At least one row of context beside the selection, so scrolling down does not
+    // leave the player with a lone highlighted row and no idea which way is "more".
+    const std::size_t margin = visibleRows > 3 ? 1u : 0u;
+
+    if (m_selected < m_scroll + margin) {
+        m_scroll = (m_selected > margin) ? m_selected - margin : 0u;
+    }
+    if (m_selected >= m_scroll + visibleRows - margin) {
+        m_scroll = m_selected + margin + 1 - visibleRows;
+    }
+
+    // The arithmetic above can overshoot at either end; clamp rather than trust it.
+    const std::size_t maxScroll = m_items.size() - visibleRows;
+    if (m_scroll > maxScroll) {
+        m_scroll = maxScroll;
+    }
+}
+
+void MenuList::render(Renderer2D& renderer, Graphics::TextRenderer& text, const Rect& bounds,
+                      Vec2 mouse, const MenuStyles& styles, std::size_t visibleRows,
+                      float elapsed, float revealStagger) const
+{
+    const std::size_t first = m_scroll;
+    // Zero means "no limit", for a caller that has not measured the frame.
+    const std::size_t count =
+        visibleRows > 0 ? std::min(visibleRows, m_items.size() - std::min(first, m_items.size()))
+                        : m_items.size() - std::min(first, m_items.size());
+
+    // One pulse for the selected row, on the caller's clock. Slow and shallow: this
+    // is a focus indicator that should never pull the eye away from the value being
+    // read, and a fast pulse in a list the player is scanning is worse than none.
+    const float pulse = 0.5f + 0.5f * std::sin(elapsed * 3.4f);
+
+    // How long one row takes to arrive, and how far it rises. Named here because a
+    // caller passing a stagger needs to know the duration it is staggering across.
+    constexpr float kRevealDuration = 0.22f;
+    constexpr float kRevealRise = 10.0f;
+
+    for (std::size_t slot = 0; slot < count; ++slot) {
+        const std::size_t i = first + slot;
         const MenuItem& item = m_items[i];
-        const Rect row = rowBounds(i, bounds, styles);
+        Rect row = rowBounds(slot, bounds, styles);
         if (row.isEmpty()) {
             continue;
+        }
+
+        // Staggered arrival. A row not yet due is not drawn at all rather than drawn
+        // transparent: half-opacity text over a panel reads as a rendering fault.
+        if (revealStagger > 0.0f) {
+            const float t = (elapsed - static_cast<float>(slot) * revealStagger) /
+                             kRevealDuration;
+            if (t <= 0.0f) {
+                continue;
+            }
+            const float eased = t >= 1.0f ? 1.0f : 1.0f - (1.0f - t) * (1.0f - t);
+            row.y -= styles.scale.px(kRevealRise) * (1.0f - eased);
         }
 
         const bool selected = (i == m_selected);
@@ -305,12 +413,26 @@ void MenuList::render(Renderer2D& renderer, Graphics::TextRenderer& text, const 
         // subtle lift, not a second competing highlight.
         Color fill = Palette::Transparent;
         if (selected) {
-            fill = Palette::PanelBorder.withAlpha(0x66);
+            // The fill breathes between 0x50 and 0x7A. Narrow on purpose: a pulse
+            // wide enough to notice while reading is a distraction, and this row is
+            // often a value the player is in the middle of comparing.
+            const auto base = static_cast<std::uint8_t>(0x50 + 0x2A * pulse);
+            fill = Palette::PanelBorder.withAlpha(base);
         } else if (hovered) {
             fill = Palette::PanelBorder.withAlpha(0x22);
         }
         if (fill.a > 0) {
             renderer.drawRect(row, fill);
+        }
+
+        // An accent bar on the selected row's leading edge. The chevrons already
+        // say "selected" in the middle of the row; this says it from the edge, which
+        // is what makes a long list scannable without reading every label.
+        if (selected) {
+            renderer.drawRect(
+                Rect{row.x, row.y + styles.scale.px(4.0f), styles.scale.px(3.0f),
+                     row.h - styles.scale.px(8.0f)},
+                Palette::Accent);
         }
 
         // A hairline between rows turns the panel into a list instead of a
@@ -353,8 +475,12 @@ void MenuList::render(Renderer2D& renderer, Graphics::TextRenderer& text, const 
             const float gap       = styles.scale.px(14.0f);
             const float size      = styles.scale.px(4.0f);
             const float offset    = labelWidth * 0.5f + gap + size * 0.5f;
+            // The chevrons narrow with the pulse, so the selection "breathes"
+            // rather than blinking. A hard on/off would flicker against the row
+            // fill's own pulse and read as a flicker rather than as focus.
+            const float reach = size * (0.75f + 0.25f * pulse);
             for (const float dir : {-1.0f, 1.0f}) {
-                drawChevron(renderer, labelCentre + dir * offset, row.center().y, size, dir,
+                drawChevron(renderer, labelCentre + dir * offset, row.center().y, reach, dir,
                             Palette::Accent);
             }
         }
@@ -638,13 +764,27 @@ MainMenuState::Layout MainMenuState::computeLayout(const StateContext& ctx) cons
     // Panel padding is shared with layoutPanel() so the main menu and the pause
     // menu have the same inset.
     const float padding = scale.px(20.0f);
-    const float panelH  = listH + padding * 2.0f;
 
-    // Never taller than the space above the hints, or the block would slide
-    // under them on a short window.
-    const float usableH = std::max(layout.hints.y - area.y, scale.px(80.0f));
+    // Never taller than the space above the hints, or the block would slide under
+    // them on a short window. The list gets what is left after the title block and
+    // the detail caption, so a long menu is cropped and scrolled rather than
+    // pushed off the bottom — which is what happened to the level select's twelve
+    // rows at 640x360 before the row budget existed.
+    const float usableH   = std::max(layout.hints.y - area.y, scale.px(80.0f));
+    const float available = std::max(usableH - scale.px(16.0f), scale.px(48.0f));
+    const float listBudget = std::max(rowStride,
+                                      available - headH - titleToMenu - detailGap - detailH -
+                                          padding * 2.0f);
+    const float clampedListH = std::min(listH, listBudget);
+    layout.visibleRows =
+        static_cast<std::size_t>(clampedListH / std::max(1.0f, rowStride));
+    if (layout.visibleRows == 0 && rows > 0) {
+        layout.visibleRows = 1;
+    }
+    const float panelH  = clampedListH + padding * 2.0f;
+
     layout.totalHeight =
-        std::min(headH + titleToMenu + panelH + detailGap + detailH, usableH - scale.px(16.0f));
+        std::min(headH + titleToMenu + panelH + detailGap + detailH, available);
 
     // Centred in the space above the hints, then nudged up a little so the
     // menu rather than the title is the optical centre.
@@ -661,7 +801,8 @@ MainMenuState::Layout MainMenuState::computeLayout(const StateContext& ctx) cons
     const float panelW = std::min(m_styles.listWidth + padding * 2.0f,
                                   area.w - scale.px(24.0f));
     layout.panel = Rect{area.center().x - panelW * 0.5f, y, panelW, panelH};
-    layout.list  = Rect{layout.panel.x + padding, y + padding, panelW - padding * 2.0f, listH};
+    layout.list  = Rect{layout.panel.x + padding, y + padding, panelW - padding * 2.0f,
+                        clampedListH};
     y += panelH + detailGap;
 
     if (detailH > 0.0f) {
@@ -778,8 +919,10 @@ void MainMenuState::render(StateContext& ctx, double alpha)
     renderer.drawRect(layout.panel, Palette::PanelBorder.withAlpha(0x90));
     renderer.setBlendMode(BlendMode::None);
 
+    m_menu.ensureVisible(layout.visibleRows, m_styles);
     m_menu.render(renderer, text, layout.list,
-                  ctx.input != nullptr ? ctx.input->mousePosition() : Vec2{}, m_styles);
+                  ctx.input != nullptr ? ctx.input->mousePosition() : Vec2{}, m_styles,
+                  layout.visibleRows, static_cast<float>(m_time));
 
     // --- description of the highlighted entry --------------------------------
     if (!layout.detail.isEmpty()) {

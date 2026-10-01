@@ -63,6 +63,14 @@ struct PlayerTuning {
     float maxHealth      = 5.0f;
     /// Seconds of invulnerability after taking a hit.
     float invulnTime     = 0.9f;
+    /// Seconds after landing during which the player is in the landing recovery.
+    ///
+    /// The Land animation clip exists and was never selected by anything: falling
+    /// went straight from Fall to Walk, so a hard landing read as the player
+    /// snapping upright. This is the state that clip was waiting for. Movement is
+    /// scaled during it rather than stopped, so a landing does not cost the player
+    /// control - it costs a little momentum, which is what landing is.
+    float landRecovery    = 0.14f;
     /// Seconds the hurt *animation* runs for, which is the clip's own length.
     ///
     /// Deliberately much shorter than the invulnerability window. i-frames last
@@ -191,6 +199,14 @@ public:
     /// `stepEvents().hurt` is an edge lasting exactly one step - a reaction
     /// selected from a one-frame flag is a reaction that never appears.
     [[nodiscard]] bool hurt() const noexcept { return m_hurtTimer > 0.0f; }
+    /// True just after landing, while the landing recovery is still running.
+    [[nodiscard]] bool landing() const noexcept { return m_landTimer > 0.0f; }
+    /// Vertical speed at the last landing, kept after the step that reported it.
+    ///
+    /// Held because `PlayerStepEvents` is reset every step and this is read after
+    /// the fact: the presentation layer asks "how hard was that?" a frame later, and
+    /// by then the edge that carried the answer has been cleared.
+    [[nodiscard]] float lastLandSpeed() const noexcept { return m_lastLandSpeed; }
     [[nodiscard]] bool dashing() const noexcept { return m_dashTimer > 0.0f; }
     [[nodiscard]] float dashCooldownRemaining() const noexcept { return m_dashCooldown; }
     [[nodiscard]] AttackPhase attackPhase() const noexcept { return m_attack.phase; }
@@ -224,6 +240,8 @@ private:
     float        m_chrono = 0.0f;
     float        m_facing = 1.0f;
 
+    float m_landTimer     = 0.0f;
+    float m_lastLandSpeed = 0.0f;
     float m_coyoteTimer   = 0.0f;
     float m_jumpBuffer    = 0.0f;
     float m_dashTimer     = 0.0f;

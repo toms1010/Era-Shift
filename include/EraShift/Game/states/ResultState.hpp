@@ -12,6 +12,7 @@
 #include "EraShift/Graphics/TextRenderer.hpp"
 
 #include <string>
+#include <vector>
 
 namespace EraShift::Game {
 
@@ -81,6 +82,13 @@ public:
     void onEnter(StateContext& ctx) override;
     void update(StateContext& ctx, double fixedDelta) override;
     void render(StateContext& ctx, double alpha) override;
+
+    /// The option labels, in the order they are offered.
+    ///
+    /// Exposed so the set of options can be tested without a renderer: which
+    /// options a screen offers *is* its behaviour, and it is the part most likely
+    /// to regress when a new outcome is added.
+    [[nodiscard]] std::vector<std::string> optionLabels() const;
 
 private:
     void buildMenu(StateContext& ctx);

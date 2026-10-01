@@ -18,6 +18,14 @@ MenuStyles testStyles()
     return MenuStyles::make(UiScale{1.0f});
 }
 
+/// A frame exactly tall enough for five rows, so a list longer than that must
+/// scroll and the row maths in these tests is the real row maths.
+Rect fiveRowFrame(const MenuList& menu, const MenuStyles& styles)
+{
+    const float stride = menu.rowStride(styles);
+    return Rect{0.0f, 0.0f, 400.0f, stride * 5.0f - (stride - menu.rowHeight(styles))};
+}
+
 } // namespace
 
 TEST_CASE("selection starts on the first item")
@@ -203,4 +211,230 @@ TEST_CASE("select() ignores disabled and out-of-range indices")
 
     menu.select(99);
     CHECK(menu.selected() == 2);
+}
+
+
+// ---------------------------------------------------------------------------
+// Scrolling
+//
+// A list taller than its frame used to draw every row anyway, so the ones below
+// the panel's bottom edge were visible over the world and the ones the selection
+// could reach were not. These cover the scroll that replaced that.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A list of `count` plain entries.
+MenuList listOf(std::size_t count)
+{
+    MenuList menu;
+    std::vector<MenuItem> items;
+    items.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        items.emplace_back("ROW " + std::to_string(i), "");
+    }
+    menu.setItems(std::move(items));
+    return menu;
+}
+
+} // namespace
+
+TEST_CASE("a list that fits does not scroll")
+{
+    MenuList menu = listOf(5);
+    menu.ensureVisible(10, testStyles());
+    CHECK(menu.scrollOffset() == 0);
+
+    menu.select(4);
+    menu.ensureVisible(10, testStyles());
+    CHECK(menu.scrollOffset() == 0);
+}
+
+TEST_CASE("a scrolled list brings the selection into view")
+{
+    MenuList menu = listOf(20);
+    menu.ensureVisible(5, testStyles());
+
+    menu.select(15);
+    menu.ensureVisible(5, testStyles());
+
+    // The invariant: the selection is one of the rows on screen.
+    CHECK(menu.selected() >= menu.scrollOffset());
+    CHECK(menu.selected() < menu.scrollOffset() + 5);
+}
+
+TEST_CASE("scrolling down then up returns to the top")
+{
+    MenuList menu = listOf(20);
+    menu.ensureVisible(5, testStyles());
+
+    menu.select(18);
+    menu.ensureVisible(5, testStyles());
+    const std::size_t down = menu.scrollOffset();
+    CHECK(down > 0);
+
+    menu.select(0);
+    menu.ensureVisible(5, testStyles());
+    CHECK(menu.scrollOffset() == 0);
+}
+
+TEST_CASE("the last row can be scrolled to and the list does not overshoot")
+{
+    MenuList menu = listOf(12);
+    menu.ensureVisible(5, testStyles());
+
+    menu.select(11);
+    menu.ensureVisible(5, testStyles());
+
+    CHECK(menu.selected() >= menu.scrollOffset());
+    CHECK(menu.selected() < menu.scrollOffset() + 5);
+    // No empty space below the last row: the scroll cannot run past the end.
+    CHECK(menu.scrollOffset() + 5 <= 12);
+}
+
+TEST_CASE("a visible count of one scrolls straight to the selection")
+{
+    MenuList menu = listOf(10);
+    menu.ensureVisible(1, testStyles());
+
+    menu.select(7);
+    menu.ensureVisible(1, testStyles());
+
+    // One visible row means no margin, or the scroll could not satisfy the
+    // invariant at all.
+    CHECK(menu.scrollOffset() == 7);
+    CHECK(menu.selected() >= menu.scrollOffset());
+    CHECK(menu.selected() < menu.scrollOffset() + 1);
+}
+
+TEST_CASE("zero visible rows disables scrolling rather than hiding everything")
+{
+    MenuList menu = listOf(10);
+    menu.ensureVisible(0, testStyles());
+    CHECK(menu.scrollOffset() == 0);
+}
+
+TEST_CASE("a short list is never scrolled even with a tiny window")
+{
+    MenuList menu = listOf(3);
+    menu.ensureVisible(1, testStyles());
+    menu.select(2);
+    menu.ensureVisible(1, testStyles());
+    // Three rows in a one-row window is the clipped case; the scroll still has to
+    // keep the selection on screen.
+    CHECK(menu.selected() >= menu.scrollOffset());
+    CHECK(menu.selected() < menu.scrollOffset() + 1);
+}
+
+
+// ---------------------------------------------------------------------------
+// Hit testing a scrolled list
+//
+// hitTest has to agree with render about which entry a screen position shows.
+// While every list fit on screen the two could not disagree; once a list scrolls
+// they can, and the symptom is a click selecting a row other than the one lit up.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a click in a scrolled list selects the row that was drawn there")
+{
+    MenuList menu = listOf(20);
+    MenuStyles styles = testStyles();
+    const Rect bounds = fiveRowFrame(menu, styles);
+
+    // Scroll first: with the selection on row 0 there is nothing to scroll to, and
+    // the bug this covers only exists once a row above the window has been dropped.
+    menu.select(12);
+    menu.ensureVisible(5, styles);
+    REQUIRE(menu.scrollOffset() > 0);
+    const std::size_t first = menu.scrollOffset();
+
+    // The top slot holds the first visible entry, not entry 0.
+    const std::size_t topSlot = menu.hitTest(bounds, Vec2{10.0f, 1.0f}, styles);
+    CHECK(topSlot == first);
+}
+
+TEST_CASE("hit testing follows the scroll as it moves")
+{
+    MenuList menu = listOf(20);
+    MenuStyles styles = testStyles();
+    const Rect bounds = fiveRowFrame(menu, styles);
+
+    for (const std::size_t target : {std::size_t{0}, std::size_t{6}, std::size_t{14},
+                                    std::size_t{19}}) {
+        menu.select(target);
+        menu.ensureVisible(5, styles);
+
+        // Whatever is drawn in the top slot is what a click there must return.
+        const std::size_t hovered = menu.hitTest(bounds, Vec2{10.0f, 1.0f}, styles);
+        CHECK(hovered == menu.scrollOffset());
+    }
+}
+
+TEST_CASE("a click selects the scrolled row, and the mouse then tracks it")
+{
+    MenuList menu = listOf(20);
+    MenuStyles styles = testStyles();
+    const Rect bounds = fiveRowFrame(menu, styles);
+
+    menu.select(19);
+    menu.ensureVisible(5, styles);
+    const std::size_t bottom = menu.scrollOffset();
+
+    // Click the last visible slot.
+    const std::size_t hovered = menu.hitTest(bounds, Vec2{10.0f, bounds.h - 1.0f}, styles);
+    CHECK(hovered == bottom + 4);
+    menu.select(hovered);
+    CHECK(menu.selected() == bottom + 4);
+}
+
+TEST_CASE("hit testing refuses the empty space below a scrolled list")
+{
+    MenuList menu = listOf(20);
+    MenuStyles styles = testStyles();
+    const Rect bounds = fiveRowFrame(menu, styles);
+
+    menu.select(10);
+    menu.ensureVisible(5, styles);
+
+    // The frame is 5 rows tall and the list is 20 long, so there is always more
+    // below: a click in the gap must not resolve to some other entry.
+    const std::size_t count = menu.visibleRowCount(bounds, styles);
+    REQUIRE(count == 5);
+    const float stride = menu.rowStride(styles);
+    const std::size_t past =
+        menu.hitTest(bounds, Vec2{10.0f, count * stride + 1.0f}, styles);
+    CHECK(past == static_cast<std::size_t>(-1));
+}
+
+TEST_CASE("hit testing outside the list is refused, scrolled or not")
+{
+    MenuList menu = listOf(20);
+    MenuStyles styles = testStyles();
+    const Rect bounds = fiveRowFrame(menu, styles);
+
+    menu.select(15);
+    menu.ensureVisible(5, styles);
+
+    CHECK(menu.hitTest(bounds, Vec2{-1.0f, 1.0f}, styles) == static_cast<std::size_t>(-1));
+    CHECK(menu.hitTest(bounds, Vec2{10.0f, bounds.h + 1.0f}, styles) ==
+          static_cast<std::size_t>(-1));
+}
+
+TEST_CASE("a disabled row below the scroll is still not clickable")
+{
+    std::vector<MenuItem> items;
+    for (std::size_t i = 0; i < 20; ++i) {
+        items.emplace_back("ROW " + std::to_string(i), "", "", (i % 2u) == 0u);
+    }
+    MenuList menu;
+    menu.setItems(std::move(items));
+    MenuStyles styles = testStyles();
+    const Rect bounds = fiveRowFrame(menu, styles);
+
+    menu.select(0);
+    menu.ensureVisible(5, styles);
+    REQUIRE(menu.scrollOffset() == 0);
+    const float stride = menu.rowStride(styles);
+    CHECK(menu.hitTest(bounds, Vec2{10.0f, stride + 1.0f}, styles) ==
+          static_cast<std::size_t>(-1));
 }

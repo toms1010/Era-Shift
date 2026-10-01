@@ -52,6 +52,12 @@ std::string formatTime(double seconds)
            std::to_string(total % 60);
 }
 
+/// Stagger for the options appearing one after another.
+///
+/// ~55ms apart: fast enough that the last row arrives while the player is still
+/// reading the first, slow enough that it reads as a sequence rather than as
+/// everything appearing at once.
+constexpr float kRowStagger = 0.055f;
 /// How many stat rows sit above the options, and the height of each.
 ///
 /// Named rather than inlined because `update` needs the same number to find
@@ -101,6 +107,16 @@ void ResultState::onEnter(StateContext& ctx)
                   m_stats.score());
 }
 
+std::vector<std::string> ResultState::optionLabels() const
+{
+    std::vector<std::string> labels;
+    labels.reserve(m_menu.items().size());
+    for (const MenuItem& item : m_menu.items()) {
+        labels.push_back(item.label);
+    }
+    return labels;
+}
+
 void ResultState::buildMenu(StateContext& ctx)
 {
     const bool won = m_outcome == Game::Outcome::Victory;
@@ -109,9 +125,13 @@ void ResultState::buildMenu(StateContext& ctx)
     // what the player wants nine times out of ten. It is offered *only* when a
     // checkpoint exists — the caller checks — so the row never appears and then
     // quietly restart the whole region.
+    // LEVEL SELECT is on every outcome, including a victory. A player who clears a
+    // region usually wants to pick the next one here, not navigate back through the
+    // title screen to do it.
     if (won) {
         m_menu.setItems({
             {"PLAY AGAIN", "run the region again",       true},
+            {"LEVEL SELECT", "choose another region",    true},
             {"MAIN MENU",  "back to the title screen",    true},
             {"QUIT",       "exit to desktop",             true},
         });
@@ -119,12 +139,14 @@ void ResultState::buildMenu(StateContext& ctx)
         m_menu.setItems({
             {"RETRY CHECKPOINT", "return to the last one",  true},
             {"RESTART REGION",   "start from the beginning", true},
+            {"LEVEL SELECT",     "choose another region",    true},
             {"MAIN MENU",        "back to the title screen", true},
             {"QUIT",             "exit to desktop",           true},
         });
     } else {
         m_menu.setItems({
             {"RESTART REGION", "start from the beginning", true},
+            {"LEVEL SELECT",   "choose another region",    true},
             {"MAIN MENU",      "back to the title screen", true},
             {"QUIT",           "exit to desktop",           true},
         });
@@ -196,6 +218,11 @@ void ResultState::update(StateContext& ctx, double fixedDelta)
     } else if (item->label == "RESTART REGION" || item->label == "PLAY AGAIN") {
         LevelSelectState::clearChosenLevel();
         ctx.states->reset(std::make_shared<PlayingState>());
+    } else if (item->label == "LEVEL SELECT") {
+        // Pushed, not reset: the results screen stays underneath, so BACK from the
+        // region list returns to the statistics rather than dropping them.
+        LevelSelectState::clearChosenLevel();
+        ctx.states->push(std::make_shared<LevelSelectState>());
     } else if (item->label == "MAIN MENU") {
         ctx.states->popToRoot();
     } else if (item->label == "QUIT") {
@@ -237,18 +264,39 @@ void ResultState::render(StateContext& ctx, double alpha)
     Graphics::TextRenderer& text = *ctx.text;
 
     // --- headline -----------------------------------------------------------
+    // Fades in over about half a second, before the options start arriving. The
+    // pause matters: a title and a menu appearing in the same frame is a wall, and
+    // the player reads the wall rather than the title.
+    const float titleIn = Graphics::clampValue(static_cast<float>(m_time) / 0.45f, 0.0f, 1.0f);
+    const auto titleFade = [titleIn](Color colour) {
+        return colour.withAlpha(
+            static_cast<std::uint8_t>(static_cast<float>(colour.a) * titleIn));
+    };
+    const char* headlineText = won ? "THE GATE OPENS" : "TIMELINE COLLAPSED";
+
     {
         TextStyle bloom = m_styles.title;
-        bloom.color   = accent.withAlpha(static_cast<std::uint8_t>(40.0f + 60.0f * glow));
+        bloom.color   = accent.withAlpha(
+            static_cast<std::uint8_t>((40.0f + 60.0f * glow) * titleIn));
         bloom.shadow  = Palette::Transparent;
         text.drawInRect(renderer, Rect{area.x, scale.px(70.0f), area.w, scale.px(90.0f)},
-                        won ? "THE GATE OPENS" : "TIMELINE COLLAPSED", bloom);
+                        headlineText, bloom);
     }
     {
         TextStyle headline = m_styles.title;
-        headline.color    = Palette::TextPrimary;
+        headline.color    = titleFade(Palette::TextPrimary);
         text.drawInRect(renderer, Rect{area.x, scale.px(70.0f), area.w, scale.px(90.0f)},
-                        won ? "THE GATE OPENS" : "TIMELINE COLLAPSED", headline);
+                        headlineText, headline);
+    }
+
+    // Which region this was. A results screen that does not say is a results screen
+    // the player has to match against memory, and with eleven regions that is a
+    // real ask.
+    if (!m_levelName.empty()) {
+        TextStyle subtitle = m_styles.tagline;
+        subtitle.color     = titleFade(accent);
+        text.drawInRect(renderer, Rect{area.x, scale.px(146.0f), area.w, scale.px(24.0f)},
+                        m_levelName, subtitle);
     }
 
     // --- numbers ------------------------------------------------------------
@@ -287,12 +335,20 @@ void ResultState::render(StateContext& ctx, double alpha)
     }
 
     // --- options ------------------------------------------------------------
+    // Rows arrive one after another. The panel itself fades with the first row, so
+    // it appears to be drawn rather than to be revealed behind an invisible list.
+    const float panelIn = Graphics::clampValue(static_cast<float>(m_time) / 0.30f, 0.0f, 1.0f);
     const PanelLayout panel =
         layoutPanel(optionsArea(area, scale), m_styles, m_menu.items().size(), "", "", text);
-    renderer.drawRect(panel.panel, Palette::PanelFill);
-    renderer.drawRect(panel.panel, Palette::PanelBorder.withAlpha(0x90));
+    renderer.drawRect(panel.panel,
+                      Palette::PanelFill.withAlpha(static_cast<std::uint8_t>(
+                          static_cast<float>(Palette::PanelFill.a) * panelIn)));
+    renderer.drawRect(panel.panel, Palette::PanelBorder.withAlpha(
+                                        static_cast<std::uint8_t>(0x90 * panelIn)));
+    m_menu.ensureVisible(panel.visibleRows, m_styles);
     m_menu.render(renderer, *ctx.text, panel.list,
-                  ctx.input != nullptr ? ctx.input->mousePosition() : Vec2{}, m_styles);
+                  ctx.input != nullptr ? ctx.input->mousePosition() : Vec2{}, m_styles,
+                  panel.visibleRows, static_cast<float>(m_time), kRowStagger);
 
     if (ctx.overlay != nullptr && ctx.stats != nullptr) {
         ctx.overlay->render(renderer, *ctx.text, *ctx.stats, *ctx.states, ctx.loop->stats());
@@ -543,8 +599,10 @@ void LevelSelectState::render(StateContext& ctx, double alpha)
     renderer.drawRectOutline(layout.panel, Palette::PanelBorder, 2.0f);
     text.drawInRect(renderer, layout.heading, "SELECT REGION", m_styles.heading);
 
+    m_menu.ensureVisible(layout.visibleRows, m_styles);
     m_menu.render(renderer, text, layout.list,
-                  ctx.input != nullptr ? ctx.input->mousePosition() : Vec2{}, m_styles);
+                  ctx.input != nullptr ? ctx.input->mousePosition() : Vec2{}, m_styles,
+                  layout.visibleRows, static_cast<float>(m_time));
     text.drawInRect(renderer, layout.footer, "Esc to go back", m_styles.hint);
 
     // An empty directory is a real state, not an error to hide: the player is
@@ -682,8 +740,10 @@ void CreditsState::render(StateContext& ctx, double alpha)
         layoutPanel(area, m_styles, m_built ? m_menu.items().size() : 0, "", "", text);
     renderer.drawRect(panel.panel, Palette::PanelFill);
     renderer.drawRect(panel.panel, Palette::PanelBorder.withAlpha(0x90));
+    m_menu.ensureVisible(panel.visibleRows, m_styles);
     m_menu.render(renderer, text, panel.list,
-                  ctx.input != nullptr ? ctx.input->mousePosition() : Vec2{}, m_styles);
+                  ctx.input != nullptr ? ctx.input->mousePosition() : Vec2{}, m_styles,
+                  panel.visibleRows, static_cast<float>(m_time), kRowStagger);
 
     if (ctx.overlay != nullptr && ctx.stats != nullptr) {
         ctx.overlay->render(renderer, text, *ctx.stats, *ctx.states, ctx.loop->stats());

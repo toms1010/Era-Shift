@@ -7,6 +7,7 @@
 #include "EraShift/Graphics/TextRenderer.hpp"
 #include "EraShift/Graphics/Math.hpp"
 
+#include "EraShift/Game/SettingsDraft.hpp"
 #include "EraShift/Input/InputManager.hpp"
 
 #include <string>
@@ -31,8 +32,18 @@ private:
     float      m_time = 0.0f;
     Graphics::UiScale m_viewportScale{1.0f};
 
+    /// True while the first-run tutorial is still running, which is what makes
+    /// SKIP TUTORIAL worth offering at all.
+    bool m_tutorialRunning = false;
+    /// True once the player has asked to skip and has not confirmed yet. Cleared by
+    /// leaving the pause menu, so an armed request cannot fire much later.
+    bool m_confirmSkip = false;
+
     /// Rebuilds the styles when the viewport or the UI-scale preference changes.
     void syncScale(StateContext& ctx);
+    /// Fills in the pause menu. Separate from `onEnter` because the skip row's
+    /// caption and enabled flag both change in response to a press.
+    void buildPauseMenu();
 };
 
 /// Settings screen with live-adjustable options. Applies immediately so the
@@ -58,6 +69,23 @@ private:
     };
 
     void buildItems(StateContext& ctx);
+    /// Reads the live values out of config and the database into the draft.
+    void buildDraft(StateContext& ctx);
+    /// Commits the draft: writes the changed values, then applies them live.
+    void applyDraft(StateContext& ctx);
+    /// Drops every staged value. Nothing was written, so there is nothing to undo.
+    void discardDraft();
+    /// The draft index of a setting by key, or npos.
+    [[nodiscard]] std::size_t draftIndexOf(const char* key) const;
+    /// A setting's committed value by key, or 0 when there is no such setting.
+    [[nodiscard]] int settingOf(const char* key) const;
+    /// What a row should display: the staged value when there is one, otherwise the
+    /// committed value. Rows read this rather than a cached member, so pressing
+    /// Left/Right visibly changes the row and BACK visibly changes it back.
+    [[nodiscard]] int displayedOf(const char* key) const;
+    /// The draft index of a menu row, or npos. Lets a row be driven from the draft
+    /// without repeating the label in every branch.
+    [[nodiscard]] std::size_t indexOfLabel(const std::string& label) const;
     /// The controls page's rows, built from the live bindings.
     [[nodiscard]] std::vector<MenuItem> controlItems(StateContext& ctx) const;
     void adjust(StateContext& ctx, int direction);
@@ -102,6 +130,8 @@ private:
     int   m_vsync       = 1;
     int   m_showFps     = 0;
     int   m_uiScale      = 100;
+    /// The values being edited. Committed and staged are separate, so BACK is real.
+    Game::SettingsDraft m_draft;
     /// Whether the first-run tutorial is shown. Recorded in the progression
     /// database, so it survives a New Game the way a settings.json value would not.
     int   m_tutorialEnabled = 1;

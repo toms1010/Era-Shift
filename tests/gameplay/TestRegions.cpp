@@ -236,7 +236,7 @@ TEST_CASE("listing a directory that does not exist yields no levels, not an erro
     CHECK(entries.empty());
 }
 
-TEST_CASE("every region has a spawn, one seal per era, and a gate in all three eras")
+TEST_CASE("every region has a spawn, enough seals, and a gate in all three eras")
 {
     for (const std::filesystem::path& path : everyLevelPath()) {
         Level level;
@@ -247,19 +247,35 @@ TEST_CASE("every region has a spawn, one seal per era, and a gate in all three e
         CHECK(level.find(EntityKind::PlayerSpawn) != nullptr);
 
         int past = 0, present = 0, future = 0;
+        int seals = 0;
         for (const PlacedEntity& entity : level.entities) {
             if (entity.kind != EntityKind::Seal) {
                 continue;
             }
+            ++seals;
             switch (entity.sealEra) {
                 case Era::Past:    ++past;    break;
                 case Era::Present: ++present; break;
                 case Era::Future:  ++future;  break;
             }
         }
-        CHECK_MESSAGE(past == 1, "one Past seal");
-        CHECK_MESSAGE(present == 1, "one Present seal");
-        CHECK_MESSAGE(future == 1, "one Future seal");
+
+        // The rule is "as many seals as the finish requires", not "one per era". The
+        // tutorial places one and asks for one; every other region places three and
+        // asks for all three. What must hold everywhere is that the finish is
+        // *satisfiable* — a gate needing more seals than exist can never open.
+        CHECK_MESSAGE(seals >= level.requiresSeals,
+                      "places at least the seals the finish requires");
+        CHECK_MESSAGE(level.requiresSeals >= 1, "the finish requires something");
+
+        // Regions that ask for every seal still put one in each era, so no era is
+        // dead time. Checked on the requirement rather than on the id, so a region
+        // that later relaxes this does not need the test changed with it.
+        if (level.requiresSeals == seals && seals == 3) {
+            CHECK_MESSAGE(past == 1, "one Past seal");
+            CHECK_MESSAGE(present == 1, "one Present seal");
+            CHECK_MESSAGE(future == 1, "one Future seal");
+        }
 
         for (const auto* rows : {&level.pastRows, &level.presentRows, &level.futureRows}) {
             bool hasGate = false;
@@ -451,7 +467,8 @@ TEST_CASE("every region loads into a world and simulates")
         world.load(level);
         CHECK(world.loaded());
         CHECK(world.player().alive());
-        CHECK(world.seals().size() == 3);
+        // As many as the level places, and at least as many as its finish needs.
+        CHECK(world.seals().size() >= world.requiredSeals());
         CHECK(world.outcome() == Outcome::Running);
 
         // A few steps of standing still, which is enough to catch a spawn placed
@@ -473,18 +490,43 @@ TEST_CASE("a checkpoint volume is detected and a checkpoint restores the world")
     const auto path = levelDirectory() / "awakening.json";
     REQUIRE(loadLevelFromFile(path, level, error));
 
-    // The region's first checkpoint sits near the spawn.
-    CHECK(level.checkpointHere(16, 18));
+    // The region's first checkpoint sits near the spawn. Read from the placement
+    // list rather than hard-coded, so a level edit moves the test's expectation
+    // with it instead of leaving it asserting a tile that is no longer there.
+    int firstCheckpointX = 0;
+    for (const PlacedEntity& entity : level.entities) {
+        if (entity.kind == EntityKind::Checkpoint) {
+            firstCheckpointX = entity.x;
+            break;
+        }
+    }
+    REQUIRE(firstCheckpointX > 0);
+    CHECK(level.checkpointHere(firstCheckpointX, level.entities.front().y));
     CHECK(level.checkpointHere(0, 0) == false);
 
     World world;
     world.load(level);
 
-    // Restore somewhere else, with two seals already taken and less health.
-    world.restoreCheckpoint(EraShift::Graphics::Vec2{40.0f * 32.0f, 18.0f * 32.0f},
-                            Era::Future, 2.0f, 30.0f, 0b011);
+    // Restore somewhere else, with the seals already taken and less health.
+    //
+    // The mask is derived from the level's own seal count rather than written as a
+    // literal, so this still means "every seal this level places" after the
+    // tutorial drops from three seals to one. A hard-coded 0b111 would silently
+    // restore *all* of awakening's one seal and then assert two, which is a test
+    // that fails for a reason the test's own name does not explain.
+    int sealCount = 0;
+    for (const PlacedEntity& entity : level.entities) {
+        if (entity.kind == EntityKind::Seal) {
+            ++sealCount;
+        }
+    }
+    REQUIRE(sealCount > 0);
+    const int allSeals = (1 << sealCount) - 1;
 
-    CHECK(world.sealsTaken() == 2);
+    world.restoreCheckpoint(EraShift::Graphics::Vec2{40.0f * 32.0f, 18.0f * 32.0f},
+                            Era::Future, 2.0f, 30.0f, allSeals);
+
+    CHECK(world.sealsTaken() == sealCount);
     CHECK(world.era() == Era::Future);
     CHECK(world.player().alive());
     CHECK(world.player().health() == doctest::Approx(2.0f));
@@ -544,4 +586,183 @@ TEST_CASE("a checkpoint position outside the map is clamped, not trusted")
         world.update(input, commands, 1.0f / 60.0f);
     }
     CHECK(world.outcome() != Outcome::Defeat);
+}
+
+// ---------------------------------------------------------------------------
+// The first region as shipped
+//
+// `measure_jumps.cpp` proves the map is traversable; these prove the things a
+// traversal probe cannot see - that the objective exists, that the finish is gated
+// on it, and that the region says it is a tutorial in the data rather than only in
+// the file's name.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the first region is the tutorial, and says so in its data")
+{
+    Level level;
+    std::string error;
+    REQUIRE(loadLevelFromFile(levelDirectory() / "awakening.json", level, error));
+
+    CHECK(level.tutorial);
+    CHECK(level.order == 1);
+    CHECK(level.name == "The First Shift");
+    // `requires_seals` is what the finish gate asks for, and it is one rather than
+    // "every seal placed" - a first level that made the player collect three of
+    // anything before it would let them out is not a tutorial.
+    CHECK(level.requiresSeals == 1);
+
+    int placed = 0;
+    for (const PlacedEntity& entity : level.entities) {
+        if (entity.kind == EntityKind::Seal) {
+            ++placed;
+        }
+    }
+    CHECK(placed == 1);
+}
+
+TEST_CASE("the tutorial region has exactly one seal, so no era is dead time")
+{
+    // With one seal there is nothing to collect in the other two eras, so the
+    // region cannot demand a shift it has not taught. The one seal is Present,
+    // chosen because the Past-only chasm earlier in the level already showed the
+    // player what "solid in the Past" means.
+    Level level;
+    std::string error;
+    REQUIRE(loadLevelFromFile(levelDirectory() / "awakening.json", level, error));
+
+    const PlacedEntity* seal = level.find(EntityKind::Seal);
+    REQUIRE(seal != nullptr);
+    CHECK(seal->sealEra == Era::Present);
+}
+
+TEST_CASE("the tutorial region has checkpoints spread through it, not clustered")
+{
+    Level level;
+    std::string error;
+    REQUIRE(loadLevelFromFile(levelDirectory() / "awakening.json", level, error));
+
+    std::vector<int> xs;
+    for (const PlacedEntity& entity : level.entities) {
+        if (entity.kind == EntityKind::Checkpoint) {
+            xs.push_back(entity.x);
+        }
+    }
+
+    // At least one per third of the level. The brief asked for one around the
+    // middle; one in the first tenth is not a checkpoint a player will ever
+    // benefit from.
+    REQUIRE(xs.size() >= 3);
+    std::sort(xs.begin(), xs.end());
+    CHECK(xs.front() > 5);
+    CHECK(xs.back() > 150);
+}
+
+TEST_CASE("the tutorial region has enemies but does not spam them")
+{
+    Level level;
+    std::string error;
+    REQUIRE(loadLevelFromFile(levelDirectory() / "awakening.json", level, error));
+
+    int enemies = 0;
+    for (const PlacedEntity& entity : level.entities) {
+        if (entity.kind == EntityKind::Enemy) {
+            ++enemies;
+        }
+    }
+
+    // Six enemies across a 200-tile region is one every thirty tiles. The brief
+    // asked for gradual escalation, not a corridor of them.
+    CHECK(enemies > 0);
+    CHECK(enemies <= 8);
+
+    // And there is health to be had: an enemy count with no way to recover is
+    // survivable only by never being hit.
+    int health = 0;
+    for (const PlacedEntity& entity : level.entities) {
+        if (entity.kind == EntityKind::Pickup && entity.pickup == PickupKind::Health) {
+            ++health;
+        }
+    }
+    CHECK(health > 0);
+}
+
+TEST_CASE("the tutorial region offers an optional detour")
+{
+    // One or two optional pickups, per the brief. "Optional" means somewhere the
+    // player is not required to go, so they must be off the only route - a pickup
+    // beside a required seal is not optional, it is a toll.
+    Level level;
+    std::string error;
+    REQUIRE(loadLevelFromFile(levelDirectory() / "awakening.json", level, error));
+
+    const PlacedEntity* seal = level.find(EntityKind::Seal);
+    REQUIRE(seal != nullptr);
+
+    int highUp = 0;
+    for (const PlacedEntity& entity : level.entities) {
+        if (entity.kind != EntityKind::Pickup) {
+            continue;
+        }
+        // Well above the ground: something the player has to climb for on purpose.
+        if (entity.y < 15) {
+            ++highUp;
+        }
+        // Nothing on the seal's own tile, which would be unavoidable.
+        const bool sameTile = (entity.x == seal->x) && (entity.y == seal->y);
+        CHECK_FALSE(sameTile);
+    }
+    CHECK(highUp >= 1);
+}
+
+TEST_CASE("the first region's finish gate opens only with its objective")
+{
+    Level level;
+    std::string error;
+    REQUIRE(loadLevelFromFile(levelDirectory() / "awakening.json", level, error));
+
+    World world;
+    world.load(level);
+    REQUIRE(world.requiredSeals() == 1);
+
+    // Standing on the gate with nothing collected.
+    const Rect goal = world.goalBounds();
+    REQUIRE_FALSE(goal.isEmpty());
+    world.mutablePlayer().body().position = Vec2{goal.center().x, goal.center().y};
+    resolvePenetration(world.map(), world.mutablePlayer().body(), world.player().era());
+    for (int i = 0; i < 30; ++i) {
+        world.update(PlayerInput{}, WorldCommands{}, 1.0f / 60.0f);
+    }
+    CHECK(world.outcome() == Outcome::Running);
+
+    // With it.
+    world.applySeals(1);
+    world.mutablePlayer().body().position = Vec2{goal.center().x, goal.center().y};
+    resolvePenetration(world.map(), world.mutablePlayer().body(), world.player().era());
+    for (int i = 0; i < 30; ++i) {
+        world.update(PlayerInput{}, WorldCommands{}, 1.0f / 60.0f);
+    }
+    CHECK(world.outcome() == Outcome::Victory);
+}
+
+TEST_CASE("every region can still be finished by taking every seal it places")
+{
+    // The other regions ask for every seal they place, so the old rule still has
+    // to hold for them: after taking all of them the gate opens. This is what the
+    // tutorial's `requires_seals` change could have broken.
+    for (const std::filesystem::path& path : everyLevelPath()) {
+        Level level;
+        std::string error;
+        CAPTURE(idOf(path));
+        REQUIRE(loadLevelFromFile(path, level, error));
+
+        World world;
+        world.load(level);
+        const int placed = static_cast<int>(world.seals().size());
+        world.applySeals((1 << placed) - 1);
+
+        CHECK_MESSAGE(world.sealsTaken() == placed, "every seal counted");
+        if (placed > 0) {
+            CHECK_MESSAGE(world.gateOpen(), "the gate opens with every seal taken");
+        }
+    }
 }

@@ -179,8 +179,18 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
                 break;
 
             case WorldEvent::PickupTaken: {
+                // A pickup lifts, spreads and flashes, rather than simply vanishing:
+                // a collectable that disappears is not obviously *collected*, and
+                // the player is spending a resource they cannot see the cost of
+                // until the bar moves.
                 m_particles.emitPickup(event.position.x, event.position.y, accent);
                 emitGlow(event.position.x, event.position.y, 60.0f, accent, 0.4f, 0.5f);
+                m_flash = std::max(m_flash, 0.22f);
+                if (camera != nullptr) {
+                    // Small. A pickup is a light touch; a camera punch strong enough
+                    // to notice would make a health cell feel like an explosion.
+                    camera->punch(0.006f, 0.12);
+                }
                 break;
             }
 
@@ -217,10 +227,23 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
                 m_flash = 1.0f;
                 break;
 
-            case WorldEvent::Victory:
+            case WorldEvent::Victory: {
+                // The completion burst is staged rather than instant: a flash, then
+                // a wider burst, then the camera. All three on the same frame is a
+                // single white frame, and a single white frame is not an event the
+                // player can feel finishing.
                 m_particles.emitSeal(event.position.x, event.position.y, accent);
+                m_particles.emitShiftBurst(event.position.x, event.position.y, accent);
+                emitGlow(event.position.x, event.position.y, 260.0f, accent, 1.4f, 1.0f);
                 m_flash = 1.0f;
+                if (camera != nullptr) {
+                    // Outward and upward: the level ends by opening, not by hitting
+                    // something.
+                    camera->punch(0.05f, 0.7);
+                    camera->shake(7.0f, 0.45);
+                }
                 break;
+            }
 
             // --- presentation events -----------------------------------------
             case WorldEvent::PlayerJumped:
@@ -283,6 +306,11 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
                 break;
 
             case WorldEvent::GateSealed:
+                // A refusal gets a small, dull knock at the gate rather than a
+                // celebration. The player pressed the button and the world did not
+                // move; showing them fireworks for that would be a lie.
+                m_particles.emitImpact(event.position.x, event.position.y, 0.0f, 1.0f,
+                                       Graphics::Palette::TextDim, 0.5f, 6);
                 break;
         }
     }
