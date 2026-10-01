@@ -12,7 +12,7 @@ Primary platform: **Linux / Kubuntu**, desktop PC.
 | CMake | 3.24+ | Presets need 3.24 |
 | Ninja | any | The default generator for the presets |
 | SDL3 | 3.2+ | 3.4 recommended |
-| SDL3_image, SDL3_ttf, SDL3_mixer | current | |
+| SDL3_image, SDL3_ttf | current | |
 | nlohmann/json | 3.11+ | Header only |
 | doctest | 2.4+ | Tests only |
 
@@ -28,13 +28,10 @@ pkg-config --modversion sdl3 2>/dev/null || echo "SDL3 not found via pkg-config"
 ```bash
 sudo apt install build-essential cmake ninja-build \
                  libsdl3-dev libsdl3-image-dev libsdl3-ttf-dev \
-                 libsdl3-mixer-dev nlohmann-json3-dev doctest-dev
+                 nlohmann-json3-dev doctest-dev
 ```
 
 `CMakeLists.txt` prefers system packages, so nothing else is needed.
-
-> On Ubuntu 26.04 `libsdl3-mixer-dev` is not packaged. Use Option B, which
-> builds every dependency into the project.
 
 ### Option B — project-local build (no root required)
 
@@ -46,10 +43,9 @@ This downloads and builds the SDL3 family plus doctest and nlohmann/json into
 `.deps/install`, and `CMakeLists.txt` picks that prefix up automatically.
 
 The script probes for optional system libraries and disables SDL features that
-are unavailable, so it works on a minimal install (no ALSA headers, no
-`libXss`). It also parses the configure log and retries with each missing
-optional feature turned off, rather than hard-coding a list that varies per
-machine.
+are unavailable, so it works on a minimal install (no `libXss`). It also parses
+the configure log and retries with each missing optional feature turned off,
+rather than hard-coding a list that varies per machine.
 
 Re-run with `--clean` to rebuild from scratch.
 
@@ -142,24 +138,6 @@ validation, both video drivers and the test suite. See
 
 ---
 
-## 5b. Audio trace
-
-For "the game is silent, where did the signal stop?", configure with the trace
-define and run:
-
-```bash
-cmake --preset relwithdebinfo -DCMAKE_CXX_FLAGS=-DERASHIFT_AUDIO_TRACE
-./build/relwithdebinfo/EraShift --frames 600 --audio-debug
-```
-
-Once every sixty frames it logs the music track's playing state, the stream
-backlog in bytes, and the effective mixer gain. It is deliberately sampled rather
-than per-frame: a trace that prints every frame produces enough output to hide the
-one line that mattered.
-
-For a per-sound breakdown instead, use `--audio-test`, which measures every sound
-once and exits.
-
 ## 6. Editor configuration
 
 `.vscode/` contains ready-made configuration:
@@ -194,33 +172,6 @@ window; setting only one of them falls back to windowed.
 Run it under gdb (see `CRASH_ANALYSIS.md`) or with `--log-level trace`. A null
 `Logger*` in a `StateContext` is the usual culprit and is asserted against in
 `StateContext::valid()`.
-
-### Checking the audio backends
-
-SDL decides at build time which audio backends it compiles in, and a build with
-none of them still links, still runs, and still logs a healthy-looking audio
-subsystem — it just cannot make a noise. Nothing in an ordinary build says so.
-
-```bash
-./scripts/check_audio_backends.sh
-```
-
-This asks the binary for its compiled-in driver list and **fails** if none of
-`pulseaudio`, `alsa`, `pipewire`, `jack` or `sndio` is present. `disk` and `dummy`
-do not count: one writes a file and the other discards samples, and neither means
-a player would hear anything.
-
-`--audio-test` prints the same list as part of its header, so you can see it
-without running the script.
-
-**No audio**
-If the game logs `no available audio device`, SDL was built without a real audio
-backend. `./scripts/fetch_deps.sh` probes PulseAudio and ALSA independently and
-builds SDL against whichever it finds, so a machine with only PipeWire/PulseAudio
-still gets working sound. `./scripts/get_audio_headers.sh` installs the needed
-headers without root if the distribution package is unavailable. Check
-`./EraShift --audio-debug` for the driver it ended up with. A game with no sound
-device is still playable — audio is deliberately not a required subsystem.
 
 **The window closes but the process lingers**
 Fixed in this version — see `CRASH_ANALYSIS.md` §5. If it recurs, confirm

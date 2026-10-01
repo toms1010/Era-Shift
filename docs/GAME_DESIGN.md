@@ -118,10 +118,5 @@ message rather than silence, because silence reads as a bug.
   a full timeline needs — what happens to a choice made in an era you later
   leave — are not designed. The current model is deliberately conservative:
   shifting changes what is true *now* and nothing else.
-- **Audio detail.** Audio is implemented and playable — see `AUDIO.md` for the
-  streaming architecture, buses and per-event mapping. What is *not* designed
-  here is a music/variation authoring pass: the tracks are synthesised from
-  fixed code rather than composed per region, so every playthrough of Ancient
-  Forest hears the same progression.
 - **Content beyond one region.** The level format supports as many regions as
   anyone wants to write; there is one.

@@ -1,11 +1,10 @@
-# Feedback: sound, animation and effects
+# Feedback: animation and effects
 
-This is the document for the three systems that turn the simulation into an
+This is the document for the systems that turn the simulation into an
 experience. They are described together because the interesting problems are the
 ones *between* them, not inside any one of them.
 
 - [The shape of the problem](#the-shape-of-the-problem)
-- [Audio](#audio)
 - [Animation](#animation)
 - [Effects](#effects)
 - [Hit-stop](#hit-stop)
@@ -18,194 +17,27 @@ ones *between* them, not inside any one of them.
 ## The shape of the problem
 
 `Game::World` decides *that* something happened and *where*. It has no opinion
-about what that looks or sounds like, and it must not acquire one: the whole
-simulation is unit tested headlessly, and a rule that depends on a sound having
-finished is not a rule.
+about what that looks like, and it must not acquire one: the whole simulation is
+unit tested headlessly, and a rule that depends on an effect having finished is
+not a rule.
 
 Three systems consume what the world reports:
 
 ```
-World::takeEvents()  ──►  FeedbackSystem::consume()  ──┬─►  AudioManager::play()
-                                                       ├─►  ParticleSystem
+World::takeEvents()  ──►  FeedbackSystem::consume()  ──┬─►  ParticleSystem
+                                                       ├─►  Glows
     (what happened,                                 └─►  Camera2D (shake, punch)
-     and where)
+     and where)                                          ScreenEffect (ripple, flash)
 ```
 
-`FeedbackSystem` is a single class on purpose. The alternative — a sound here, a
-particle there, a flash in the state — spreads the answer to "what does a hit
-look like" across four files, and the next event to be added is the one that gets
-only some of the effects. Routing every `WorldEvent` through one switch means a
-new event is *visibly* incomplete until it has been given a sound and an effect.
+`FeedbackSystem` is a single class on purpose. The alternative — a particle here,
+a flash in the state, a shake in the renderer — spreads the answer to "what does a
+hit look like" across four files, and the next event to be added is the one that
+gets only some of the effects. Routing every `WorldEvent` through one switch means
+a new event is *visibly* incomplete until it has been given an effect.
 
 `FeedbackSystem` holds only a `const World&`. It cannot change the simulation, so
 no amount of effects can make the game unwinnable.
-
-## Audio
-
-### The arrangement
-
-Three moving parts, deliberately separated:
-
-| Part | Lives in | Depends on |
-| --- | --- | --- |
-| `MusicSynth`, `AmbienceSynth`, `renderSfx` | `erashift_core` | nothing |
-| `AudioManager` | `erashift_engine` | SDL3_mixer |
-| bus volumes | `config/audio.json` | the mixer tags |
-
-The synthesiser is in Core for the same reason the simulation is: it is pure
-arithmetic, so it can be tested with no sound card. `AudioManager` is the only
-part that needs a device.
-
-### Streaming, not files
-
-Music and ambience are not loops. `AudioManager` creates an `SDL_AudioStream` per
-bed, and every fixed step it renders one block of audio and pushes it in with
-`SDL_PutAudioStreamData`. The track is set to loop forever over a stream that
-never finishes, which is what the arrangement is for:
-
-```cpp
-MIX_SetTrackAudioStream(track, stream);
-SDL_SetNumberProperty(props, MIX_PROP_PLAY_LOOPS_NUMBER, -1);   // forever
-MIX_PlayTrack(track, props);
-```
-
-This is the reason a shift sounds like a shift. Changing the era is a change to
-*parameters* — a different scale, a different filter cutoff, a different detune —
-and those are eased over about a third of a second. Two crossfading loops
-cannot do that; they can only swap.
-
-### The three eras are different keys, not different presets
-
-| Era | Scale | Root | Character |
-| --- | --- | --- | --- |
-| Past | minor pentatonic, 5 degrees | −7 | open, unresolved |
-| Present | natural minor, 7 degrees | −5 | the only one that resolves |
-| Future | whole tone, 6 degrees | +2 | symmetrical, so it never lands |
-
-The Future's whole-tone scale is the important one. A symmetric scale has no
-leading tone, so a phrase built from it has nowhere to go. That is the whole
-sound of a timeline that has come apart, and it comes out of the degree table
-rather than out of a filter sweep.
-
-### Music states
-
-The bed never stops; only its density changes.
-
-| State | Intensity | Tempo | When |
-| --- | --- | --- | --- |
-| `Exploring` | 0.0 | 84 | no enemy in the current era |
-| `Alert` | 0.35 | 96 | nearest enemy > 200px |
-| `Combat` | 1.0 | 116 | nearest enemy < 200px |
-| `Still` | 0.10 | 68 | the run has ended |
-
-Intensity above zero brings in an eighth-note arpeggio and a bass note. The music
-therefore does not merely get louder in a fight — it gains content, which is
-legible before the player has consciously decided they are in one.
-
-### Buses
-
-The mixer's tags are the buses. `MIX_TagTrack` puts the two beds and the one-shot
-pool into `music`, `ambience` and `sfx`; `MIX_SetTagGain` sets their levels, and
-`MIX_SetMixerGain` is the master. Ambience is separate from music on purpose:
-ambience is the constant bed a player stops hearing, and ducking it without losing
-the music is the difference between a setting and a nuisance. All four levels are
-in `config/audio.json` and on the audio settings page, and moving a slider changes
-the live mixer rather than only the file.
-
-### One-shots
-
-Rendered once at start-up into a cache, then played through a pool of six
-interchangeable tracks. Pitch is `MIX_SetTrackFrequencyRatio`, which is how one
-footstep becomes a heavier or lighter one without a second buffer.
-
-When every channel is still sounding, the oldest is stolen rather than the new
-sound being dropped — a fresh hit is more informative than the tail of an old
-one. A dropped footstep is inaudible; a dropped hit is a missing hit.
-
-### Click-free by construction
-
-Three rules, each of which was a measured defect first:
-
-1. **Any filter state that has to outlive a call is a member.** A one-pole filter
-   declared as a local in `render` is rebuilt from zero every call: that is not
-   filtering, it is re-attacking, and it clicks once per block. The pad and lead
-   filters were locals; the ambience's were members. That is the entire reason the
-   music clicked and the ambience did not.
-2. **No oscillator's phase comes from a clock that wraps.** `m_time` is the *beat*
-   clock and is deliberately wrapped every step; feeding it to a sine makes the
-   note jump. Accumulated phase, always.
-3. **Every rendered one-shot is faded at both ends.** All twenty started at full
-   amplitude and stopped at their exact length, which is a step at each edge. One
-   `applyEdgeFades` over the finished buffer, so it applies to everything
-   regardless of how it is built.
-
-**A fourth rule, learned the hard way: a pitch jump is not a click.** Rules 1–3
-are all about *discontinuity in the waveform*, and a synthesiser can be perfectly
-continuous while being musically wrong. The era shift used to resolve the whole
-harmony out of `params.era` — triad, bass and arpeggio — inside a single 16ms
-block. Phases are accumulated, so nothing about the signal was discontinuous and
-it did not click; the pad simply moved several semitones at once, at the loudest
-moment in the game, while the world dissolved around it. Every edge-measuring
-test in this file passed. The bed now latches the note it is *sounding* when a
-shift is requested and slides toward the new era's, and the assertion that catches
-it is on the note, not on the samples — `MusicSynth::padNote()` exists for exactly
-that.
-
-Measured on captured output: −17.2dBFS RMS, −4.7dBFS peak, zero clipped samples.
-
-A note on how these were found, because it is the useful part: the first defect
-was found by *recording the sink and analysing the waveform*, not by listening.
-Listening tells you "it's clicky"; analysing tells you the gaps cluster at exact
-multiples of 16.7ms, which points at the frame boundary and therefore at state
-that does not survive a call. And a click detector cannot tell noise from clicks —
-muting the ambience removed most of the apparent transients, because wind is
-filtered noise and has steep slopes by nature. Isolating each synth and feeding it
-the game's exact 800-frame blocks is what separated the real defect from the
-measurement artefact.
-
-### Beds never stop
-
-A mixer track reading a stream that has run dry reaches the end of it and stops.
-Both beds are started once, against a stream with nothing in it, so the first
-synthesised block arrives a frame or two *after* the track has already ended.
-
-This is worth spelling out because it is the least findable bug in the project.
-When it was present:
-
-- the synthesiser produced good audio, peak 0.29 per block
-- every `SDL_PutAudioStreamData` returned true
-- the log said `audio: started on pulseaudio at 48000 Hz`
-- `pactl list sink-inputs` showed an uncorked `EraShift` stream
-
-and the game was silent. Every diagnostic agreed with every other one and all of
-them were describing a stream going nowhere.
-
-So the streams are primed with a quarter second of silence, and
-`ensureBedsPlaying()` restarts either bed that has stopped. The watchdog is the
-real fix rather than the prime, because the ways a bed stops are not exotic: a
-PipeWire sink suspends when idle, a Bluetooth headset appearing rewires the
-device, a pause stops feeding the streams. All of them should be invisible.
-
-`-DERASHIFT_AUDIO_TRACE` reports the track's own `MIX_TrackPlaying` and the stream
-backlog. It is off by default and costs nothing when off. It is kept because the
-only symptom a player can report is "it's quiet" — the one thing every log line
-was contradicting.
-
-### Failing soft
-
-Audio is never part of `kRequiredSubsystems`. A machine with no sound card, a
-container, and a CI runner all still get a playable game; `context().audio` is
-always non-null and `available()` is the only question to ask.
-
-`MIX_Init()` failing is also non-fatal, and the log says why:
-
-```
-INFO audio: partial mixer init (Couldn't open timidity.cfg: ...); PCM is unaffected
-INFO audio: started on dummy at 48000 Hz
-```
-
-A machine with no MIDI tables cannot play a MIDI file. It can play 800 float
-frames the synthesiser just computed, which is everything this game uses.
 
 ## Animation
 
@@ -254,9 +86,10 @@ the death fade. Those can be on a clock, because nothing about them can be wrong
 
 `Player` accumulates `|velocity.x| * dt` and raises a `footstep` edge every 76
 pixels. A walk cycle tied to a clock slides its feet at low speed and scrabbles
-at high speed; one tied to ground covered puts the sound where the foot actually
-landed. The clip still has `Footstep` markers for a controller running free, but
-the player's own footsteps come from the simulation.
+at high speed; one tied to ground covered puts the step where the foot actually
+landed, and every step raises a `PlayerFootstep` event so the dust lands with it.
+The clip still has `Footstep` markers for a controller running free, but the
+player's own footsteps come from the simulation.
 
 ### Non-looping clips refuse to be interrupted
 
@@ -362,8 +195,8 @@ Two rules make it safe:
 
 **It runs on the presentation clock, not the simulation clock.** `World::update`
 returns early during a freeze, but `FeedbackSystem::update` is still called, so
-the spark travels and the music keeps going while the world it came from is
-still. That is the entire point of hit-stop.
+the sparks keep travelling while the world they came from is still. That is the
+entire point of hit-stop.
 
 **It never swallows a button press.** A step where the player pressed shift,
 interact, jump, dash or attack runs normally. A freeze that eats an input is
@@ -395,19 +228,19 @@ named tiers rather than a slider:
 | Tier | Paradox | What changes |
 | --- | --- | --- |
 | `Calm` | 0 | nothing |
-| `Strained` | 18 | tempo instability, slight vignette, denser weather |
-| `Fractured` | 38 | audibly unstable, glitch bars, heavier vignette |
-| `Collapse` | 62 | the bar turns red, the music drops out, the edges close in |
+| `Strained` | 18 | slight vignette, denser weather |
+| `Fractured` | 38 | glitch bars, heavier vignette |
+| `Collapse` | 62 | the bar turns red, the tearing is constant, the edges close in |
 
 Tiers rather than a continuous value because a player can be told "you are at
 Tier 3" and understand that, whereas "your paradox is 41.2" means nothing. The
 gauge's tick marks are the tier boundaries and the fill carries the tier's
 colour, so the HUD and the screen effect are visibly the same system.
 
-`tension()` is the eased paradox ratio, and it is the single value that both the
-audio and the renderer read. One number driving two systems is why they stay in
-step: a player who hears the music destabilise sees the edges close in at the same
-moment, and the causal link is legible.
+`tension()` is the eased paradox ratio, and it is the single value every
+presentation effect reads. One number driving the vignette, the glitch bars, the
+weather density and the HUD pulse is why they stay in step rather than
+destabilising in sequence.
 
 ## Seeing it working
 
@@ -431,19 +264,14 @@ Future's embers rising through them.
 
 | System | File | Cases |
 | --- | --- | --- |
-| Synthesiser | `tests/gameplay/TestSynth.cpp` | 13 |
-| Animation | `tests/gameplay/TestAnimation.cpp` | 16 |
+| Animation | `tests/gameplay/TestAnimation.cpp` | 26 |
 | Particles | `tests/gameplay/TestParticles.cpp` | 15 |
 
-All three run in the headless `erashift_tests_gameplay` binary, with no sound card
-and no display, which is the reason the pure-arithmetic half of this work lives in
-`erashift_core`.
+Both run in the headless `erashift_tests_gameplay` binary, with no display, which
+is the reason this work lives in `erashift_core`.
 
 What they assert, beyond the obvious:
 
-- **No one-shot is silent, clipping, or a copy of another one-shot.** A pair-wise
-  comparison over all 20 sounds catches a copy-paste in a switch statement, which
-  is the classic way an eight-way audio table quietly becomes a two-way one.
 - **The attack clip's hit window still matches `PlayerTuning`.** This is the test
   that stops the picture and the simulation drifting apart.
 - **A frame hitch does not lose a hit marker.** A 200ms step still delivers
@@ -464,9 +292,6 @@ function:
 | --- | --- | --- |
 | `PlayerTuning` | `Player.hpp` | movement, jump, dash, **and the swing's three phases** |
 | `EnemyTuning` | `Enemy.hpp` | per-kind AI, **and the enemy's three attack phases** |
-| `MusicParams` | `Synth.hpp` | tempo, intensity, gain, instability |
-| `EraScale` | `scaleFor()` | the three scales |
-| `Bus` volumes | `audio.json` | the four buses |
 | `kHitStop*` | `World.cpp` | freeze duration per kind of impact |
 | `kTier*` | `Feedback.cpp` | the paradox thresholds |
 | `kMaxGlitch` | `Feedback.cpp` | how far the screen may be allowed to distort |

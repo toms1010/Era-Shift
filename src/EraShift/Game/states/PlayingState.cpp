@@ -1,8 +1,6 @@
 #include "EraShift/Game/states/PlayingState.hpp"
 
-#include "EraShift/Audio/AudioManager.hpp"
 #include "EraShift/Core/Config.hpp"
-#include "EraShift/Audio/Synth.hpp"
 #include "EraShift/Game/EraTheme.hpp"
 
 #include "EraShift/Application/EventBus.hpp"
@@ -306,12 +304,6 @@ void PlayingState::onExit(StateContext& ctx)
     saveProgress(ctx);
     if (ctx.renderer != nullptr) {
         ctx.renderer->camera().clearBounds();
-    }
-    // The beds keep running: the results screen is still part of the run, and a
-    // hard cut to silence the moment the level stops is the single most
-    // noticeable thing a game can do to a soundscape.
-    if (ctx.audio != nullptr) {
-        ctx.audio->setMusicState(Audio::MusicState::Still);
     }
     ctx.log->info("Game", "left Playing");
 }
@@ -1201,7 +1193,7 @@ void PlayingState::drawHud(const StateContext& ctx, const Rect& area) const
 
     // --- paradox ------------------------------------------------------------
     // A tiered gauge rather than a plain bar. The tiers are where the game
-    // actually changes - the screen distorts, the music destabilises - so a
+    // actually changes - the screen distorts, the weather thickens - so a
     // number the player has to interpret is the wrong thing to show them. The
     // ticks say "you are approaching something", which is actionable, and the
     // label says what you are currently in.

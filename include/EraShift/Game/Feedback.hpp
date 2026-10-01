@@ -2,19 +2,18 @@
 //
 // One class whose entire job is to answer a question the simulation must never
 // have to think about: given that something happened, what should the player
-// see, hear and feel?
+// see and feel?
 //
-// It is a single class on purpose. The alternative - a sound here, a particle
-// system there, a screen flash in the state - spreads the answer to "what does a
-// hit look like" across four files, and the next hit to be added is the one that
-// only gets some of them. Routing every `WorldEvent` through one switch means a
-// new event is visibly incomplete until it has been given a sound and an effect.
+// It is a single class on purpose. The alternative - a particle burst here, a
+// screen flash in the state, a glow in the renderer - spreads the answer to "what
+// does a hit look like" across four files, and the next hit to be added is the one
+// that only gets some of them. Routing every `WorldEvent` through one switch means
+// a new event is visibly incomplete until it has been given an effect.
 //
 // The split of responsibility with the rest of the game:
 //
 //   World            decides *that* something happened, and where
-//   FeedbackSystem   decides what that looks and sounds like
-//   AudioManager     plays it
+//   FeedbackSystem   decides what that looks like
 //   ParticleSystem   draws it
 //   Camera2D         shakes and punches
 //
@@ -62,7 +61,7 @@ class FeedbackSystem {
 public:
     void reset() noexcept;
 
-    /// Turns the world's event stream into sound, particles and camera work.
+    /// Turns the world's event stream into particles, glows and camera work.
     ///
     /// Called once per fixed step, immediately after `World::update`, with the
     /// events that step produced. This is the only place world events are
@@ -95,8 +94,8 @@ public:
 
     // --- state the rest of the game asks about --------------------------------
 
-    /// 0..1 paradox, eased. The audio manager turns this into tempo
-    /// instability, and the renderer into glitch and vignette.
+    /// 0..1 paradox, eased. Drives the glitch bars, the vignette and the
+    /// HUD pulse.
     [[nodiscard]] float tension() const noexcept { return m_tension; }
     [[nodiscard]] ParadoxTier tier() const noexcept { return m_tier; }
     /// 1 for a moment after the tier last changed, falling to 0. The HUD label

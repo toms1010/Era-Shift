@@ -31,9 +31,8 @@ add_library(erashift_core STATIC
     EraShift/Game/Level.cpp
     EraShift/Game/World.cpp
 
-    # Presentation that is still pure arithmetic. The synthesiser lives here for
-    # the same reason the simulation does: it is fully testable headlessly.
-    EraShift/Audio/Synth.cpp
+    # Presentation that is still pure arithmetic. Lives here for the same reason
+    # the simulation does: it is fully testable headlessly.
     EraShift/Game/Animation.cpp
     EraShift/Graphics/ParticleSystem.cpp
 )
@@ -64,8 +63,6 @@ add_library(erashift_engine STATIC
 
     EraShift/Input/InputManager.cpp
 
-    EraShift/Audio/AudioManager.cpp
-
     EraShift/Application/EventBus.cpp
     EraShift/Application/Engine.cpp
 
@@ -92,7 +89,6 @@ target_link_libraries(erashift_engine
         SDL3::SDL3
         SDL3_image::SDL3_image
         SDL3_ttf::SDL3_ttf
-        SDL3_mixer::SDL3_mixer
 )
 
 # Threads are used by the logger's mutex and by resource loading workers.

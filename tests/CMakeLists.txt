@@ -59,9 +59,9 @@ function(erashift_add_test name)
     # block, so a preset pointing at tsan.supp silently does nothing - which is
     # the worst way for a suppression to fail, because the suite still runs.
     #
-    # See tsan.supp for what is being suppressed and why. The game's own audio
-    # and input paths are deliberately not suppressed, so a real race in either
-    # would still be reported.
+    # See tsan.supp for what is being suppressed and why. The game's own input
+    # path is deliberately not suppressed, so a real race there would still be
+    # reported.
     if(ERASHIFT_ENABLE_TSAN)
         set_tests_properties(${name} PROPERTIES ENVIRONMENT
             "TSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tsan.supp:print_suppressions=1:halt_on_error=0"
@@ -95,8 +95,8 @@ erashift_add_test(erashift_tests_integration
         integration/TestConfigRoundTrip.cpp
 )
 
-# The event pump and the audio manager are the two boundaries where SDL types
-# become the game's own, so they necessarily live in erashift_engine. It gets its own binary rather than
+# The event pump is a boundary where SDL types become the game's own, so it
+# necessarily lives in erashift_engine. It gets its own binary rather than
 # joining an existing one, because joining the gameplay suite would break the
 # rule that the gameplay suite links only erashift_core - and that rule is what
 # proves the whole simulation is testable with no SDL at all.
@@ -107,7 +107,6 @@ erashift_add_test(erashift_tests_platform
     SOURCES
         input/TestMain.cpp
         input/TestEventPump.cpp
-        input/TestAudio.cpp
     LIBS
         erashift_engine
 )
@@ -126,7 +125,6 @@ erashift_add_test(erashift_tests_gameplay
         gameplay/TestWorld.cpp
         gameplay/TestLevel.cpp
         gameplay/TestSaveGame.cpp
-        gameplay/TestSynth.cpp
         gameplay/TestAnimation.cpp
         gameplay/TestParticles.cpp
 )

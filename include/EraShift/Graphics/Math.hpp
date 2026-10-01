@@ -189,9 +189,10 @@ template <typename T>
 ///
 /// The NaN case is not academic. `NaN < low` and `NaN > high` are both false, so
 /// the obvious two-comparison implementation returns NaN unchanged - it hands
-/// back exactly the value it was asked to contain. That matters most for audio:
-/// a single NaN reaching a mixer gain turns the whole output into NaN samples,
-/// which is silence or noise, not a quiet sound.
+/// back exactly the value it was asked to contain. That matters anywhere a
+/// clamped value feeds arithmetic: one NaN reaching a colour's alpha turns every
+/// channel derived from it into NaN, which is a missing pixel rather than a
+/// dim one.
 ///
 /// Resolving to `low` rather than to NaN is a choice: it makes the failure mode
 /// "inaudible" instead of "corrupts everything downstream", which is the better

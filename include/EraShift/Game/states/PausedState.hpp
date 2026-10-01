@@ -48,7 +48,7 @@ public:
 
 private:
     /// Which page of options is showing.
-    enum class Page { General, Graphics, Audio, Controls };
+    enum class Page { General, Graphics, Controls };
 
     /// What the controls page is waiting for. Idle otherwise.
     enum class Rebind {
@@ -88,13 +88,6 @@ private:
     int   m_fullscreen  = 0;
     int   m_vsync       = 1;
     int   m_showFps     = 0;
-    int   m_masterVolume = 80;
-    int   m_musicVolume  = 70;
-    int   m_sfxVolume    = 90;
-    /// Matches the default in `config/audio.json`. Kept separate from the SFX
-    /// slider so the two can be moved independently, which is the whole reason
-    /// the mixer has separate tags for them.
-    int   m_ambienceVolume = 55;
     int   m_uiScale      = 100;
 
     Rebind m_rebind = Rebind::None;

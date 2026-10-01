@@ -55,7 +55,6 @@ endif()
 find_package(SDL3        CONFIG QUIET)
 find_package(SDL3_image  CONFIG QUIET)
 find_package(SDL3_ttf    CONFIG QUIET)
-find_package(SDL3_mixer  CONFIG QUIET)
 
 if(NOT SDL3_FOUND)
     message(FATAL_ERROR
@@ -68,7 +67,6 @@ endif()
 message(STATUS "EraShift: SDL3        ${SDL3_VERSION} (${SDL3_DIR})")
 message(STATUS "EraShift: SDL3_image  ${SDL3_image_VERSION} (${SDL3_image_DIR})")
 message(STATUS "EraShift: SDL3_ttf    ${SDL3_ttf_VERSION} (${SDL3_ttf_DIR})")
-message(STATUS "EraShift: SDL3_mixer  ${SDL3_mixer_VERSION} (${SDL3_mixer_DIR})")
 
 # nlohmann/json is used for configuration and save data. Prefer a system copy,
 # otherwise use the single header vendored by scripts/fetch_deps.sh.

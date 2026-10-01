@@ -17,14 +17,13 @@ screen flash and a camera punch, all triggered by one simulation event.*
 
 > *The world is one world, but time changes its state.*
 
-**Status: Phase 3 — playable vertical slice, with procedural audio, animation
-and effects.** The Ancient Forest runs from spawn to the Ancient Gate: era-dependent
+**Status: Phase 3 — playable vertical slice, with procedural animation and
+effects.** The Ancient Forest runs from spawn to the Ancient Gate: era-dependent
 terrain, enemies that only exist in some eras, melee combat, three era seals,
-hazards, pickups, saves, and the full menu set. Every sound is synthesised at
-runtime, every character is a procedurally animated rig, and every impact has
-particles, light and hit-stop behind it.
+hazards, pickups, saves, and the full menu set. Every character is a procedurally
+animated rig, and every impact has particles, light and hit-stop behind it.
 
-There is not a single audio or sprite asset in the repository, and
+There is not a single sprite asset in the repository, and
 [`assets/README.md`](assets/README.md) explains why that is a decision rather
 than an omission.
 
@@ -34,7 +33,7 @@ than an omission.
 
 - [Quick start](#quick-start) · [Controls](#controls) · [How to play](#how-to-play)
 - [Screenshots](#screenshots) · [Architecture](#architecture) — the two diagrams
-- [What is in the box](#what-is-in-the-box) — audio, animation, effects
+- [What is in the box](#what-is-in-the-box) — animation, effects
 - [Project layout](#project-layout) · [Documentation](#documentation)
 - [Build configurations](#build-configurations) · [Testing](#testing)
 - [Development rules](#development-rules) · [Dependencies](#dependencies)
@@ -54,7 +53,7 @@ cmake --build --preset debug
 # 3. Run
 ./build/debug/EraShift
 
-# 4. Tests — headless, no display, no sound card
+# 4. Tests — headless, no display
 ctest --preset debug --output-on-failure
 ```
 
@@ -69,8 +68,6 @@ ctest --preset debug --output-on-failure
 | `--start-state <s>` | Open on `playing`, `settings`, `credits` or `paused`. |
 | `--level <file>` | Load a specific level instead of the shipped one. |
 | `--demo` | Replace input with the built-in attract script. |
-| `--audio-debug` | Print the mixer's state: driver, buses, whether each bed is playing, backlog, level. |
-| `--audio-test` | Play every sound in sequence through the real device, log what each one did, and exit non-zero if any was silent or clipped. |
 | `--content <dir>` | Load assets and data from elsewhere. |
 | `--set key=value` | Override any configuration value. |
 | `--log-level`, `--log-file` | Logging. |
@@ -87,8 +84,8 @@ this repository were produced.
 ./build/debug/EraShift --demo --frames 200 --start-state playing \
     --screenshot /tmp/shot.png --screenshot-frame 200
 
-# Force a fully mixed, fully paradoxed run without playing it
-./build/debug/EraShift --demo --set audio.enabled=false --frames 400
+# Force a fully paradoxed run without playing it
+./build/debug/EraShift --demo --frames 400
 ```
 
 ---
@@ -128,9 +125,8 @@ neither can be hit while it is not in the world. So:
 - **Shifting in** is the only way to fight it.
 
 Each shift and each kill adds **paradox**, and paradox is the run's own pressure.
-It does not stop you playing; it changes how the game *feels* — the music loses
-its footing, the screen starts to tear, the edges of the world close in. See
-[Paradox](#paradox).
+It does not stop you playing; it changes how the game *feels* — the screen starts
+to tear, the edges of the world close in. See [Paradox](#paradox).
 
 ---
 
@@ -156,8 +152,8 @@ data, so the level is a sequence of era switches rather than a corridor.
 
 Paradox is the run's accumulation of shifting and killing, and it is the only
 number in the game that changes how it *feels* rather than how it plays. At the
-top tier the gauge reads `COLLAPSE`, the music loses its footing, the picture
-tears in horizontal bands, and the edges of the world close in. The centre of the
+top tier the gauge reads `COLLAPSE`, the picture tears in horizontal bands, and
+the edges of the world close in. The centre of the
 screen stays clear on purpose — a game you cannot see is not tense, it is broken.
 The objective line stays legible for the same reason.
 
@@ -184,9 +180,7 @@ would.
 ```
 
 `--demo` replaces input with the built-in attract script, which is why the run is
-reproducible: the same frame number gives the same picture. `SDL_AUDIODRIVER=dummy`
-if the machine has no sound device, since the game will otherwise log a warning
-on start-up.
+reproducible: the same frame number gives the same picture.
 
 </details>
 
@@ -214,13 +208,11 @@ flowchart TD
 
     subgraph Core["erashift_core &nbsp;·&nbsp; no SDL anywhere"]
         World["World<br/><i>the simulation</i>"]
-        Synth["MusicSynth · AmbienceSynth<br/>renderSfx"]
         Anim["AnimationController"]
         Particles["ParticleSystem"]
     end
 
     subgraph Engine["erashift_engine &nbsp;·&nbsp; everything SDL"]
-        Audio["AudioManager"]
         Cam["Camera2D<br/><i>shake · punch</i>"]
         Render["Renderer2D"]
         Win["Window"]
@@ -232,9 +224,6 @@ flowchart TD
     Playing --> Feedback
     Playing --> Anim
 
-    World --> Synth
-    Feedback --> Audio
-    Audio --> Synth
     Feedback --> Particles
     Feedback --> Cam
     Feedback --> Anim
@@ -245,11 +234,10 @@ flowchart TD
     Render --> Win
 ```
 
-The two boxes at the bottom left are the whole point of the split. `World` and
-`ParticleSystem` are **pure arithmetic with no SDL anywhere**, which is why the
-entire simulation — and now the synthesiser, the animation controller and the
-particle pool — can be unit tested on a headless machine with no sound card and
-no display.
+The box at the bottom left is the whole point of the split. `World`,
+`ParticleSystem` and `AnimationController` are **pure arithmetic with no SDL
+anywhere**, which is why the entire simulation — and the animation controller and
+the particle pool — can be unit tested on a headless machine with no display.
 
 ### A gameplay step
 
@@ -259,7 +247,6 @@ sequenceDiagram
     participant P as Player
     participant W as World
     participant F as FeedbackSystem
-    participant A as AudioManager
     participant PS as ParticleSystem
     participant C as Camera2D
     participant AC as AnimationController
@@ -272,13 +259,11 @@ sequenceDiagram
     W->>W: emit WorldEvent into the queue
 
     Note over F: the same step
-    W-->>F: takeEvents()
-    F->>A: play(ShiftImpact)
+W-->>F: takeEvents()
     F->>PS: emitShiftBurst(pos, accent)
     F->>C: punch(0.035) + shake(9)
     F->>F: m_ripple, m_flash = 1
-    F->>PS: update(dt) — runs even during hit-stop
-    F->>A: setMusicState(Combat), setTension(t)
+    PS->>PS: update(dt) — runs even during hit-stop
 
     Note over AC: simulation owns the clock
     P-->>AC: attackProgress() 0..1
@@ -307,62 +292,6 @@ The reasoning behind every layer is in
 ---
 
 ## What is in the box
-
-### Audio — synthesised, streamed, four buses
-
-Every sound is computed at runtime. There is no `.wav` in the repository, and
-that is what makes the music able to do the thing the game needs it to do.
-
-- **Music and ambience are streams, not loops.** An `SDL_AudioStream` per bed is
-  fed a block of float PCM every fixed step and the track loops forever over it.
-  Changing era is a change to *parameters* — scale, cutoff, detune — and the synth
-  owns the transition rather than being told about it: on the frame a shift is
-  requested it latches the note it is *currently* sounding and slides toward the
-  new era's, so the harmony portamentos across instead of cutting, and two shifts
-  in quick succession continue the slide. Two crossfading loops cannot glide the
-  Past into the Future mid-bar; a synthesiser does it because the scale is a
-  variable.
-- **The three eras are different keys.** Past is a minor pentatonic, Present a
-  natural minor, Future a whole tone. A symmetric scale has no leading tone, so a
-  phrase built from it has nowhere to go — that is the sound of a timeline coming
-  apart, and it falls out of the degree table rather than a filter sweep.
-- **Four buses** — master, music, ambience, sfx — as SDL3_mixer tags, on the
-  audio settings page, changing the live mixer rather than only the file.
-- **20 one-shots**, rendered once at start-up and played through a pool of six
-  tracks. Pitch and level follow the impact, so a step off a ledge is quiet and a
-  drop from height is not.
-- **Fails soft.** No sound card, no container, no CI runner: the game is still
-  playable, and `MIX_Init` failing on a machine with no MIDI tables is logged and
-  ignored, because every sound here is PCM.
-- **Beds never stop.** A track reading a stream that has run dry reaches the end
-  and stops, so both beds are primed with silence and a watchdog restarts either
-  of them. That covers the ways a bed genuinely dies: a PipeWire sink suspending
-  when idle, a Bluetooth headset appearing mid-game, a pause.
-- **Click-free by construction, and measured.** Every filter state that has to
-  outlive a call is a member, every one-shot is faded at both ends, and no
-  oscillator's phase comes from a clock that wraps. Captured output is
-  −17.2dBFS RMS, −4.7dBFS peak, zero clipped samples.
-
-**If the game is silent**, it is almost always that SDL was built without a
-PulseAudio backend — the driver is compiled in, not loaded at runtime, so no
-headers at build time means no sound ever, with only `no available audio device`
-to show for it. `scripts/fetch_deps.sh` says so loudly now, and:
-
-```bash
-# if you can install packages
-apt install libpulse-dev      # then: ./scripts/fetch_deps.sh && rebuild
-
-# if you cannot (a container)
-./scripts/get_audio_headers.sh    # unpacks the headers into .deps/, no root
-./scripts/fetch_deps.sh && cmake --build --preset debug
-```
-
-Check it worked — this line is the whole test:
-
-```bash
-./build/release/EraShift --headless --frames 60 2>&1 | grep audio
-# INFO  audio: started on pulseaudio at 48000 Hz
-```
 
 ### Animation — poses, clips, and markers
 
@@ -414,13 +343,13 @@ understand that, whereas "your paradox is 41.2" means nothing.
 | Tier | Paradox | What changes |
 | --- | --- | --- |
 | `Calm` | 0 | — |
-| `Strained` | 18 | tempo instability, slight vignette, denser weather |
-| `Fractured` | 38 | audibly unstable, glitch bars, heavier vignette |
-| `Collapse` | 62 | the bar turns red, the music drops out, the edges close in |
+| `Strained` | 18 | slight vignette, denser weather |
+| `Fractured` | 38 | glitch bars, heavier vignette |
+| `Collapse` | 62 | the bar turns red, the tearing is constant, the edges close in |
 
-One eased value, `FeedbackSystem::tension()`, drives both the audio and the
-renderer. A player who hears the music destabilise sees the edges close in at the
-same moment, and the causal link is legible.
+One eased value, `FeedbackSystem::tension()`, drives the vignette, the glitch bars
+and the weather density, so everything destabilises together rather than in
+sequence.
 
 ---
 
@@ -432,7 +361,6 @@ include/EraShift/       Public headers, mirroring src/
   Application/          Engine, event bus, state context
   Graphics/             Window, renderer, textures, text, maths, colour,
                         ParticleSystem
-  Audio/                Synth (no SDL) and AudioManager (SDL3_mixer)
   Input/                Keyboard, mouse, action bindings
   Debug/                Performance counters, overlay
   Game/                 World, player, enemies, level, Animation, Feedback,
@@ -442,8 +370,8 @@ src/EraShift/           Implementations
 tests/
   unit/                 No SDL, no display
   integration/          No display, several systems together
-  gameplay/             The whole simulation, plus the synth, animation and
-                        particle systems. Still no SDL, still no sound card
+  gameplay/             The whole simulation, plus the animation and particle
+                        systems. Still no SDL, still no display
 assets/                 One font. See assets/README.md for why that is all
 data/levels/            Data-driven content (JSON)
 config/                 Layered JSON configuration
@@ -453,8 +381,8 @@ docs/                   Architecture and design documents
 ```
 
 `erashift_core` contains **no SDL dependency at all**. That is not tidiness — it
-is the reason the whole test suite, including the synthesiser and the particle
-system, runs on a headless machine.
+is the reason the whole test suite, including the animation controller and the
+particle system, runs on a headless machine.
 
 ---
 
@@ -491,24 +419,21 @@ The four binaries, and what each is for:
 | --- | --- | --- |
 | `erashift_tests_unit` | 94 | Maths, logging, config, timing, the game loop, the state machine, the font |
 | `erashift_tests_integration` | 10 | The documented state flow, config round trips and migrations |
-| `erashift_tests_gameplay` | 157 | The whole simulation, plus the synthesiser, the animation controller and the particle pool |
-| `erashift_tests_platform` | 15 | The two SDL boundaries: the event pump and the audio manager |
+| `erashift_tests_gameplay` | 154 | The whole simulation, plus the animation controller and the particle pool |
+| `erashift_tests_platform` | 10 | The SDL boundary: the event pump |
 
 `gameplay` links **only** `erashift_core` and no SDL whatsoever. That is the rule
-that proves the whole simulation is testable on a machine with no display and no
-sound card, and it is why the platform tests are a separate binary rather than
-folded into it.
+that proves the whole simulation is testable on a machine with no display, and it
+is why the platform tests are a separate binary rather than folded into it.
 
 Four binaries, all headless: `unit` (no SDL), `integration` (no display),
-`gameplay` (the whole simulation) and `platform` (the two SDL boundaries). The
-feedback systems are tested alongside the gameplay, because they are pure
-arithmetic — 44 cases covering the synthesiser, the animation controller and the
-particle pool, with assertions on waveform properties, clip timings and emission
-rates rather than on pictures.
+`gameplay` (the whole simulation) and `platform` (the SDL boundary). The feedback
+systems are tested alongside the gameplay, because they are pure arithmetic — 41
+cases covering the animation controller and the particle pool, with assertions on
+clip timings and emission rates rather than on pictures.
 
-`platform` covers what cannot be: the event pump and the audio manager. Its audio
-tests skip themselves on a machine with no sound card, and one asserts that the
-no-device path tolerates the whole API.
+`platform` covers what cannot be: the event pump, which turns SDL events into the
+game's own.
 
 See [`docs/TESTING.md`](docs/TESTING.md).
 
@@ -521,7 +446,7 @@ See [`docs/TESTING.md`](docs/TESTING.md).
 | [docs/BUILD.md](docs/BUILD.md) | Dependencies, presets, troubleshooting |
 | [docs/CONTROLS.md](docs/CONTROLS.md) | Controls and rebinding |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layering, ownership, the game loop |
-| [docs/FEEDBACK.md](docs/FEEDBACK.md) | **Audio, animation, effects, hit-stop, paradox** |
+| [docs/FEEDBACK.md](docs/FEEDBACK.md) | **Animation, effects, hit-stop, paradox** |
 | [docs/TESTING.md](docs/TESTING.md) | Test strategy, sanitizers |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Profiling, budgets |
 | [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md) | Engine subsystem designs |
@@ -543,11 +468,10 @@ fiction.
 1. Build after every meaningful change; the tree must stay warning-free.
    `release` builds with `-Werror`.
 2. Run `ctest` before committing. All presets, including the sanitizers.
-3. Add tests alongside the system they cover. The synthesiser, the animation
-   controller and the particle system are all testable headlessly, so there is no
-   excuse.
-4. The simulation decides *what* happens. Presentation decides what it looks and
-   sounds like. A rule that depends on a sound having finished is not a rule.
+3. Add tests alongside the system they cover. The animation controller and the
+   particle system are both testable headlessly, so there is no excuse.
+4. The simulation decides *what* happens. Presentation decides what it looks like.
+   A rule that depends on an effect having finished is not a rule.
 5. Update `CHANGELOG.md` and the affected doc in the same commit.
 6. Never remove existing functionality without a note in the changelog.
 
@@ -557,10 +481,9 @@ fiction.
 
 | Library | Version | Purpose |
 | --- | --- | --- |
-| SDL3 | 3.4.16 | Windowing, input, rendering, events, audio streams |
+| SDL3 | 3.4.16 | Windowing, input, rendering, events |
 | SDL3_image | 3.4.6 | Image loading |
 | SDL3_ttf | 3.2.2 | Font rasterisation |
-| SDL3_mixer | 3.2.4 | Mixing and routing the synthesised beds |
 | nlohmann/json | 3.11.3 | Configuration and save data |
 | doctest | 2.4.12 | Unit testing |
 

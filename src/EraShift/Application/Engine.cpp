@@ -33,7 +33,6 @@ std::string describeSubsystems(SDL_InitFlags flags)
         result += name;
     };
     if (flags & SDL_INIT_VIDEO)   { append("VIDEO"); }
-    if (flags & SDL_INIT_AUDIO)   { append("AUDIO"); }
     if (flags & SDL_INIT_EVENTS)  { append("EVENTS"); }
     if (flags & SDL_INIT_GAMEPAD) { append("GAMEPAD"); }
     if (flags & SDL_INIT_SENSOR)  { append("SENSOR"); }
@@ -131,43 +130,6 @@ bool Engine::initialise(Core::ConfigManager& configManager,
         m_log.warn("Engine", "SDL3_ttf unavailable: {}", SDL_GetError());
     } else {
         m_log.info("Engine", "SDL3_ttf ready");
-    }
-
-    // --- audio ---------------------------------------------------------------
-    // Deliberately not part of kRequiredSubsystems. A machine with no sound
-    // card, a container with no device, and a CI runner all still get a playable
-    // game, and the one-line cost is that `context().audio` may be a manager
-    // that reports `available() == false`.
-    {
-        const bool audioEnabled = config.getBool("audio", "enabled", true);
-        const int mixRate = config.clampInt("audio", "mixRate", Audio::kSampleRate, 8000, 192000, m_log);
-        if (m_audio.initialise(audioEnabled, mixRate, &m_log)) {
-            // Through the percent setters rather than a local conversion, so that
-            // this is the *only* place a volume enters the system and therefore
-            // the only place that has to reject a malformed one. A NaN gain
-            // poisons every sample it multiplies, so the whole output would go
-            // silent or turn to noise - a much worse failure than "too quiet".
-            m_audio.setMasterPercent(config.clampInt("audio", "masterVolume", 80, 0, 100, m_log));
-            m_audio.setBusPercent(Audio::Bus::Music,
-                                   config.clampInt("audio", "musicVolume", 65, 0, 100, m_log));
-            m_audio.setBusPercent(Audio::Bus::Ambience,
-                                   config.clampInt("audio", "ambienceVolume", 55, 0, 100, m_log));
-            // These three were readable in audio.json and did nothing. Wired to
-            // the values they were always meant to change.
-            m_audio.setCombatIntensity(
-                static_cast<float>(config.clampInt("audio", "combatIntensity", 85, 0, 100, m_log)) / 100.0f);
-            m_audio.setTempoScale(
-                static_cast<float>(config.clampInt("audio", "musicTempo", 96, 24, 240, m_log)) / 96.0f);
-            m_audio.setTensionEnabled(config.getBool("audio", "paradoxTension", true));
-            m_audio.setBusPercent(Audio::Bus::Sfx,
-                                   config.clampInt("audio", "sfxVolume", 85, 0, 100, m_log));
-            m_log.info("audio", "started on {} at {} Hz", m_audio.driverName(), m_audio.sampleRate());
-            if (m_audioDebug) {
-                m_log.info("audio", "start-up state:\n{}", m_audio.describe());
-            }
-        } else if (audioEnabled) {
-            m_log.warn("Engine", "continuing without audio: {}", "no audio device");
-        }
     }
 
     // --- window --------------------------------------------------------------
@@ -287,7 +249,6 @@ void Engine::rebuildContext() noexcept
     m_context.window    = &m_window;
     m_context.window    = &m_window;
     m_context.text      = m_text.get();
-    m_context.audio     = &m_audio;
 
     m_context.buildLabel = m_buildLabel;
     m_context.version    = ERASHIFT_VERSION;
@@ -334,17 +295,6 @@ void Engine::update(double fixedDelta)
         m_game->updateGlobalInput(m_context);
     }
     m_states.update(fixedDelta);
-
-    // Audio is pumped after the simulation so the synths are fed the era and
-    // tension the step just produced. It is here rather than in a state so that
-    // the beds keep running identically in every state, and so a state can never
-    // forget to feed them.
-    //
-    // Only `dt` is passed. The era, the music state and the tension are set by
-    // `FeedbackSystem` through their own setters, and this used to take all three
-    // as arguments as well - which let the manager be handed its own values back,
-    // overwriting the targets a state had just set. See `AudioManager::update`.
-    m_audio.update(static_cast<float>(fixedDelta));
 }
 
 void Engine::render(double frameDelta, double alpha)
@@ -498,13 +448,6 @@ void Engine::shutdown() noexcept
     m_resources.reset();
     m_text.reset();
     m_window.destroy();
-
-    // Audio before SDL_Quit: the mixer holds device and stream handles that
-    // belong to the subsystem it is being shut down with.
-    if (m_audio.available()) {
-        m_log.info("audio", "final state:\n{}", m_audio.describe());
-    }
-    m_audio.shutdown();
 
     TTF_Quit();
     SDL_Quit();

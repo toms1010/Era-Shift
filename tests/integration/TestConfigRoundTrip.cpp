@@ -51,8 +51,8 @@ TEST_CASE("a settings file written by the game is read back unchanged")
     store.setInt("graphics", "windowHeight", 900);
     store.setBool("graphics", "fullscreen", true);
     store.setBool("graphics", "vsync", false);
-    store.setInt("audio", "masterVolume", 55);
-    store.setInt("audio", "musicVolume", 30);
+    store.setInt("graphics", "uiScale", 125);
+    store.setInt("engine", "fixedTicksPerSecond", 30);
     store.setString("game", "language", "en");
 
     const auto path = dir.path() / "settings.json";
@@ -65,8 +65,8 @@ TEST_CASE("a settings file written by the game is read back unchanged")
     CHECK(reloaded.getInt("graphics", "windowHeight", 0) == 900);
     CHECK(reloaded.getBool("graphics", "fullscreen", false));
     CHECK(reloaded.getBool("graphics", "vsync", true) == false);
-    CHECK(reloaded.getInt("audio", "masterVolume", 0) == 55);
-    CHECK(reloaded.getInt("audio", "musicVolume", 0) == 30);
+    CHECK(reloaded.getInt("graphics", "uiScale", 0) == 125);
+    CHECK(reloaded.getInt("engine", "fixedTicksPerSecond", 0) == 30);
     CHECK(reloaded.getString("game", "language", "") == "en");
 }
 

@@ -14,19 +14,6 @@
 # None of them is a race in this project, and none is a race we would be willing
 # to leave alone if it were.
 
-# --- PulseAudio / PipeWire ---------------------------------------------------
-# libpulsecommon spawns its own worker threads and protects its state with
-# pthread mutexes that live inside the uninstrumented library. TSan sees
-# `pa_xmalloc` on one thread and `pa_mutex_lock` on another and cannot connect
-# them, so every mixer open produced a report from inside `MIX_CreateMixerDevice`
-# with AudioManager::initialise as the only frame in our code - which is the
-# signature of a report about somebody else's threading, not ours.
-race:libpulsecommon
-race:libpulse
-race:libpulse-simple
-race:pa_xmalloc
-race:pa_thread_new
-
 # --- Other system libraries we link but do not build -------------------------
 # Same reasoning. Listed explicitly rather than suppressed wholesale, so that a
 # report in *our* code is never lost to an over-broad rule.
@@ -44,10 +31,8 @@ race:libglvnd
 race:libX11
 race:libxcb
 
-# SDL's own thread for the audio device pulls from a ring buffer SDL guards with
-# a mutex inside libSDL3. Same uninstrumented-library problem. The game's own
-# audio path - AudioManager, Synth - is not suppressed, so a genuine race there
-# would still be reported.
+# SDL's own worker threads touch state guarded by mutexes inside libSDL3. Same
+# uninstrumented-library problem.
 race:libSDL3
 
 # The graphics driver's internal threads, reachable only through SDL's renderer.

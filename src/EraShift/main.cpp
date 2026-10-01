@@ -40,14 +40,7 @@ void printUsage(const char* executable)
         "  --log-file <path>   Also write the log to <path>\n"
         "  --frames <n>        Quit after n frames. 0 means no limit.\n"
         "  --headless          Use the dummy video driver (CI, SSH, containers).\n"
-        "  --audio-debug       Print the audio subsystem's state at start-up and\n"
-        "                      at exit: driver, buses, whether each bed is actually\n"
-        "                      playing, stream backlog, and peak sample. This is the\n"
-        "                      first thing to run when the game is quiet or clicks.\n"
-        "  --audio-test        Play every documented sound in sequence through the\n"
-        "                      real device and log what each one did, then exit.\n"
-        "                      Exits non-zero if any sound was silent or clipped.\n"
-    "  --start-state <s>   Open on a screen other than the title screen:\n"
+        "  --start-state <s>   Open on a screen other than the title screen:\n"
     "                      playing | settings | credits | paused. A developer\n"
     "                      and screenshot aid, not part of the game.\n"
     "  --demo              Replace input with the built-in attract script.\n"
@@ -74,10 +67,6 @@ int main(int argc, char* argv[])
     std::filesystem::path levelPath;
     std::string startState;
     bool demo = false;
-    /// `--audio-debug`: print the mixer's own view of itself, twice.
-    bool audioDebug = false;
-    /// `--audio-test`: play every sound once, measure it, and exit.
-    bool audioTest = false;
     long frameLimit = 0;          ///< 0 means "run until quit".
     long screenshotFrame = 30;
 
@@ -196,16 +185,6 @@ int main(int argc, char* argv[])
             continue;
         }
 
-        if (arg == "--audio-debug") {
-            audioDebug = true;
-            continue;
-        }
-
-        if (arg == "--audio-test") {
-            audioTest = true;
-            continue;
-        }
-
         std::fprintf(stderr, "error: unknown argument '%.*s' (try --help)\n",
                      static_cast<int>(arg.size()), arg.data());
         return 3;
@@ -276,10 +255,6 @@ int main(int argc, char* argv[])
         }
     }
 
-    if (audioDebug) {
-        engine.setAudioDebug(true);
-    }
-
     try {
         if (!engine.initialise(config, contentRoot, projectRoot.string(), error)) {
             log.fatal("main", "engine initialisation failed: {}", error);
@@ -293,19 +268,6 @@ int main(int argc, char* argv[])
             // A headless smoke test still needs a real event pump, so the limit
             // is enforced from the render callback rather than a separate loop.
             engine.setFrameLimit(static_cast<unsigned long>(frameLimit));
-        }
-
-        if (audioTest) {
-            // After initialise, because the whole point is to test the device
-            // that was actually opened, and before the frame loop, because this
-            // is a diagnostic that reports and exits rather than a game mode.
-            const int failures = engine.audio().runSelfTest();
-            engine.shutdown();
-            if (failures > 0) {
-                std::fprintf(stderr, "error: audio self-test found %d problem(s)\n", failures);
-                return 4;
-            }
-            return 0;
         }
 
         if (!screenshotPath.empty()) {

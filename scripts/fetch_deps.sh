@@ -9,7 +9,6 @@
 #
 #   SDL3        3.4.16
 #   SDL3_image  3.4.6
-#   SDL3_mixer  3.2.4
 #   SDL3_ttf    3.2.2
 #   doctest     2.4.12
 #
@@ -30,7 +29,6 @@ JOBS="$(nproc 2>/dev/null || echo 4)"
 
 SDL_VERSION="3.4.16"
 SDL_IMAGE_VERSION="3.4.6"
-SDL_MIXER_VERSION="3.2.4"
 SDL_TTF_VERSION="3.2.2"
 DOCTEST_VERSION="2.4.12"
 
@@ -142,65 +140,10 @@ build_sdl() {
     cmake --install "${bld}" > "${bld}/install.log" 2>&1
 }
 
-# Audio backends.
-#
-# ALSA and PulseAudio are probed *independently*, and they have to be. They used
-# to be gated on each other, with ALSA as the gate, on the reasonable-sounding
-# assumption that a machine with one has the other. That is false of exactly the
-# machines this matters on: a PipeWire desktop - which is most Linux desktops
-# now - serves audio over the PulseAudio protocol and frequently has no ALSA
-# development headers at all. Such a machine was left with SDL's dummy backend,
-# so the game ran silently with no way to fix it short of installing a package,
-# and the log said only "no available audio device", which reads as "this machine
-# has no sound card".
-#
-# The order of preference is PulseAudio, then ALSA, then neither:
-#
-#   * PulseAudio/pipewire first, because it is what a modern desktop actually
-#     uses and it is the one that survives a Bluetooth headset appearing.
-#   * ALSA second, because it works on a bare container with a real device and
-#     needs no sound server.
-#   * Neither: the game must still build and run. It does, silently.
-audio_flags=()
-
-want_pulse="OFF"
-if pkg-config --exists libpulse && [[ -f /usr/include/pulse/pulseaudio.h ]]; then
-    want_pulse="ON"
-elif [[ -n "${ERASHIFT_PULSE_INCLUDE:-}" && -f "${ERASHIFT_PULSE_INCLUDE}/pulse/pulseaudio.h" ]]; then
-    # An out-of-tree libpulse, e.g. headers unpacked into .deps by
-    # scripts/get_audio_headers.sh. Needed on machines that cannot install a
-    # package, which is the normal case inside a container.
-    want_pulse="ON"
-fi
-
-want_alsa="OFF"
-if pkg-config --exists alsa && [[ -f /usr/include/alsa/asoundlib.h ]]; then
-    want_alsa="ON"
-fi
-
-audio_flags+=("-DSDL_AUDIO_DRIVER_PULSEAUDIO=${want_pulse}" "-DSDL_AUDIO_DRIVER_ALSA=${want_alsa}")
-
-if [[ "${want_pulse}" == "ON" || "${want_alsa}" == "ON" ]]; then
-    echo "[deps] SDL audio: pulse=${want_pulse} alsa=${want_alsa}"
-else
-    echo "[deps] WARNING: no ALSA or PulseAudio development headers found."
-    echo "[deps]          SDL will be built with the dummy audio backend and the"
-    echo "[deps]          game will run silently. For sound, install one of:"
-    echo "[deps]            apt install libpulse-dev      # pipewire/pulseaudio"
-    echo "[deps]            apt install libasound2-dev    # plain ALSA"
-    echo "[deps]          then re-run ./scripts/fetch_deps.sh"
-    echo "[deps]          or, with no package manager access, run:"
-    echo "[deps]            ./scripts/get_audio_headers.sh && ./scripts/fetch_deps.sh"
-fi
-
-audio_flags+=("-DSDL_AUDIO_DRIVER_DUMMY=ON")
-
 # --- SDL3 core -------------------------------------------------------------
 build_sdl "SDL3" "SDL" "${SDL_VERSION}" \
     -DSDL_VIDEO=ON \
-    -DSDL_RENDER=ON \
-    -DSDL_AUDIO=ON \
-    "${audio_flags[@]}"
+    -DSDL_RENDER=ON
 
 # --- SDL3_image ------------------------------------------------------------
 build_sdl "SDL3_image" "SDL_image" "${SDL_IMAGE_VERSION}"
@@ -208,37 +151,6 @@ build_sdl "SDL3_image" "SDL_image" "${SDL_IMAGE_VERSION}"
 # --- SDL3_ttf --------------------------------------------------------------
 build_sdl "SDL3_ttf" "SDL_ttf" "${SDL_TTF_VERSION}" \
     -DSDL_TTF_DYNAMIC=ON
-
-# --- SDL3_mixer ------------------------------------------------------------
-# Build only the codecs that are available as system libraries; the game
-# degrades gracefully when a codec is missing.
-mixer_flags=("-DSDL_MIXER_SAMPLES=16" "-DSDL_MIXER_WAV=ON")
-if pkg-config --exists ogg vorbisfile; then
-    mixer_flags+=("-DSDL_MIXER_OGG=ON")
-else
-    mixer_flags+=("-DSDL_MIXER_OGG=OFF")
-fi
-if pkg-config --exists flac; then
-    mixer_flags+=("-DSDL_MIXER_FLAC=ON")
-else
-    mixer_flags+=("-DSDL_MIXER_FLAC=OFF")
-fi
-if pkg-config --exists opusfile; then
-    mixer_flags+=("-DSDL_MIXER_OPUS=ON")
-else
-    mixer_flags+=("-DSDL_MIXER_OPUS=OFF")
-fi
-if pkg-config --exists mad; then
-    mixer_flags+=("-DSDL_MIXER_MAD=ON")
-else
-    mixer_flags+=("-DSDL_MIXER_MAD=OFF")
-fi
-if pkg-config --exists mpg123; then
-    mixer_flags+=("-DSDL_MIXER_MP3=ON")
-else
-    mixer_flags+=("-DSDL_MIXER_MP3=OFF")
-fi
-build_sdl "SDL3_mixer" "SDL_mixer" "${SDL_MIXER_VERSION}" "${mixer_flags[@]}"
 
 echo ""
 echo "[deps] done. Installed into ${PREFIX}"

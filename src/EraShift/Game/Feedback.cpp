@@ -1,7 +1,5 @@
 #include "EraShift/Game/Feedback.hpp"
 
-#include "EraShift/Audio/AudioManager.hpp"
-#include "EraShift/Audio/Synth.hpp"
 #include "EraShift/Core/Log.hpp"
 #include "EraShift/Game/World.hpp"
 #include "EraShift/Graphics/Renderer2D.hpp"
@@ -12,7 +10,6 @@
 
 namespace EraShift::Game {
 
-using Audio::Sfx;
 using Graphics::BlendMode;
 using Graphics::Bounds;
 using Graphics::Camera2D;
@@ -35,47 +32,6 @@ constexpr float kTierCollapse  = 62.0f;
 /// How much paradox the screen is allowed to distort. Even at Collapse the world
 /// is still readable, because a game you cannot see is not tense, it is broken.
 constexpr float kMaxGlitch = 0.55f;
-
-/// How a surface sounds underfoot.
-///
-/// The world has no material field - `TileKind` describes collision behaviour
-/// per era, not what a floor is made of - so the surface is *derived* from the
-/// kind. That is a deliberate limit: a separate material system would be a much
-/// larger change to the level format for a cosmetic gain, and the kinds that
-/// exist already separate the cases that matter audibly.
-///
-/// Loudness is part of the profile rather than a constant because a footstep on
-/// sand should sit under the mix, and one on metal should cut through it.
-struct SurfaceAudioProfile {
-    Sfx   sfx;
-    float volume;
-    float pitch;
-};
-
-SurfaceAudioProfile surfaceProfile(TileKind kind) noexcept
-{
-    switch (kind) {
-        // The ruins themselves: hard, bright, unremarkable.
-        case TileKind::Solid:
-        case TileKind::Goal:
-            return {Sfx::FootstepStone, 0.22f, 1.00f};
-        // Timber decking and the ruined span: a hollow, woody knock.
-        case TileKind::Platform:
-        case TileKind::Bridge:
-            return {Sfx::FootstepStone, 0.20f, 0.78f};
-        // Rotting masonry: duller than solid stone and quieter underfoot.
-        case TileKind::Crumble:
-            return {Sfx::FootstepGrass, 0.18f, 0.90f};
-        // Grown crystal: bright, glassy, and the loudest thing you can stand on.
-        case TileKind::Crystal:
-            return {Sfx::FootstepCrystal, 0.24f, 1.05f};
-        // Loose regolith: the quietest, dullest footstep there is.
-        case TileKind::Hazard:
-        case TileKind::Empty:
-            return {Sfx::FootstepSand, 0.16f, 1.00f};
-    }
-    return {Sfx::FootstepStone, 0.20f, 1.0f};
-}
 
 float easeOut(float t) noexcept
 {
@@ -172,7 +128,6 @@ void FeedbackSystem::emitGlow(float x, float y, float radius, Color color, float
 void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World& world,
                              StateContext& ctx)
 {
-    Audio::AudioManager* audio = ctx.audio;
     Camera2D* camera = (ctx.renderer != nullptr) ? &ctx.renderer->camera() : nullptr;
 
     const EraTheme theme = blendThemes(themeFor(world.previousEra()), themeFor(world.era()),
@@ -183,12 +138,9 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
     for (const EventRecord& event : events) {
         switch (event.kind) {
             case WorldEvent::EraShifted: {
-                // The shift is the loudest thing in the game, and it is loud in
-                // three channels at once: a charge, an impact, and the world's
-                // own particles blowing outward.
-                if (audio != nullptr) {
-                    audio->play(Sfx::ShiftImpact, 1.0f);
-                }
+                // The shift is the loudest thing in the game visually: a
+                // full-screen ripple, a white flash, and the world's own
+                // particles blowing outward at once.
                 m_particles.emitShiftBurst(event.position.x, event.position.y, accent);
                 emitGlow(event.position.x, event.position.y, 220.0f, Graphics::Palette::White, 0.5f, 0.9f);
                 emitGlow(event.position.x, event.position.y, 320.0f, accent, 0.9f, 0.6f);
@@ -203,15 +155,9 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
             }
 
             case WorldEvent::EraShiftFailed:
-                if (audio != nullptr) {
-                    audio->play(Sfx::UiDeny, 0.7f);
-                }
                 break;
 
             case WorldEvent::SealTaken: {
-                if (audio != nullptr) {
-                    audio->play(Sfx::SealTaken, 1.0f);
-                }
                 m_particles.emitSeal(event.position.x, event.position.y, accent);
                 emitGlow(event.position.x, event.position.y, 180.0f, accent, 1.1f, 0.85f);
                 m_flash = std::max(m_flash, 0.55f);
@@ -222,15 +168,9 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
             }
 
             case WorldEvent::SealWrongEra:
-                if (audio != nullptr) {
-                    audio->play(Sfx::UiDeny, 0.55f, 0.8f);
-                }
                 break;
 
             case WorldEvent::GateOpened:
-                if (audio != nullptr) {
-                    audio->play(Sfx::GateOpened, 1.0f);
-                }
                 m_particles.emitShiftBurst(event.position.x, event.position.y, accent);
                 emitGlow(event.position.x, event.position.y, 260.0f, accent, 1.4f, 0.8f);
                 if (camera != nullptr) {
@@ -239,19 +179,12 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
                 break;
 
             case WorldEvent::PickupTaken: {
-                if (audio != nullptr) {
-                    const bool health = event.text.find("VITAL") != std::string::npos;
-                    audio->play(health ? Sfx::PickupHealth : Sfx::PickupChrono, 0.85f);
-                }
                 m_particles.emitPickup(event.position.x, event.position.y, accent);
                 emitGlow(event.position.x, event.position.y, 60.0f, accent, 0.4f, 0.5f);
                 break;
             }
 
             case WorldEvent::EnemyKilled: {
-                if (audio != nullptr) {
-                    audio->play(Sfx::EnemyDie, 0.9f);
-                }
                 m_particles.emitDeath(event.position.x, event.position.y, accent);
                 m_particles.emitImpact(event.position.x, event.position.y, event.direction.x,
                                        event.direction.y, Graphics::Palette::White, 1.4f, 20);
@@ -264,9 +197,6 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
             }
 
             case WorldEvent::PlayerHurt: {
-                if (audio != nullptr) {
-                    audio->play(Sfx::PlayerHurt, 0.95f);
-                }
                 m_particles.emitImpact(playerCentre.x, playerCentre.y, -event.direction.x,
                                        event.direction.y, Graphics::Palette::Warning, 1.2f, 16);
                 emitGlow(playerCentre.x, playerCentre.y, 90.0f, Graphics::Palette::Warning, 0.45f, 0.8f);
@@ -278,9 +208,6 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
             }
 
             case WorldEvent::PlayerDied:
-                if (audio != nullptr) {
-                    audio->play(Sfx::PlayerDie, 1.0f);
-                }
                 m_particles.emitDeath(playerCentre.x, playerCentre.y, Graphics::Palette::Warning);
                 emitGlow(playerCentre.x, playerCentre.y, 200.0f, Graphics::Palette::Warning, 1.2f, 0.9f);
                 if (camera != nullptr) {
@@ -291,28 +218,18 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
                 break;
 
             case WorldEvent::Victory:
-                if (audio != nullptr) {
-                    audio->play(Sfx::Victory, 1.0f);
-                }
                 m_particles.emitSeal(event.position.x, event.position.y, accent);
                 m_flash = 1.0f;
                 break;
 
             // --- presentation events -----------------------------------------
             case WorldEvent::PlayerJumped:
-                if (audio != nullptr) {
-                    audio->play(Sfx::Jump, 0.7f);
-                }
                 m_particles.emitFootfall(event.position.x, event.position.y + 18.0f, 0.6f, accent);
                 break;
 
             case WorldEvent::PlayerLanded: {
-                if (audio != nullptr) {
-                    // Pitch and level follow the impact speed, so stepping off a
-                    // ledge is quiet and dropping from height is not.
-                    audio->play(Sfx::Land, Graphics::clampValue(event.strength * 0.8f, 0.2f, 1.0f),
-                                Graphics::clampValue(1.2f - event.strength * 0.25f, 0.7f, 1.25f));
-                }
+                // The impact speed drives the dust, the glow and the shake, so
+                // stepping off a ledge is quiet and dropping from height is not.
                 m_particles.emitFootfall(event.position.x, event.position.y + 20.0f,
                                          Graphics::clampValue(event.strength, 0.3f, 1.6f), accent);
                 if (event.strength > 0.7f) {
@@ -326,9 +243,6 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
             }
 
             case WorldEvent::PlayerDashed:
-                if (audio != nullptr) {
-                    audio->play(Sfx::Dash, 0.8f);
-                }
                 m_particles.emitDashTrail(event.position.x, event.position.y, event.direction.x,
                                           accent);
                 if (camera != nullptr) {
@@ -337,10 +251,9 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
                 break;
 
             case WorldEvent::SwingStarted:
-                // The whoosh of the swing itself, before it can hurt anything.
-                if (audio != nullptr) {
-                    audio->play(Sfx::Attack, 0.65f);
-                }
+                // The swing itself, before it can hurt anything. Nothing to draw
+                // yet - the arc appears on SwingActive, on the frame the hit box
+                // is live.
                 break;
 
             case WorldEvent::SwingActive:
@@ -351,9 +264,6 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
                 break;
 
             case WorldEvent::EnemyHurt:
-                if (audio != nullptr) {
-                    audio->play(Sfx::HitEnemy, 0.9f);
-                }
                 m_particles.emitImpact(event.position.x, event.position.y, event.direction.x,
                                        event.direction.y, Graphics::Palette::White, 1.0f, 14);
                 emitGlow(event.position.x, event.position.y, 46.0f, Graphics::Palette::White, 0.22f, 0.6f);
@@ -363,34 +273,16 @@ void FeedbackSystem::consume(const std::vector<EventRecord>& events, const World
                 break;
 
             case WorldEvent::PlayerFootstep:
-                if (audio != nullptr) {
-                    // Speed still colours the step, but the surface decides which
-                    // sound it is. Previously this was `Sfx::Land` with a pitch
-                    // curve, which meant every surface in the level made the
-                    // identical noise and the player had no way to hear what they
-                    // were walking on.
-                    const SurfaceAudioProfile profile = surfaceProfile(event.surface);
-                    const float speedPitch =
-                        1.0f - Graphics::clampValue(event.strength, 0.0f, 1.4f) * 0.12f;
-                    audio->play(profile.sfx, profile.volume * event.strength,
-                                Graphics::clampValue(profile.pitch * speedPitch, 0.5f, 2.0f));
-                }
                 m_particles.emitFootfall(event.position.x, event.position.y + 20.0f,
                                          event.strength * 0.35f, accent);
                 break;
 
             case WorldEvent::HazardTick:
-                if (audio != nullptr) {
-                    audio->play(Sfx::Hazard, 0.8f);
-                }
                 m_particles.emitImpact(event.position.x, event.position.y, 0.0f, -1.0f,
                                        theme.hazard, 1.1f, 16);
                 break;
 
             case WorldEvent::GateSealed:
-                if (audio != nullptr) {
-                    audio->play(Sfx::UiDeny, 0.6f);
-                }
                 break;
         }
     }
@@ -476,34 +368,6 @@ void FeedbackSystem::update(StateContext& ctx, double deltaSeconds, const World&
     } else {
         m_glitchTimer = 0.0f;
         m_glitchBars.clear();
-    }
-
-    // --- audio --------------------------------------------------------------
-    // The bed follows the threat, not the paradox: a nearby enemy means combat
-    // music even at zero paradox, which is what makes a tense room sound tense
-    // before anything has actually gone wrong.
-    if (ctx.audio != nullptr) {
-        ctx.audio->setTension(m_tension);
-        float nearest = -1.0f;
-        for (const Enemy& enemy : world.enemies()) {
-            if (!enemy.inCurrentEra() || enemy.state() == EnemyState::Dying) {
-                continue;
-            }
-            const float distance = (enemy.body().center() - m_playerCentre).length();
-            if (nearest < 0.0f || distance < nearest) {
-                nearest = distance;
-            }
-        }
-        if (world.outcome() != Outcome::Running) {
-            ctx.audio->setMusicState(Audio::MusicState::Still);
-        } else if (nearest < 0.0f) {
-            ctx.audio->setMusicState(Audio::MusicState::Exploring);
-        } else if (nearest < 200.0f) {
-            ctx.audio->setMusicState(Audio::MusicState::Combat);
-        } else {
-            ctx.audio->setMusicState(Audio::MusicState::Alert);
-        }
-        ctx.audio->setEra(world.era());
     }
 }
 

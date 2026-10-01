@@ -8,6 +8,50 @@ All notable changes to Era Shift are recorded here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+**The entire audio subsystem has been removed.** This is a deliberate removal of
+working functionality, not a regression, and it is recorded here in full because
+everything below under *Fixed* was real work that no longer ships.
+
+Gone:
+
+- `Audio/AudioManager.{hpp,cpp}` — the SDL3_mixer plumbing: mixer, four buses,
+  the one-shot channel pool, the diagnostics snapshot, and `runSelfTest`.
+- `Audio/Synth.{hpp,cpp}` — `MusicSynth`, `AmbienceSynth`, `renderSfx`, the
+  `Sfx` enum and the envelope/voice tables.
+- `Game/UiSound.hpp` and every `playUi*` call site.
+- `config/audio.json`, the settings page's AUDIO sub-page (MASTER / MUSIC /
+  AMBIENCE / SFX), and the `audio` section in `StateContext`.
+- `tests/input/TestAudio.cpp` (18 cases) and `tests/gameplay/TestSynth.cpp`
+  (13 cases).
+- `scripts/check_audio_backends.sh`, `scripts/check_audio_leaks.sh`,
+  `scripts/get_audio_headers.sh`, and the PulseAudio suppressions in
+  `tsan.supp`.
+- The `--audio-debug` and `--audio-test` command-line flags, and
+  `ERASHIFT_AUDIO_TRACE`.
+- SDL3_mixer as a dependency, from `CMakeLists.txt`, `src/CMakeLists.txt` and
+  `scripts/fetch_deps.sh` (which no longer probes PulseAudio or ALSA).
+
+Consequences beyond the deletions:
+
+- `FeedbackSystem` still owns every visual reaction. Each `WorldEvent` case
+  that existed only to play a sound — `EraShiftFailed`, `SealWrongEra`,
+  `GateSealed`, `SwingStarted` — is now an empty case kept for the exhaustive
+  switch, which is where the UI affordance for those events would go.
+- `surfaceProfile()`, the `TileKind` → footstep-sound table, is gone.
+- `StateContext` lost its `audio` member, so it is no longer documented as
+  possibly-null-for-audio and every `if (ctx.audio != nullptr)` guard with it.
+- The test suite drops from 276 cases to 268: `unit` 94 and `integration` 10 are
+  unchanged, `platform` goes 15 → 10 and `gameplay` 157 → 154.
+
+The findings recorded under *Fixed* in this release were real and are kept as a
+record of what the audio system was: a headerless-PCM one-shot path that made
+every sound effect silent, a `MIX_SetTagGain` bus mechanism with no measurable
+effect, a 77.6 kB-per-sound leak introduced by the fix for the first of those,
+and a tension signal that was identically zero for a whole session. Anyone
+restoring audio should read those before writing any of it again.
+
 ### Fixed
 
 **Every one-shot in the game was silent (BUG-013, critical).** Music and ambience

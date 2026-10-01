@@ -113,7 +113,7 @@ private:
 /// Dispatches records to the attached sinks.
 ///
 /// The logger is thread safe: `write()` takes an internal lock so background
-/// jobs (asset streaming, audio thread) can log safely.
+/// jobs (asset streaming, save writing) can log safely.
 class Logger {
 public:
     Logger() = default;

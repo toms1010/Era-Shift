@@ -1,7 +1,16 @@
 # Bug Tracker
 
 > Phase 3 — Feedback systems (audio / animation / effects)
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
+
+> **The audio subsystem has since been removed from the codebase.** The entries
+> below are kept as the record of what the audio system was and of what was wrong
+> with it — BUG-005, 006, 008, 009, 013, 014, 016, 017, 022, 023, 024, 025 all
+> describe code that no longer exists, and their "Regression test" lines name
+> files that have been deleted. Nothing here is a live bug. See the *Removed*
+> section of [`CHANGELOG.md`](CHANGELOG.md) for exactly what went and what the
+> test counts are now. BUG-017, the one entry still marked open, is moot: there
+> is no longer a mix to clip.
 
 ## Statistics
 

@@ -61,7 +61,6 @@ layer are in `Core` instead, and the reason is the same in all three cases:
 
 | Subsystem | File | What it is |
 | --- | --- | --- |
-| The synthesiser | `Audio/Synth.cpp` | Oscillators, envelopes, filters, scales. Produces float PCM; knows nothing about a device. |
 | `ParticleSystem` | `Graphics/ParticleSystem.cpp` | A fixed pool with velocity integration. Draws nothing. |
 | `AnimationController` | `Game/Animation.cpp` | Clip sampling and blending. Poses, not pixels. |
 | Clip selection | `Game/Animation.cpp` | `playerClipFor` / `enemyClipFor`: which clip the simulation's state calls for. Pure logic over `Player` and `Enemy`, so it lives here rather than in the state that draws them. |
@@ -74,11 +73,9 @@ all three were found the moment the decision moved next to the table it reads
 (`playerClipFor` in `Game/Animation.cpp`). The early return in its `update` that
 stopped the death animation from playing is still untested, for the same reason.
 
-`AudioManager` is the only part of the audio that needs a device, and it is in
-`erashift_engine`. The split is not tidy for its own sake — it is that
-`tests/gameplay/TestSynth.cpp` and `TestParticles.cpp` assert on waveform
-properties and emission rates with no sound card and no display, which is the
-only reason anyone can change a synthesis constant with any confidence.
+`tests/gameplay/TestParticles.cpp` asserts on emission rates with no display at
+all, which is the only reason anyone can change a particle constant with any
+confidence.
 
 `Graphics/ParticleSystem.hpp` sitting in `Core` while every other file in
 `Graphics/` is in the engine looks odd in a directory listing. It is a

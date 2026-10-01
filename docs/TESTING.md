@@ -16,8 +16,8 @@ suite runs in a container, over SSH, and in CI.
 | --- | --- | --- |
 | `erashift_tests_unit` | 94 cases | Maths, logging, config, timing, game loop, state machine, font |
 | `erashift_tests_integration` | 10 cases | Full state flow, config round trips and migrations |
-| `erashift_tests_platform` | 15 cases | The two SDL boundaries: the event pump and the audio manager. The audio tests skip themselves on a machine with no device, and one asserts the no-device path explicitly. |
-| `erashift_tests_gameplay` | 157 cases | The whole simulation — eras, tile collision, physics, the player, enemies, the world, level data, saves — **and the three presentation systems that are pure arithmetic: the synthesiser, the animation controller and the particle pool** |
+| `erashift_tests_platform` | 10 cases | The SDL boundary: the event pump |
+| `erashift_tests_gameplay` | 154 cases | The whole simulation — eras, tile collision, physics, the player, enemies, the world, level data, saves — **and the two presentation systems that are pure arithmetic: the animation controller and the particle pool** |
 
 ```bash
 ./build/debug/erashift_tests_unit --success              # verbose
@@ -39,7 +39,7 @@ so they are tested hardest.
 ### `TestLog` — the logging contract
 Level filtering, `Off` silencing, source-location prefixing, `std::format`
 interpolation, multi-sink dispatch, and concurrent writes from several threads
-(the logger is used from the audio and asset threads later).
+(the logger is used from the asset and save threads later).
 
 ### `TestConfig` — configuration behaviour
 Nested JSON flattening, layer precedence, type coercion, bounds clamping, and
@@ -80,25 +80,6 @@ newer build adds new defaults without disturbing saved values, command-line
 overrides win over files, and a corrupt user file does not stop the game
 starting.
 
-### `TestSynth` — the synthesiser
-There is no sound card in CI, and that is the point: `Audio/Synth.cpp` is pure
-arithmetic, so the audio is testable. The assertions are about properties rather
-than about specific waveforms.
-
-- No one-shot is silent, clipping, or **a copy of another one-shot**. A pair-wise
-  comparison across all 20 sounds catches a copy-paste in a switch statement,
-  which is the classic way an eight-way audio table quietly becomes a two-way one.
-- The three eras are in different keys with different degree counts, and the
-  Future's is a whole tone — symmetric, so it has no leading tone and cannot
-  resolve.
-- Combat is not just louder than exploring, it has content exploring does not:
-  the arpeggio only exists under pressure.
-- A parameter change *glides*: the synth's intensity is still easing toward its
-  target on the first block.
-- A negative frame count and a zero sample rate are both safe.
-- Two identical calls produce bit-identical output. Without this, "the music
-  sounds different on my machine" is not answerable.
-
 ### `TestAnimation` — clips, markers and the simulation's clock
 The property under test is that the picture and the hitbox cannot disagree.
 
@@ -110,7 +91,7 @@ The property under test is that the picture and the hitbox cannot disagree.
   `AttackHit` marker sit on those boundaries. This is the test that stops the two
   drifting apart when someone retunes the swing.
 - A single 200ms step still delivers both attack markers. A frame hitch that
-  skipped the hit frame would give the player a blow with no spark and no sound.
+  skipped the hit frame would give the player a blow with no spark.
 - A looping clip fires its markers again on the wrap, or a walk cycle drops a
   footstep once every two steps.
 - A short non-looping action refuses to be cut short, so mashing attack does not
@@ -151,14 +132,6 @@ The event pump is the boundary where `SDL_Event` becomes `Input::Key` and friend
 - **Input works before any focus event has been delivered.** Not hypothetical — a probe on this project's Wayland session produced zero focus events in four seconds.
 - **Losing focus releases held keys**, so alt-tabbing mid-stride does not leave the character running.
 - **A click reports its own position**, so a click with no preceding motion event lands where the player clicked.
-
-### `TestAudio` — the mixer, against a real device when there is one
-Same constraint, same binary. Every test skips itself rather than failing when there is no sound card, and one asserts the no-device path explicitly, because "fails soft with no device" is a requirement rather than an accident.
-
-- **A bed survives 200 updates.** The regression: before the fix the track had stopped within the first handful, because a track reading a dry stream reaches the end and stops.
-- **A bed recovers after a pause and a stream starvation** — the same path that covers a PipeWire sink suspending and a Bluetooth headset appearing.
-- **All 20 one-shots can be fired repeatedly** without wedging the six-channel pool.
-- **`audio.enabled = false` is honoured**, not silently overridden.
 
 ## Writing tests
 
@@ -208,8 +181,8 @@ still runs and still fails.
 
 The file suppresses races in libraries the project did not compile, where TSan
 cannot see the synchronisation and so reports locks that are not missing. It
-deliberately does **not** mention `AudioManager`, `InputManager` or `EventPump`,
-so a genuine race in the game's own audio or input path would still be reported.
+deliberately does **not** mention `InputManager` or `EventPump`, so a genuine race
+in the game's own input path would still be reported.
 
 
 Sanitizers are mutually exclusive; enabling two is a configure error.

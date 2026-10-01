@@ -17,7 +17,6 @@
 #include "EraShift/Core/Log.hpp"
 #include "EraShift/Core/SignalHandler.hpp"
 #include "EraShift/Core/Time.hpp"
-#include "EraShift/Audio/AudioManager.hpp"
 #include "EraShift/Application/EventBus.hpp"
 #include "EraShift/Application/StateContext.hpp"
 #include "EraShift/Debug/DebugOverlay.hpp"
@@ -90,14 +89,6 @@ public:
     /// Writes the next presented frame to `path`, replacing any pending request.
     void requestScreenshot(std::filesystem::path path) { m_screenshotPath = std::move(path); }
 
-    /// Logs the audio subsystem's own state at start-up and again at shutdown.
-    ///
-    /// Must be set before `initialise()`. Exists because "the audio is wrong" is
-    /// otherwise undiagnosable: the symptom is silence or a click, and neither
-    /// says which of a dozen possible causes produced it.
-    void setAudioDebug(bool enabled) noexcept { m_audioDebug = enabled; }
-    [[nodiscard]] bool audioDebug() const noexcept { return m_audioDebug; }
-
     /// Replaces real input with the built-in attract script.
     ///
     /// For the attract loop on the title screen and for automated visual
@@ -133,7 +124,6 @@ public:
     [[nodiscard]] Application::EventBus&    events()    noexcept { return m_eventBus; }
     [[nodiscard]] Debug::DebugOverlay&      overlay()   noexcept { return m_overlay; }
     [[nodiscard]] Debug::PerformanceStats&  stats()     noexcept { return m_stats; }
-    [[nodiscard]] Audio::AudioManager&      audio()     noexcept { return m_audio; }
 
     [[nodiscard]] const std::string& buildLabel() const noexcept { return m_buildLabel; }
     [[nodiscard]] bool isDebugBuild() const noexcept { return m_debugBuild; }
@@ -164,10 +154,6 @@ private:
     std::unique_ptr<Graphics::ResourceManager> m_resources;
     std::unique_ptr<Graphics::TextRenderer>     m_text;
     Application::EventBus       m_eventBus;
-    /// Long-lived and owned here, like every other subsystem. It outlives the
-    /// state stack, so a sound started by a state finishes playing even as the
-    /// state that asked for it is torn down.
-    Audio::AudioManager         m_audio;
     std::unique_ptr<Application::EventPump>   m_eventPump;
     std::unique_ptr<Game::GameApp>            m_game;
     Debug::PerformanceStats     m_stats;
@@ -178,7 +164,6 @@ private:
     std::string m_projectRoot;
     std::string m_buildLabel = "Development Build";
     bool        m_debugBuild = true;
-    bool        m_audioDebug = false;
     bool        m_running    = false;
     bool        m_quitRequested = false;
     bool        m_initialised = false;

@@ -1,7 +1,5 @@
 #include "EraShift/Game/states/MainMenuState.hpp"
 
-#include "EraShift/Game/UiSound.hpp"
-
 #include "EraShift/Core/SaveGame.hpp"
 #include "EraShift/Game/states/PausedState.hpp"
 #include "EraShift/Game/states/ResultState.hpp"
@@ -405,7 +403,7 @@ void MainMenuState::buildMenu(StateContext& ctx)
     m_menu.setItems({
         {"NEW GAME", "begin a new timeline",   true},
         {"CONTINUE", m_hasSave ? "resume where you left off" : "no saved run", m_hasSave},
-        {"SETTINGS", "graphics, audio, input", true},
+        {"SETTINGS", "graphics and input", true},
         {"CREDITS",  "about Era Shift",        true},
         {"QUIT",     "exit to desktop",        true},
     });
@@ -469,16 +467,13 @@ void MainMenuState::update(StateContext& ctx, double fixedDelta)
 
     syncScale(ctx);
 
-    // The sound is on the press, not on the selection changing. A menu that
-    // skips disabled rows can move the highlight twice for one keypress, and
-    // clicking then would sound like the input was dropped.
+    // Each press moves the highlight at most once. A menu that skips disabled
+    // rows can otherwise be moved twice by one keypress.
     if (ctx.input->wasPressed(Action::MoveUp)) {
         m_menu.move(-1);
-        playUiMove(ctx);
     }
     if (ctx.input->wasPressed(Action::MoveDown)) {
         m_menu.move(1);
-        playUiMove(ctx);
     }
 
     const Rect list = computeLayout(ctx).list;
@@ -504,10 +499,8 @@ void MainMenuState::activateSelection(StateContext& ctx)
         return;
     }
     if (!item->enabled) {
-        playUiDeny(ctx);
         return;
     }
-    playUiConfirm(ctx);
 
     if (item->label == "NEW GAME") {
         ctx.states->switchTo(std::make_shared<PlayingState>());

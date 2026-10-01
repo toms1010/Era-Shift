@@ -90,13 +90,13 @@ TEST_CASE("ConfigStore round trips through a file")
     const auto path = dir / "settings.json";
 
     ConfigStore original;
-    original.setInt("audio", "masterVolume", 55);
+    original.setInt("graphics", "uiScale", 55);
     REQUIRE(original.saveFile(path, quietLog()));
     CHECK(std::filesystem::exists(path));
 
     ConfigStore reloaded;
     REQUIRE(reloaded.loadFile(path, quietLog()));
-    CHECK(reloaded.getInt("audio", "masterVolume", 0) == 55);
+    CHECK(reloaded.getInt("graphics", "uiScale", 0) == 55);
 
     std::filesystem::remove_all(dir);
 }
@@ -112,7 +112,7 @@ TEST_CASE("ConfigStore lists the keys of a section")
     ConfigStore store;
     REQUIRE(store.mergeJson(R"({
         "graphics": { "vsync": true, "windowWidth": 1280, "fullscreen": false },
-        "audio": { "masterVolume": 80 }
+        "engine":  { "fixedTicksPerSecond": 60 }
     })", "test", quietLog()));
 
     const auto keys = store.keys("graphics");
