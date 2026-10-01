@@ -17,7 +17,7 @@ suite runs in a container, over SSH, and in CI.
 | `erashift_tests_unit` | 94 cases | Maths, logging, config, timing, game loop, state machine, font |
 | `erashift_tests_integration` | 10 cases | Full state flow, config round trips and migrations |
 | `erashift_tests_platform` | 10 cases | The SDL boundary: the event pump |
-| `erashift_tests_gameplay` | 154 cases | The whole simulation — eras, tile collision, physics, the player, enemies, the world, level data, saves — **and the two presentation systems that are pure arithmetic: the animation controller and the particle pool** |
+| `erashift_tests_gameplay` | 209 cases | The whole simulation — eras, tile collision, physics, the player, enemies, the world, level data, saves — **and the two presentation systems that are pure arithmetic (animation, particles), plus the tutorial, every region, and the progression database** |
 
 ```bash
 ./build/debug/erashift_tests_unit --success              # verbose
@@ -121,6 +121,89 @@ wrong quietly.
 - A one-second step does not flood the pool, and a degenerate region emits
   nothing rather than dividing by zero.
 - Two identical calls produce identical particles.
+
+---
+
+### `TestTutorial` — one lesson at a time
+
+The tutorial is pure bookkeeping, so the rules are asserted directly.
+
+- **Only the lesson currently showing advances it.** This is the property that
+  stops a player mashing space during the movement lesson from skipping the whole
+  tutorial — the action happened, but it was not the action that was asked for.
+- Lessons run in a fixed order and cannot be jumped forward.
+- Every lesson has a title and a body. The shift lesson is checked for explaining
+  the mechanic rather than just naming the key, because that is the one lesson a
+  player cannot infer from the verb.
+- Finishing is idempotent, and a completed tutorial cannot be restarted by a stray
+  action.
+- Progress restores from a previous session: a finished tutorial stays finished,
+  a disabled one stays disabled.
+
+---
+
+### `TestDialogue` — the panel's state
+
+- **An empty panel is closed**, and so is one holding only a hint — a footer with
+  no content above it is worse than nothing.
+- **`show` replaces rather than merges.** A test caught the opposite: without a
+  clear, a title or hint survived into the next line, so the second speaker
+  appeared under the first one's heading. That is exactly the stale content the
+  type exists to prevent.
+- A cleared panel is reusable with no residue.
+- A zero duration means the line does not expire, which is how text that must be
+  read rather than glanced at is expressed.
+- A long message is stored intact. Clipping is a drawing concern that needs the
+  frame's dimensions; truncating in the panel would lose text.
+
+---
+
+### `TestRegions` — every region, through the game's own loader
+
+`tools/validate_levels.py` checks playability from Python; this checks the same
+files through the C++ loader, which is the authority on what is *loadable*. A
+region can satisfy the script and still fail here if the two have drifted.
+
+- Every region loads, and all eleven are present in the designed progression
+  order — not filename order, which would put Ancient Bridge before Awakening.
+- Every ordered region declares a distinct position from 1, which is what
+  "finishing N unlocks N+1" rests on.
+- Each has one spawn, one seal per era, and a gate in all three era layers.
+- **Every gate is reachable, and every seal can be approached**, by a flood fill
+  from the spawn. A seal's own cell is deliberately not tested: a seal set into a
+  wall is the normal design, because it is taken by pressing E beside it.
+- **No enemy or pickup is embedded in solid rock.** An enemy inside a platform
+  cannot be touched, and therefore cannot be hurt. This check found a real
+  Sentinel in `ancient_forest` at 162,22 sitting inside a one-way platform.
+- Every region has at least one checkpoint, and era-only enemies are in the era
+  they belong to — a Warden outside the Past never exists.
+- Every region loads into a `World` and survives ten steps of simulation.
+- **A checkpoint restore rebuilds the world and rewinds the player**, restoring
+  the seals and the era, and pushing the player out of geometry rather than into
+  it. A position outside the map is clamped, not trusted.
+
+---
+
+### `TestProgressDatabase` — the store, and its failure paths
+
+Every test uses its own temporary file; the real one is the player's. The failure
+paths matter more than the happy one, because the database is the only thing
+between a player and their unlocked regions.
+
+- The schema applies idempotently, and progress round trips.
+- **A second save overwrites rather than appends** — `game_progress` is a single row.
+- **Best time and score keep the better value**, so replaying a region to farm a
+  seal does not lose the time the player set. An incomplete attempt cannot
+  un-complete a finished level, and a zero time does not wipe a real one.
+- Unlocking raises the highest level and never lowers it.
+- Checkpoints round trip and are *replaced* rather than duplicated, because
+  `checkpoints` is keyed on the level.
+- **A corrupt file is refused, not crashed on**, and every call is then a no-op.
+- **An unwritable path leaves the object usable**: `available()` false, every
+  accessor safe, `lastError()` populated.
+- **A database written by a newer build is closed rather than written over**,
+  which is how an older binary destroys a newer database.
+- An absurd level index is clamped rather than stored.
 
 ---
 

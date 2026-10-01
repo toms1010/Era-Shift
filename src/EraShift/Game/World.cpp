@@ -162,6 +162,12 @@ void World::load(const Level& level)
                 m_seals.push_back(seal);
                 break;
             }
+
+            case EntityKind::Checkpoint:
+                // Nothing to construct. The volume is queried from the level's
+                // placement list when the player walks into it, so there is no
+                // runtime state to keep and none to get out of step.
+                break;
         }
     }
 
@@ -244,6 +250,52 @@ int World::sealMask() const noexcept
         }
     }
     return mask;
+}
+
+void World::restoreCheckpoint(const Vec2& position, Era era, float health, float chrono,
+                              int sealMask)
+{
+    // Rebuild everything first. A checkpoint restores *progress through the
+    // level*, not the state of the fight the player was in when they last touched
+    // one: enemies, pickups and seals go back to their initial state, and the
+    // player resumes where they were.
+    //
+    // The alternative — rewinding the world to the moment the checkpoint was
+    // taken — would need the enemy list, every enemy's HP and every pickup's
+    // timer serialised into the save, and would produce a level where a checkpoint
+    // taken before a fight replays the fight's opening rather than skipping it.
+    // That is more faithful to a recording and much harder to explain.
+    restart();
+
+    // Clamped inside the map. A checkpoint written by a build with a different grid
+    // size, or by hand, must not put the player outside the world.
+    const int columns = m_map.columns();
+    const int rows    = m_map.rows();
+    const int tileX   = std::clamp(static_cast<int>(position.x / TileMap::kTileSize), 0,
+                                   std::max(0, columns - 1));
+    const int tileY   = std::clamp(static_cast<int>(position.y / TileMap::kTileSize), 0,
+                                   std::max(0, rows - 1));
+    const Vec2 safe{static_cast<float>(tileX) * TileMap::kTileSize,
+                    static_cast<float>(tileY) * TileMap::kTileSize};
+
+    m_player.restore(safe, era, health, chrono);
+
+    // Nudge out of anything solid. A checkpoint taken mid-jump, or one whose tile
+    // became solid because the player restored in a different era, must not drop
+    // the player inside geometry — that is the one way a checkpoint can make a
+    // level unwinnable.
+    resolvePenetration(m_map, m_player.body(), m_player.era());
+
+    applySeals(sealMask);
+
+    // A restore is not a fresh attempt: the run counters continue, and the level
+    // is running again rather than finished.
+    m_outcome = Outcome::Running;
+}
+
+bool World::checkpointHere(int tileX, int tileY) const noexcept
+{
+    return m_level.checkpointHere(tileX, tileY);
 }
 
 void World::applySeals(int mask)

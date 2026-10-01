@@ -240,6 +240,15 @@ void SettingsState::onEnter(StateContext& ctx)
     m_showFps       = store.getInt("debug", "showStats", 0);
     m_uiScale       = store.getInt("graphics", "uiScale", 100);
 
+    // The tutorial flag is not in settings.json — it is progression, and New Game
+    // resets progression. Read from the database, defaulting to on when there is
+    // none: a returning player seeing a few extra prompts is a smaller failure
+    // than a new player being given none.
+    m_tutorialEnabled = 1;
+    if (ctx.progress != nullptr) {
+        m_tutorialEnabled = ctx.progress->loadProgress().tutorialEnabled ? 1 : 0;
+    }
+
     buildItems(ctx);
     ctx.log->info("Game", "entered Settings");
 }
@@ -279,7 +288,25 @@ void SettingsState::buildItems(StateContext& ctx)
                 option("VSYNC", onOff(m_vsync != 0)),
                 option("UI SCALE", percent(m_uiScale)),
                 {"GRAPHICS >", "resolution and presentation", true},
+                {"GAME >", "tutorial and progression", true},
                 {"CONTROLS >", "rebind the keyboard and mouse", true},
+                {"BACK", "return", true},
+            });
+            break;
+
+        case Page::Game:
+            // The tutorial toggle is on its own page because it is a *recorded*
+            // preference, not a graphics one: it lives in the progression
+            // database rather than in settings.json, and putting it on the
+            // graphics page would imply otherwise.
+            m_menu.setItems({
+                option("TUTORIAL", onOff(m_tutorialEnabled)),
+                // The label changes rather than a dialog appearing over it, so the
+                // confirmation is the thing the player is looking at when they
+                // press the key a second time.
+                {"RESET PROGRESS",
+                 m_confirmReset ? "press again to erase everything" : "lock every region again",
+                 true},
                 {"BACK", "return", true},
             });
             break;
@@ -367,6 +394,7 @@ const char* SettingsState::pageTitle() const noexcept
     switch (m_page) {
         case Page::General:  return "SETTINGS";
         case Page::Graphics: return "GRAPHICS";
+        case Page::Game:     return "GAME";
         case Page::Controls: return "CONTROLS";
     }
     return "SETTINGS";
@@ -380,14 +408,18 @@ const char* SettingsState::pageFooter() const noexcept
 
 void SettingsState::setPage(Page page, StateContext& ctx)
 {
-    m_page   = page;
-    m_rebind = Rebind::None;
+    // Leaving a page cancels anything armed on it. A half-armed confirmation that
+    // survives navigation is the kind of thing that wipes progress later.
+    m_page         = page;
+    m_rebind       = Rebind::None;
+    m_confirmReset = false;
     buildItems(ctx);
 }
 
 bool SettingsState::isAdjustable(const std::string& label) const
 {
-    return label == "FULLSCREEN" || label == "VSYNC" || label == "UI SCALE";
+    return label == "FULLSCREEN" || label == "VSYNC" || label == "UI SCALE" ||
+           label == "TUTORIAL";
 }
 
 void SettingsState::persistBinding(StateContext& ctx, Input::Action action,
@@ -511,8 +543,49 @@ void SettingsState::adjust(StateContext& ctx, int direction)
         store.setInt("graphics", "uiScale", m_uiScale);
         // The scale is picked up by `uiScaleFor` from the store, and the next
         // syncScale() applies it, so there is nothing further to do here.
+    } else if (label == "TUTORIAL") {
+        step(m_tutorialEnabled, 0, 1, 1);
+        // Written to the progression database, not to settings.json: the flag has
+        // to survive a New Game for the setting to mean anything, and New Game
+        // resets the database.
+        if (ctx.progress != nullptr) {
+            Core::Progress progress = ctx.progress->loadProgress();
+            progress.tutorialEnabled = m_tutorialEnabled != 0;
+            ctx.progress->saveProgress(progress);
+            if (ctx.log != nullptr) {
+                ctx.log->info("Settings", "tutorial {}", m_tutorialEnabled ? "on" : "off");
+            }
+        } else if (ctx.log != nullptr) {
+            // Said out loud, because a toggle that silently does nothing is worse
+            // than no toggle.
+            ctx.log->warn("Settings", "tutorial setting not saved: no progression database");
+        }
     }
 
+    buildItems(ctx);
+}
+
+void SettingsState::resetProgress(StateContext& ctx)
+{
+    if (ctx.progress == nullptr) {
+        if (ctx.log != nullptr) {
+            ctx.log->warn("Settings", "nothing to reset: no progression database");
+        }
+        return;
+    }
+    ctx.progress->resetAll();
+
+    // Resetting invalidates the cached tutorial flag too, so the screen does not
+    // keep showing the pre-reset value.
+    m_tutorialEnabled = 1;
+
+    Core::Progress fresh = ctx.progress->loadProgress();
+    fresh.tutorialEnabled = m_tutorialEnabled != 0;
+    ctx.progress->saveProgress(fresh);
+
+    if (ctx.log != nullptr) {
+        ctx.log->info("Settings", "progress reset: every region locked again");
+    }
     buildItems(ctx);
 }
 
@@ -538,6 +611,7 @@ void SettingsState::update(StateContext& ctx, double fixedDelta)
         if (m_page != Page::General) {
             m_page = Page::General;
             m_rebind = Rebind::None;
+            m_confirmReset = false;
             buildItems(ctx);
             return;
         }
@@ -594,8 +668,24 @@ void SettingsState::update(StateContext& ctx, double fixedDelta)
         }
     } else if (item->label == "GRAPHICS >") {
         setPage(Page::Graphics, ctx);
+    } else if (item->label == "GAME >") {
+        setPage(Page::Game, ctx);
     } else if (item->label == "CONTROLS >") {
         setPage(Page::Controls, ctx);
+    } else if (item->label == "RESET PROGRESS") {
+        // Confirm rather than act. This is the only menu row in the game that
+        // destroys something, and a single stray press should not be able to wipe
+        // a player's ten regions.
+        if (m_confirmReset) {
+            resetProgress(ctx);
+            m_confirmReset = false;
+        } else {
+            m_confirmReset = true;
+            if (ctx.log != nullptr) {
+                ctx.log->info("Settings", "reset requested: confirm to wipe progress");
+            }
+            buildItems(ctx);
+        }
     } else if (m_page == Page::Controls) {
         updateRebinding(ctx);
     } else if (isAdjustable(item->label)) {

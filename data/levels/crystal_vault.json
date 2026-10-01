@@ -1,6 +1,7 @@
 {
   "id": "crystal_vault",
   "name": "Crystal Vault",
+  "order": 5,
   "past": [
     "########################################################################################################################",
     "#......................................................................................................................#",
@@ -104,8 +105,23 @@
       "type": "seal",
       "era": "Future",
       "x": 88,
-      "y": 4,
+      "y": 5,
       "label": "FUTURE SEAL"
+    },
+    {
+      "type": "checkpoint",
+      "x": 14,
+      "y": 18
+    },
+    {
+      "type": "checkpoint",
+      "x": 48,
+      "y": 11
+    },
+    {
+      "type": "checkpoint",
+      "x": 76,
+      "y": 6
     },
     {
       "type": "enemy",
@@ -119,21 +135,21 @@
       "kind": "Warden",
       "eras": "Past",
       "x": 34,
-      "y": 12
+      "y": 11
     },
     {
       "type": "enemy",
       "kind": "Wisp",
       "eras": "Future",
       "x": 60,
-      "y": 12
+      "y": 11
     },
     {
       "type": "enemy",
       "kind": "Wisp",
       "eras": "Future",
       "x": 80,
-      "y": 7
+      "y": 6
     },
     {
       "type": "enemy",
@@ -152,25 +168,25 @@
       "type": "pickup",
       "kind": "chrono",
       "x": 30,
-      "y": 12
+      "y": 11
     },
     {
       "type": "pickup",
       "kind": "health",
       "x": 52,
-      "y": 12
+      "y": 11
     },
     {
       "type": "pickup",
       "kind": "health",
       "x": 96,
-      "y": 7
+      "y": 6
     },
     {
       "type": "pickup",
       "kind": "chrono",
       "x": 108,
-      "y": 7
+      "y": 6
     }
   ]
 }

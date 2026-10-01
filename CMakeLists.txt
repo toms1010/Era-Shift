@@ -67,6 +67,7 @@ endif()
 message(STATUS "EraShift: SDL3        ${SDL3_VERSION} (${SDL3_DIR})")
 message(STATUS "EraShift: SDL3_image  ${SDL3_image_VERSION} (${SDL3_image_DIR})")
 message(STATUS "EraShift: SDL3_ttf    ${SDL3_ttf_VERSION} (${SDL3_ttf_DIR})")
+message(STATUS "EraShift: SQLite3     ${SQLite3_VERSION} (${SQLite3_INCLUDE_DIRS})")
 
 # nlohmann/json is used for configuration and save data. Prefer a system copy,
 # otherwise use the single header vendored by scripts/fetch_deps.sh.
@@ -82,6 +83,36 @@ if(NOT nlohmann_json_FOUND)
     add_library(erashift_json INTERFACE)
     target_include_directories(erashift_json SYSTEM INTERFACE "${ERASHIFT_JSON_INCLUDE_DIR}")
     add_library(erashift::json ALIAS erashift_json)
+endif()
+
+# SQLite backs the progression database: unlocked levels, per-level completion,
+# tutorial progress and checkpoints. Offline and local, which is the whole point.
+#
+# Found as a library rather than vendored: it is present on every distribution
+# this project targets, and the amalgamation `scripts/fetch_deps.sh` can drop in
+# covers the case where it is not.
+find_package(SQLite3 QUIET)
+if(NOT SQLite3_FOUND)
+    find_path(ERASHIFT_SQLITE_INCLUDE_DIR sqlite3.h
+              HINTS ${CMAKE_PREFIX_PATH}
+              PATH_SUFFIXES include)
+    find_library(ERASHIFT_SQLITE_LIBRARY NAMES sqlite3)
+    if(ERASHIFT_SQLITE_INCLUDE_DIR AND ERASHIFT_SQLITE_LIBRARY)
+        add_library(erashift_sqlite INTERFACE)
+        target_include_directories(erashift_sqlite SYSTEM INTERFACE "${ERASHIFT_SQLITE_INCLUDE_DIR}")
+        target_link_libraries(erashift_sqlite INTERFACE "${ERASHIFT_SQLITE_LIBRARY}")
+        add_library(SQLite::SQLite3 ALIAS erashift_sqlite)
+        set(SQLite3_FOUND TRUE)
+        message(STATUS "EraShift: sqlite3 ${ERASHIFT_SQLITE_LIBRARY} (found by hand)")
+    endif()
+endif()
+
+if(NOT SQLite3_FOUND)
+    message(FATAL_ERROR
+        "SQLite3 was not found.\n"
+        "Either install the development package (e.g. libsqlite3-dev) or run\n"
+        "  ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fetch_deps.sh\n"
+        "which vendors the SQLite amalgamation into ${ERASHIFT_LOCAL_PREFIX}.")
 endif()
 
 # ---------------------------------------------------------------------------

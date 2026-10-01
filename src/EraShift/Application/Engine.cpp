@@ -47,6 +47,16 @@ Core::ConfigManager& Engine::config() noexcept
     return m_config != nullptr ? *m_config : fallback;
 }
 
+Core::Progress Engine::loadProgress()
+{
+    return m_progress.loadProgress();
+}
+
+bool Engine::saveProgress(const Core::Progress& progress)
+{
+    return m_progress.saveProgress(progress);
+}
+
 Engine::Engine() = default;
 
 Engine::~Engine()
@@ -66,7 +76,7 @@ bool Engine::initialise(Core::ConfigManager& configManager,
     m_config      = &configManager;
     const Core::ConfigStore& config = configManager.store();
 
-#if defined(NDEBUG)
+    #if defined(NDEBUG)
     m_debugBuild = false;
     m_buildLabel = "Release Build";
 #else
@@ -93,6 +103,22 @@ bool Engine::initialise(Core::ConfigManager& configManager,
                    Core::logLevelName(level));
     }
     m_log.setMinLevel(level);
+
+    // --- progression ---------------------------------------------------------
+    // Opened here rather than at the top of `initialise` because the logger is
+    // only usable once its sinks and level are set: opening the database logs, and
+    // a log line that goes nowhere is how a failure becomes invisible.
+    //
+    // Never fatal. A machine with no writable config directory, or a build without
+    // SQLite, still plays: unlocks and checkpoints are the only things lost, and
+    // `available()` is how every caller finds out.
+    m_progress.open(configManager.saveDirectory() / "progress.db");
+    if (m_progress.initialise()) {
+        m_log.info("Engine", "progression database ready at {}", m_progress.path().string());
+    } else {
+        m_log.warn("Engine", "no progression database: {}",
+                   m_progress.lastError().empty() ? "unavailable" : m_progress.lastError());
+    }
     m_log.info("Engine", "Era Shift {} - {} build", m_buildLabel, "0.1.0");
 
     // --- shutdown signals ---------------------------------------------------
@@ -246,6 +272,7 @@ void Engine::rebuildContext() noexcept
     m_context.events    = &m_eventBus;
     m_context.clock     = &m_clock;
     m_context.config    = m_config;
+    m_context.progress  = m_progress.available() ? &m_progress : nullptr;
     m_context.window    = &m_window;
     m_context.window    = &m_window;
     m_context.text      = m_text.get();

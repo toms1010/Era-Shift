@@ -48,6 +48,10 @@ class Region:
 
     id: str
     name: str
+    # Position in the designed progression, 1-based. Written into the file so the
+    # level select can present the regions in the order they are meant to be
+    # played rather than in filename order, which would shuffle them alphabetically.
+    order: int = 0
     # (y, x, char) edits applied to the Past layer, then edited per era below.
     edits: list[tuple[int, int, str]] = field(default_factory=list)
     # Same, applied only to one era's layer.
@@ -66,6 +70,7 @@ class Region:
         return {
             "id": self.id,
             "name": self.name,
+            "order": self.order,
             "past": self.layer("past"),
             "present": self.layer("present"),
             "future": self.layer("future"),
@@ -110,8 +115,66 @@ def tower(region: Region, x: int, y0: int, y1: int, ch: str = "#") -> Region:
     return region
 
 
+def build_awakening() -> Region:
+    """LEVEL 1 — the tutorial. One mechanic at a time, in the order they are taught.
+
+    The shape is a corridor that widens into a room at each lesson, so a player
+    who does exactly what the prompt says can never be asked to do something they
+    have not been taught. The three crossings come last and are gated one per era.
+    """
+    region = Region(
+        id="awakening",
+        name="Awakening",
+        entities=[
+            {"type": "player", "x": 3, "y": STAND, "label": "Threshold"},
+            # Seals last, so the player has been taught everything before the
+            # objective appears.
+            {"type": "seal", "era": "Past", "x": 24, "y": STAND, "label": "PAST SEAL"},
+            {"type": "seal", "era": "Present", "x": 60, "y": STAND, "label": "PRESENT SEAL"},
+            {"type": "seal", "era": "Future", "x": 96, "y": STAND, "label": "FUTURE SEAL"},
+            # Checkpoints before each new idea, so a death costs a moment rather
+            # than the whole lesson.
+            {"type": "checkpoint", "x": 16, "y": STAND},
+            {"type": "checkpoint", "x": 40, "y": STAND},
+            {"type": "checkpoint", "x": 76, "y": STAND},
+            # One enemy, and only after the player has been taught to attack.
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 33, "y": STAND},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 68, "y": STAND},
+            # The first wisp, so the Future is visibly a different place and not
+            # just a different colour.
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 90, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 10, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 46, "y": STAND},
+            {"type": "pickup", "kind": "health", "x": 80, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 108, "y": STAND},
+        ],
+    )
+    walls_and_floor(region)
+
+    # Three crossings, one per era, each after the lesson that prepares for it.
+    # The first is the masonry that teaches "shift" in the least lethal way
+    # possible: a gap the player can see from the spawn.
+    gap(region, 28, 32)
+    gap(region, 64, 70)
+    gap(region, 100, 106)
+    for x in range(29, 32):
+        region.per_era.setdefault("past", []).append((FLOOR, x, "c"))
+    for x in range(65, 70):
+        region.per_era.setdefault("present", []).append((FLOOR, x, "b"))
+    for x in range(101, 106):
+        region.per_era.setdefault("future", []).append((FLOOR, x, "x"))
+
+    # Flat, generous ground throughout. A tutorial that can kill you before it has
+    # explained anything is not a tutorial.
+    ledge(region, 36, 44, 14)
+    ledge(region, 72, 80, 14)
+
+    region.edits.append((STAND, 115, "G"))
+    return region
+
+
 def build_ancient_bridge() -> Region:
-    """A short, teaching region: three crossings, one per era."""
+    """LEVEL 2 — three crossings in a fixed order, no hand-holding."""
     region = Region(
         id="ancient_bridge",
         name="Ancient Bridge",
@@ -120,11 +183,14 @@ def build_ancient_bridge() -> Region:
             {"type": "seal", "era": "Past", "x": 26, "y": STAND, "label": "PAST SEAL"},
             {"type": "seal", "era": "Present", "x": 58, "y": STAND, "label": "PRESENT SEAL"},
             {"type": "seal", "era": "Future", "x": 92, "y": STAND, "label": "FUTURE SEAL"},
+            {"type": "checkpoint", "x": 20, "y": STAND},
+            {"type": "checkpoint", "x": 52, "y": STAND},
+            {"type": "checkpoint", "x": 88, "y": STAND},
             {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 34, "y": STAND},
             {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 44, "y": STAND},
             {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 68, "y": STAND},
             {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 84, "y": STAND},
-            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 104, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 110, "y": STAND},
             {"type": "pickup", "kind": "chrono", "x": 14, "y": STAND},
             {"type": "pickup", "kind": "chrono", "x": 40, "y": STAND},
             {"type": "pickup", "kind": "health", "x": 76, "y": STAND},
@@ -172,17 +238,20 @@ def build_crystal_vault() -> Region:
             {"type": "player", "x": 3, "y": STAND, "label": "Floor"},
             {"type": "seal", "era": "Past", "x": 18, "y": STAND, "label": "PAST SEAL"},
             {"type": "seal", "era": "Present", "x": 40, "y": 9, "label": "PRESENT SEAL"},
-            {"type": "seal", "era": "Future", "x": 88, "y": 4, "label": "FUTURE SEAL"},
+            {"type": "seal", "era": "Future", "x": 88, "y": 5, "label": "FUTURE SEAL"},
+            {"type": "checkpoint", "x": 14, "y": STAND},
+            {"type": "checkpoint", "x": 48, "y": 11},
+            {"type": "checkpoint", "x": 76, "y": 6},
             {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 24, "y": STAND},
-            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 34, "y": 12},
-            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 60, "y": 12},
-            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 80, "y": 7},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 34, "y": 11},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 60, "y": 11},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 80, "y": 6},
             {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 70, "y": STAND},
             {"type": "pickup", "kind": "chrono", "x": 10, "y": STAND},
-            {"type": "pickup", "kind": "chrono", "x": 30, "y": 12},
-            {"type": "pickup", "kind": "health", "x": 52, "y": 12},
-            {"type": "pickup", "kind": "health", "x": 96, "y": 7},
-            {"type": "pickup", "kind": "chrono", "x": 108, "y": 7},
+            {"type": "pickup", "kind": "chrono", "x": 30, "y": 11},
+            {"type": "pickup", "kind": "health", "x": 52, "y": 11},
+            {"type": "pickup", "kind": "health", "x": 96, "y": 6},
+            {"type": "pickup", "kind": "chrono", "x": 108, "y": 6},
         ],
     )
     walls_and_floor(region)
@@ -221,9 +290,396 @@ def build_crystal_vault() -> Region:
     return region
 
 
+def build_fallen_span() -> Region:
+    """LEVEL 3 — era-specific hazards. The floor is safe in exactly one era."""
+    region = Region(
+        id="fallen_span",
+        name="Fallen Span",
+        entities=[
+            {"type": "player", "x": 3, "y": STAND, "label": "Anchor"},
+            {"type": "seal", "era": "Past", "x": 20, "y": STAND, "label": "PAST SEAL"},
+            {"type": "seal", "era": "Present", "x": 58, "y": STAND, "label": "PRESENT SEAL"},
+            {"type": "seal", "era": "Future", "x": 98, "y": STAND, "label": "FUTURE SEAL"},
+            {"type": "checkpoint", "x": 12, "y": STAND},
+            {"type": "checkpoint", "x": 44, "y": STAND},
+            {"type": "checkpoint", "x": 82, "y": STAND},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 30, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 52, "y": STAND},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 88, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 108, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 8, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 40, "y": STAND},
+            {"type": "pickup", "kind": "health", "x": 70, "y": STAND},
+            {"type": "pickup", "kind": "health", "x": 104, "y": STAND},
+        ],
+    )
+    walls_and_floor(region)
+
+    # Four spike fields, each blocked off in two of the three eras by that era's
+    # own masonry. The lesson is that "safe" is a property of the era you are in,
+    # not of the level: the same ground is lethal twice and walkable once.
+    for lo, hi in ((32, 38), (56, 62), (78, 84), (100, 106)):
+        gap(region, lo, hi)
+    for lo, hi in ((33, 37), (57, 61)):
+        region.per_era.setdefault("past", []).append((FLOOR, lo + 1, "c"))
+        region.per_era.setdefault("future", []).append((FLOOR, lo + 1, "x"))
+    for lo, hi in ((79, 83), (101, 105)):
+        region.per_era.setdefault("present", []).append((FLOOR, lo + 1, "b"))
+        region.per_era.setdefault("future", []).append((FLOOR, lo + 1, "x"))
+
+    # A little verticality so the player is not simply holding "right".
+    ledge(region, 44, 52, 13)
+    ledge(region, 88, 96, 13)
+    ledge(region, 20, 26, 9)
+    tower(region, 66, 9, FLOOR - 1)
+
+    region.edits.append((STAND, 115, "G"))
+    return region
+
+
+def build_drowned_road() -> Region:
+    """LEVEL 4 — environmental interaction: routes that exist in one era only."""
+    region = Region(
+        id="drowned_road",
+        name="Drowned Road",
+        entities=[
+            {"type": "player", "x": 3, "y": STAND, "label": "South bank"},
+            {"type": "seal", "era": "Past", "x": 16, "y": STAND, "label": "PAST SEAL"},
+            {"type": "seal", "era": "Present", "x": 52, "y": STAND, "label": "PRESENT SEAL"},
+            {"type": "seal", "era": "Future", "x": 94, "y": STAND, "label": "FUTURE SEAL"},
+            {"type": "checkpoint", "x": 10, "y": STAND},
+            {"type": "checkpoint", "x": 44, "y": 11},
+            {"type": "checkpoint", "x": 84, "y": STAND},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 34, "y": 11},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 62, "y": STAND},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 76, "y": 11},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 104, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 7, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 40, "y": 11},
+            {"type": "pickup", "kind": "health", "x": 70, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 96, "y": STAND},
+        ],
+    )
+    walls_and_floor(region)
+
+    # A long flooded channel down the middle: impassable in all three eras, so it
+    # has to be crossed above rather than through.
+    gap(region, 46, 74)
+
+    # The causeway over it exists in the Past alone, and only over its western
+    # half — the eastern half was never built, which is why the level needs a
+    # second idea rather than a longer bridge.
+    for x in range(47, 60):
+        region.per_era.setdefault("past", []).append((FLOOR, x, "c"))
+    for x in range(62, 74):
+        region.per_era.setdefault("present", []).append((FLOOR, x, "b"))
+
+    # Two gaps in that causeway, so neither era walks it end to end and the player
+    # has to alternate mid-crossing rather than shift once and commit.
+    gap(region, 54, 56)
+    gap(region, 66, 68)
+    for x in range(55, 56):
+        region.per_era.setdefault("future", []).append((FLOOR, x, "x"))
+    for x in range(67, 68):
+        region.per_era.setdefault("future", []).append((FLOOR, x, "x"))
+
+    # The upper road, reachable from both banks by one-way platforms.
+    ledge(region, 36, 52, 12)
+    ledge(region, 66, 82, 12)
+    ledge(region, 48, 62, 8)
+    tower(region, 60, 8, 12)
+
+    region.edits.append((STAND, 115, "G"))
+    return region
+
+
+def build_split_meadow() -> Region:
+    """LEVEL 5 — a route that must be walked in three different eras in turn."""
+    region = Region(
+        id="split_meadow",
+        name="Split Meadow",
+        entities=[
+            {"type": "player", "x": 3, "y": STAND, "label": "West edge"},
+            {"type": "seal", "era": "Past", "x": 24, "y": STAND, "label": "PAST SEAL"},
+            {"type": "seal", "era": "Present", "x": 62, "y": 10, "label": "PRESENT SEAL"},
+            {"type": "seal", "era": "Future", "x": 104, "y": 6, "label": "FUTURE SEAL"},
+            {"type": "checkpoint", "x": 18, "y": STAND},
+            {"type": "checkpoint", "x": 50, "y": STAND},
+            {"type": "checkpoint", "x": 86, "y": 10},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 30, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 56, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 74, "y": 10},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 96, "y": 6},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 110, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 9, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 44, "y": STAND},
+            {"type": "pickup", "kind": "health", "x": 68, "y": 10},
+            {"type": "pickup", "kind": "health", "x": 100, "y": 6},
+        ],
+    )
+    walls_and_floor(region)
+
+    # Alternating gates, close enough together that shifting costs chrono, which
+    # is the resource pressure: an impatient player runs out before the third seal.
+    for lo, hi in ((36, 40), (48, 52), (80, 84), (92, 96)):
+        gap(region, lo, hi)
+    for lo in (36, 48):
+        for x in range(lo + 1, lo + 4):
+            region.per_era.setdefault("past", []).append((FLOOR, x, "c"))
+    for lo in (80, 92):
+        for x in range(lo + 1, lo + 4):
+            region.per_era.setdefault("future", []).append((FLOOR, x, "x"))
+
+    # The middle is a raised shelf, reachable only by the Present's own bridge.
+    ledge(region, 58, 78, 11)
+    for x in range(66, 72):
+        region.per_era.setdefault("present", []).append((FLOOR, x, "b"))
+    ledge(region, 86, 100, 7)
+    tower(region, 60, 11, FLOOR - 1)
+    tower(region, 88, 2, 7)
+
+    region.edits.append((6, 114, "G"))
+    return region
+
+
+def build_hollow_citadel() -> Region:
+    """LEVEL 6 — combat. Two eras at once, with nowhere cheap to fight."""
+    region = Region(
+        id="hollow_citadel",
+        name="Hollow Citadel",
+        entities=[
+            {"type": "player", "x": 3, "y": STAND, "label": "Gatehouse"},
+            {"type": "seal", "era": "Past", "x": 18, "y": STAND, "label": "PAST SEAL"},
+            {"type": "seal", "era": "Present", "x": 56, "y": STAND, "label": "PRESENT SEAL"},
+            {"type": "seal", "era": "Future", "x": 100, "y": STAND, "label": "FUTURE SEAL"},
+            {"type": "checkpoint", "x": 30, "y": STAND},
+            {"type": "checkpoint", "x": 66, "y": STAND},
+            {"type": "checkpoint", "x": 90, "y": STAND},
+            # A packed middle: this level is won by picking a fight, not avoiding one.
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 34, "y": STAND},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 42, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 50, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 72, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 78, "y": STAND},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 86, "y": STAND},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 96, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 110, "y": STAND},
+            {"type": "pickup", "kind": "health", "x": 12, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 26, "y": STAND},
+            {"type": "pickup", "kind": "health", "x": 46, "y": STAND},
+            {"type": "pickup", "kind": "health", "x": 80, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 102, "y": STAND},
+        ],
+    )
+    walls_and_floor(region)
+
+    # A single open courtyard. No hazards and no era gates: the level's difficulty
+    # is entirely the enemy count, so the terrain stays out of the way.
+    ledge(region, 36, 44, 13)
+    ledge(region, 62, 70, 13)
+
+    # Pillars for cover — solid in every era, so they are tactics rather than gates.
+    #
+    # Kept clear of every enemy's tile: a pillar is a column from y=8 to the row
+    # above the floor, so an enemy at the same x is spawned inside it. That is not
+    # a soft lock — the player can still walk over it — but an enemy embedded in
+    # rock is an enemy the player cannot reach.
+    for x in (40, 64, 84):
+        tower(region, x, 8, FLOOR - 1)
+
+    region.edits.append((STAND, 115, "G"))
+    return region
+
+
+def build_sunken_lattice() -> Region:
+    """LEVEL 7 — a lattice: a grid of crossings, only some of which are real."""
+    region = Region(
+        id="sunken_lattice",
+        name="Sunken Lattice",
+        entities=[
+            {"type": "player", "x": 3, "y": STAND, "label": "Corner"},
+            {"type": "seal", "era": "Past", "x": 22, "y": STAND, "label": "PAST SEAL"},
+            {"type": "seal", "era": "Present", "x": 58, "y": 12, "label": "PRESENT SEAL"},
+            {"type": "seal", "era": "Future", "x": 100, "y": 6, "label": "FUTURE SEAL"},
+            {"type": "checkpoint", "x": 16, "y": STAND},
+            {"type": "checkpoint", "x": 44, "y": STAND},
+            {"type": "checkpoint", "x": 82, "y": 12},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 34, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 54, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 68, "y": 12},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 88, "y": 6},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 108, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 8, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 40, "y": STAND},
+            {"type": "pickup", "kind": "health", "x": 62, "y": 12},
+            {"type": "pickup", "kind": "health", "x": 96, "y": 6},
+        ],
+    )
+    walls_and_floor(region)
+
+    # Five rows of gates, cycling through the eras. The point is that no single
+    # era walks the whole level, so the player is shifting continuously rather than
+    # three times.
+    #
+    # The tile character is named explicitly rather than taken from `era[0]`, which
+    # would have written 'p' for both "past" and "present" — and 'p' is not a tile,
+    # so the region would have loaded as a field of holes.
+    gates = (("past", "c"), ("present", "b"), ("past", "c"), ("future", "x"), ("present", "b"))
+    for row, (era, tile) in enumerate(gates):
+        lo = 30 + row * 14
+        gap(region, lo, lo + 4)
+        for x in range(lo + 1, lo + 4):
+            region.per_era.setdefault(era, []).append((FLOOR, x, tile))
+
+    # Two shelves to break the corridor, each gated on the era *not* used at its
+    # floor level, so the player has to think about where they are standing.
+    #
+    # Everything that lives on a shelf is placed *on* the shelf — a seal at y=12 with
+    # the platform at y=12 is inside it, and one at y=12 with the platform at y=13
+    # has nothing under it at all. Standing on a ledge means the ledge is the row
+    # below.
+    ledge(region, 40, 60, 13)
+    ledge(region, 80, 104, 7)
+    # A single crossing up to each shelf, so neither is decoration.
+    for x in range(52, 56):
+        region.per_era.setdefault("future", []).append((FLOOR, x, "x"))
+    for x in range(92, 96):
+        region.per_era.setdefault("past", []).append((FLOOR, x, "c"))
+
+    tower(region, 64, 7, 13)
+    tower(region, 76, 2, 7)
+
+    region.edits.append((6, 114, "G"))
+    return region
+
+
+def build_paradox_ward() -> Region:
+    """LEVEL 8 — a long shift-heavy route that costs more chrono than it gives."""
+    region = Region(
+        id="paradox_ward",
+        name="Paradox Ward",
+        entities=[
+            {"type": "player", "x": 3, "y": STAND, "label": "Outer ward"},
+            {"type": "seal", "era": "Past", "x": 26, "y": STAND, "label": "PAST SEAL"},
+            {"type": "seal", "era": "Present", "x": 64, "y": STAND, "label": "PRESENT SEAL"},
+            {"type": "seal", "era": "Future", "x": 104, "y": 8, "label": "FUTURE SEAL"},
+            {"type": "checkpoint", "x": 20, "y": STAND},
+            {"type": "checkpoint", "x": 58, "y": STAND},
+            {"type": "checkpoint", "x": 88, "y": STAND},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 40, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 52, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 72, "y": STAND},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 80, "y": 8},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 100, "y": 8},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 110, "y": STAND},
+            # Fewer chrono cells than gates, deliberately: the level is about
+            # choosing which gates to pay for.
+            {"type": "pickup", "kind": "chrono", "x": 12, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 46, "y": STAND},
+            {"type": "pickup", "kind": "health", "x": 68, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 92, "y": STAND},
+        ],
+    )
+    walls_and_floor(region)
+
+    # Six gates. Each single-tile era crossing, so there is no "commit to one era
+    # for a while" — it is a shift every few steps.
+    gates = (("past", "c"), ("present", "b"), ("future", "x"),
+             ("past", "c"), ("present", "b"), ("future", "x"))
+    for index, (era, tile) in enumerate(gates):
+        lo = 32 + index * 12
+        gap(region, lo, lo + 3)
+        for x in range(lo + 1, lo + 3):
+            region.per_era.setdefault(era, []).append((FLOOR, x, tile))
+
+    ledge(region, 24, 30, 13)
+    ledge(region, 86, 100, 9)
+    tower(region, 60, 9, FLOOR - 1)
+    tower(region, 84, 4, 9)
+
+    region.edits.append((8, 114, "G"))
+    return region
+
+
+def build_convergence() -> Region:
+    """LEVEL 10 — all three eras at once, and a long way home."""
+    region = Region(
+        id="convergence",
+        name="Convergence",
+        entities=[
+            {"type": "player", "x": 3, "y": STAND, "label": "The seam"},
+            {"type": "seal", "era": "Past", "x": 20, "y": STAND, "label": "PAST SEAL"},
+            {"type": "seal", "era": "Present", "x": 60, "y": 10, "label": "PRESENT SEAL"},
+            {"type": "seal", "era": "Future", "x": 104, "y": 5, "label": "FUTURE SEAL"},
+            {"type": "checkpoint", "x": 14, "y": STAND},
+            {"type": "checkpoint", "x": 48, "y": STAND},
+            {"type": "checkpoint", "x": 84, "y": 10},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 32, "y": STAND},
+            {"type": "enemy", "kind": "Warden", "eras": "Past", "x": 42, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 54, "y": STAND},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 68, "y": 10},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 78, "y": STAND},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 92, "y": 5},
+            {"type": "enemy", "kind": "Wisp", "eras": "Future", "x": 100, "y": 5},
+            {"type": "enemy", "kind": "Sentinel", "eras": "All", "x": 112, "y": STAND},
+            {"type": "pickup", "kind": "health", "x": 10, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 26, "y": STAND},
+            {"type": "pickup", "kind": "health", "x": 52, "y": STAND},
+            {"type": "pickup", "kind": "chrono", "x": 74, "y": 10},
+            {"type": "pickup", "kind": "health", "x": 88, "y": 5},
+            {"type": "pickup", "kind": "chrono", "x": 108, "y": STAND},
+        ],
+    )
+    walls_and_floor(region)
+
+    # Every pattern the game has taught, in one level: alternating single gates, a
+    # spiked channel, a raised shelf, and a hazards-on-the-upper-floor strip. The
+    # synthesis is the point — a player who learned each idea separately has to use
+    # all of them without being told which is which.
+    for index, (era, tile) in enumerate((("past", "c"), ("present", "b"), ("future", "x"))):
+        lo = 26 + index * 10
+        gap(region, lo, lo + 3)
+        for x in range(lo + 1, lo + 3):
+            region.per_era.setdefault(era, []).append((FLOOR, x, tile))
+
+    # The channel, and the only two crossings of it.
+    gap(region, 56, 74)
+    for x in range(57, 64):
+        region.per_era.setdefault("past", []).append((FLOOR, x, "c"))
+    for x in range(67, 74):
+        region.per_era.setdefault("future", []).append((FLOOR, x, "x"))
+
+    # The shelf, reached from the west side and left from the east.
+    ledge(region, 62, 84, 11)
+    for x in range(70, 76):
+        region.per_era.setdefault("present", []).append((FLOOR, x, "b"))
+    for x in range(80, 84):
+        region.edits.append((10, x, "^"))
+
+    ledge(region, 88, 106, 6)
+    for x in range(94, 100):
+        region.edits.append((5, x, "^"))
+    tower(region, 50, 11, FLOOR - 1)
+    tower(region, 78, 2, 6)
+    tower(region, 102, 2, 6)
+
+    region.edits.append((5, 114, "G"))
+    return region
+
+
+# Progression order. The order here *is* the level order the game presents, so a
+# region added to this list is unlocked by finishing the one before it.
 REGIONS = [
+    build_awakening,
     build_ancient_bridge,
+    build_fallen_span,
+    build_drowned_road,
     build_crystal_vault,
+    build_split_meadow,
+    build_hollow_citadel,
+    build_sunken_lattice,
+    build_paradox_ward,
+    build_convergence,
 ]
 
 
@@ -246,7 +702,10 @@ def validate(document: dict, region_id: str) -> list[str]:
 
     entities = document["entities"]
     kinds = {e["type"] for e in entities}
-    if kinds - {"player", "enemy", "pickup", "seal"}:
+    # `checkpoint` must stay in this set: it is the one entity kind the C++ loader
+    # knows that the other regions above did not use, and dropping it here would
+    # have the validator reject the very files the loader accepts.
+    if kinds - {"player", "enemy", "pickup", "seal", "checkpoint"}:
         problems.append(f"{region_id}: unknown entity types {kinds}")
 
     if sum(1 for e in entities if e["type"] == "player") != 1:
@@ -300,8 +759,9 @@ def main() -> int:
     LEVEL_DIR.mkdir(parents=True, exist_ok=True)
 
     all_problems: list[str] = []
-    for build in REGIONS:
+    for index, build in enumerate(REGIONS, start=1):
         region = build()
+        region.order = index
         document = region.document()
         all_problems.extend(validate(document, region.id))
 
@@ -312,7 +772,7 @@ def main() -> int:
             path.write_text(json.dumps(document, indent=2) + "\n")
             state = "written"
         rows = len(document["past"])
-        print(f"{region.id:<18} {rows}x{WIDTH:<4} {state}")
+        print(f"{index:2d}. {region.id:<18} {rows}x{WIDTH:<4} {state}")
 
     if all_problems:
         print("\nproblems:", file=sys.stderr)

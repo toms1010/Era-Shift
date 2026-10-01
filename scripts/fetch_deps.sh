@@ -11,6 +11,7 @@
 #   SDL3_image  3.4.6
 #   SDL3_ttf    3.2.2
 #   doctest     2.4.12
+#   SQLite      3.45.3   (only if the system has no development package)
 #
 # Usage:
 #   ./scripts/fetch_deps.sh            # build everything
@@ -31,6 +32,7 @@ SDL_VERSION="3.4.16"
 SDL_IMAGE_VERSION="3.4.6"
 SDL_TTF_VERSION="3.2.2"
 DOCTEST_VERSION="2.4.12"
+SQLITE_VERSION="3450300"
 
 if [[ "${1:-}" == "--clean" ]]; then
     echo "[deps] removing ${DEPS_DIR}"
@@ -60,6 +62,39 @@ if [[ ! -f "${PREFIX}/include/doctest/doctest.h" ]]; then
     tar -xzf "${DEPS_DIR}/doctest.tar.gz" -C "${DEPS_DIR}"
     mkdir -p "${PREFIX}/include"
     cp -r "${DEPS_DIR}/doctest-${DOCTEST_VERSION}/doctest" "${PREFIX}/include/"
+fi
+
+# ---------------------------------------------------------------------------
+# SQLite (amalgamation, header + one C file)
+# ---------------------------------------------------------------------------
+# Only fetched when the system has no development package, because SQLite is on
+# essentially every distribution and this is a fallback rather than the primary
+# route. The amalgamation is deliberately self-contained: no autotools, no
+# cross-compile headaches, and one file to compile.
+fetch "https://www.sqlite.org/2024/sqlite-amalgamation-${SQLITE_VERSION}.zip" \
+      "${DEPS_DIR}/sqlite-amalgamation.zip"
+if [[ ! -f "${PREFIX}/include/sqlite3.h" ]]; then
+    echo "[deps] unpacking SQLite ${SQLITE_VERSION}"
+    rm -rf "${DEPS_DIR}/sqlite-amalgamation-${SQLITE_VERSION}"
+    # unzip is not guaranteed on a minimal container, so python is the fallback.
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -q -o "${DEPS_DIR}/sqlite-amalgamation.zip" -d "${DEPS_DIR}"
+    else
+        python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" \
+            "${DEPS_DIR}/sqlite-amalgamation.zip" "${DEPS_DIR}"
+    fi
+    SQLITE_SRC="${DEPS_DIR}/sqlite-amalgamation-${SQLITE_VERSION}"
+    mkdir -p "${PREFIX}/include" "${PREFIX}/lib"
+
+    # Compile it once into a static library, so neither the game nor the tests
+    # rebuild a 250k-line C file on every configure.
+    if [[ ! -f "${PREFIX}/lib/libsqlite3.a" ]]; then
+        echo "[deps] building SQLite ${SQLITE_VERSION}"
+        cc -O2 -fPIC -c "${SQLITE_SRC}/sqlite3.c" -o "${DEPS_DIR}/sqlite3.o"
+        ar rcs "${PREFIX}/lib/libsqlite3.a" "${DEPS_DIR}/sqlite3.o"
+    fi
+    cp "${SQLITE_SRC}/sqlite3.h" "${SQLITE_SRC}/sqlite3ext.h" "${PREFIX}/include/"
+    echo "[deps] SQLite installed to ${PREFIX}"
 fi
 
 build_sdl() {

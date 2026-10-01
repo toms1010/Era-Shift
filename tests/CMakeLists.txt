@@ -125,6 +125,10 @@ erashift_add_test(erashift_tests_gameplay
         gameplay/TestWorld.cpp
         gameplay/TestLevel.cpp
         gameplay/TestSaveGame.cpp
+        gameplay/TestTutorial.cpp
+        gameplay/TestDialogue.cpp
+        gameplay/TestRegions.cpp
+        gameplay/TestProgressDatabase.cpp
         gameplay/TestAnimation.cpp
         gameplay/TestParticles.cpp
 )

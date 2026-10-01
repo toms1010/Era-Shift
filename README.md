@@ -31,8 +31,8 @@ than an omission.
 
 ## Contents
 
-- [Quick start](#quick-start) · [Controls](#controls) · [How to play](#how-to-play)
-- [Screenshots](#screenshots) · [Architecture](#architecture) — the two diagrams
+- [How to run it](#how-to-run-it) · [Controls](#controls) · [How to play](#how-to-play)
+- [Regions](#regions) · [Screenshots](#screenshots) · [Architecture](#architecture)
 - [What is in the box](#what-is-in-the-box) — animation, effects
 - [Project layout](#project-layout) · [Documentation](#documentation)
 - [Build configurations](#build-configurations) · [Testing](#testing)
@@ -40,22 +40,90 @@ than an omission.
 
 ---
 
-## Quick start
+## How to run it
+
+### Prerequisites
+
+Either the distribution packages, or nothing to install:
 
 ```bash
-# 1. Dependencies (only needed if your distro has no SDL3 packages)
-./scripts/fetch_deps.sh
+sudo apt install build-essential cmake ninja-build \
+                 libsdl3-dev libsdl3-image-dev libsdl3-ttf-dev \
+                 nlohmann-json3-dev libsqlite3-dev doctest-dev
+```
 
-# 2. Build
+If your distribution has no SDL3 packages — or you have no root access — build
+them into the project instead. Nothing is installed system-wide:
+
+```bash
+./scripts/fetch_deps.sh          # into .deps/install, picked up automatically
+```
+
+`CMakeLists.txt` prefers system packages and only falls back to that local
+prefix, so you can do either and skip the other.
+
+### Build
+
+Two ways, producing two different output paths. Pick one and stay with it.
+
+**The presets** — the documented route, output in `build/<preset>/`:
+
+```bash
 cmake --preset debug
-cmake --build --preset debug
-
-# 3. Run
+cmake --build --preset debug -j"$(nproc)"
 ./build/debug/EraShift
+```
 
-# 4. Tests — headless, no display
+**A plain build directory** — output directly in `build/`:
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j"$(nproc)"
+./build/EraShift
+```
+
+After either, the binary is `EraShift` next to its build directory. If you
+reconfigure into `build/` and later reach for `cmake --build --preset debug`,
+you will get "no work to do" and no binary — the presets use a *different*
+directory, so mixing the two is the most common way to appear to have built
+nothing.
+
+### Run it
+
+```bash
+./build/debug/EraShift                      # or ./build/EraShift
+```
+
+It opens on the title screen. **NEW GAME** goes to the region select; pick a
+region and the run begins. **CONTINUE** resumes a save if one exists.
+
+No display attached — over SSH, or in a container:
+
+```bash
+./build/debug/EraShift --headless --frames 120
+```
+
+`--headless` forces SDL's dummy video driver. It quits after `--frames` frames
+and prints a clean shutdown, so it works as a smoke test in CI.
+
+### Test
+
+```bash
 ctest --preset debug --output-on-failure
 ```
+
+323 cases across four binaries. All headless, no display required.
+
+### Validate the regions
+
+```bash
+python3 tools/validate_levels.py
+```
+
+Checks every file in `data/levels/` for playability, not just loadability: era
+layers agreeing in shape, one spawn, one seal per era, a gate in all three eras,
+and a per-era flood fill from the spawn proving each gate and seal is reachable.
+Exits non-zero when any region fails, so it can gate a commit.
 
 ### Command line
 
@@ -65,8 +133,8 @@ ctest --preset debug --output-on-failure
 | `--headless` | Dummy video driver, for CI, SSH and containers. |
 | `--screenshot <png>` | Write a PNG of the window. |
 | `--screenshot-frame <n>` | Which frame to capture (default 30). |
-| `--start-state <s>` | Open on `playing`, `settings`, `credits` or `paused`. |
-| `--level <file>` | Load a specific level instead of the shipped one. |
+| `--start-state <s>` | Open on `playing`, `settings`, `credits`, `paused` or `levelselect`. |
+| `--level <file>` | Load a specific region instead of choosing one. |
 | `--demo` | Replace input with the built-in attract script. |
 | `--content <dir>` | Load assets and data from elsewhere. |
 | `--set key=value` | Override any configuration value. |
@@ -84,8 +152,11 @@ this repository were produced.
 ./build/debug/EraShift --demo --frames 200 --start-state playing \
     --screenshot /tmp/shot.png --screenshot-frame 200
 
-# Force a fully paradoxed run without playing it
-./build/debug/EraShift --demo --frames 400
+# Check the region select renders and lists what is on disk
+./build/debug/EraShift --headless --start-state levelselect --frames 60
+
+# Jump straight into one region, skipping the menu
+./build/debug/EraShift --headless --start-state playing --level data/levels/crystal_vault.json
 ```
 
 ---
@@ -127,6 +198,96 @@ neither can be hit while it is not in the world. So:
 Each shift and each kill adds **paradox**, and paradox is the run's own pressure.
 It does not stop you playing; it changes how the game *feels* — the screen starts
 to tear, the edges of the world close in. See [Paradox](#paradox).
+
+---
+
+## Regions
+
+Eleven regions ship in `data/levels/`: a ten-region progression plus
+`ancient_forest`, which predates the ordering and appears last. **NEW GAME** on the
+title screen opens the region select, which lists whatever is in that directory and
+locks anything the player has not reached yet.
+
+| # | Region | The idea |
+| --- | --- | --- |
+| 1 | **Awakening** | The tutorial. One mechanic at a time; three crossings, one per era. |
+| 2 | **Ancient Bridge** | Three crossings in a fixed order, no hand-holding. |
+| 3 | **Fallen Span** | Era-specific hazards: the same ground is safe in exactly one era. |
+| 4 | **Drowned Road** | A causeway half-built in the Past and half-standing in the Present. |
+| 5 | **Crystal Vault** | Vertical. Three stacked shelves, each gated on a different era. |
+| 6 | **Split Meadow** | Six alternating gates; the chrono on the floor does not cover all of them. |
+| 7 | **Hollow Citadel** | Combat. Nine enemies, one open courtyard, nowhere to hide. |
+| 8 | **Sunken Lattice** | A grid of five crossing-rows, cycling through the eras. |
+| 9 | **Paradox Ward** | Six single-tile gates: a shift every few steps. |
+| 10 | **Convergence** | Every earlier pattern at once, and a long way home. |
+| — | **Ancient Forest** | The original hand-authored region. |
+
+Each region declares an `order`, and the level select sorts on it rather than on
+the filename — alphabetical order would have put Ancient Bridge before Awakening.
+Finishing a region records it and unlocks the next.
+
+The regions are authored by `tools/make_levels.py` rather than by hand. Each one
+is described once as a list of edits and emitted as the three era layers, which
+is what stops a typo in one layer from silently disagreeing with the other two:
+
+```bash
+python3 tools/make_levels.py           # regenerate the JSON files
+python3 tools/make_levels.py --check   # validate without writing
+```
+
+The script refuses to emit a region that has no player spawn, not one seal per
+era, no gate, an entity outside the grid, or an entity with nothing beneath it.
+
+### Adding your own region
+
+Drop a `.json` file in `data/levels/`. It appears in the select on next launch —
+there is no menu to edit and nothing to keep in step.
+
+```json
+{
+  "id": "my_region",
+  "name": "My Region",
+  "past":    ["##......##", "##......##", "##########"],
+  "present": ["##......##", "##......##", "##########"],
+  "future":  ["##......##", "##......##", "##########"],
+  "entities": [
+    { "type": "player", "x": 1, "y": 1 },
+    { "type": "seal",   "era": "Past",    "x": 3, "y": 1 },
+    { "type": "seal",   "era": "Present", "x": 5, "y": 1 },
+    { "type": "seal",   "era": "Future",  "x": 7, "y": 1 },
+    { "type": "enemy",  "kind": "Sentinel", "eras": "All",    "x": 6, "y": 1 },
+    { "type": "pickup", "kind": "chrono",                    "x": 4, "y": 1 }
+  ]
+}
+```
+
+The three layers are **unioned**, not overwritten: a cell is solid in an era if
+that era's layer says so. That is what lets one grid answer "what is solid right
+now" for any era without rebuilding anything, and it is the whole vocabulary:
+
+| Char | Tile | Solid in |
+| --- | --- | --- |
+| `#` | Solid | every era |
+| `=` | Platform | every era, from above only |
+| `c` | Crumble | **Past only** — masonry that has not rotted |
+| `b` | Bridge | **Present only** — the span that still stands |
+| `x` | Crystal | **Future only** — matter grown after the fact |
+| `^` | Hazard | not solid; damages whatever stands in it |
+| `G` | Gate | the exit, reachable only once all three seals are taken |
+| `.` | Empty | never |
+
+So a chasm crossed by `c` in the Past layer is open in the Present and the
+Future. That is the level design: write a gap three times, once per era, and the
+player has to change time to cross it.
+
+Entity fields: `type` is `player`, `enemy`, `pickup` or `seal`. Enemies take a
+`kind` (`Sentinel`, `Warden`, `Wisp`) and `eras` (`All`, `Past`, `Present`,
+`Future`); wisps only exist in the Future and wardens only in the Past. Seals
+take `era`. Pickups take `kind`: `chrono` or `health`. `label` is optional and
+appears as the toast text.
+
+A file that fails to parse is skipped rather than fatal — one broken region does
+not make the select unopenable — and the skip is logged.
 
 ---
 
@@ -365,17 +526,20 @@ include/EraShift/       Public headers, mirroring src/
   Debug/                Performance counters, overlay
   Game/                 World, player, enemies, level, Animation, Feedback,
                         EraTheme
-  Game/states/          Title, playing, paused, results, settings, credits
+  Game/states/          Title, level select, playing, paused, results,
+                        settings, credits
 src/EraShift/           Implementations
 tests/
   unit/                 No SDL, no display
   integration/          No display, several systems together
-  gameplay/             The whole simulation, plus the animation and particle
-                        systems. Still no SDL, still no display
+  gameplay/             The whole simulation, plus animation, particles, the
+                        tutorial, every region and the progression database.
+                        Still no SDL, still no display
 assets/                 One font. See assets/README.md for why that is all
 data/levels/            Data-driven content (JSON)
 config/                 Layered JSON configuration
 scripts/                Dependency bootstrap, crash harness, font generator
+tools/                  Region authoring and validation (Python)
 docs/                   Architecture and design documents
   screenshots/          Real captured frames, referenced by this file
 ```
@@ -419,7 +583,7 @@ The four binaries, and what each is for:
 | --- | --- | --- |
 | `erashift_tests_unit` | 94 | Maths, logging, config, timing, the game loop, the state machine, the font |
 | `erashift_tests_integration` | 10 | The documented state flow, config round trips and migrations |
-| `erashift_tests_gameplay` | 154 | The whole simulation, plus the animation controller and the particle pool |
+| `erashift_tests_gameplay` | 209 | The whole simulation, plus the animation controller, the particle pool, the tutorial, every region, and the progression database |
 | `erashift_tests_platform` | 10 | The SDL boundary: the event pump |
 
 `gameplay` links **only** `erashift_core` and no SDL whatsoever. That is the rule
@@ -431,6 +595,12 @@ Four binaries, all headless: `unit` (no SDL), `integration` (no display),
 systems are tested alongside the gameplay, because they are pure arithmetic — 41
 cases covering the animation controller and the particle pool, with assertions on
 clip timings and emission rates rather than on pictures.
+
+Every region is loaded through the game's own loader in
+`tests/gameplay/TestRegions.cpp`, and the progression database's failure paths —
+an unopenable file, a corrupt one, a schema from a newer build — are covered in
+`tests/gameplay/TestProgressDatabase.cpp`. Neither needs a display or a sound
+card.
 
 `platform` covers what cannot be: the event pump, which turns SDL events into the
 game's own.
@@ -485,6 +655,7 @@ fiction.
 | SDL3_image | 3.4.6 | Image loading |
 | SDL3_ttf | 3.2.2 | Font rasterisation |
 | nlohmann/json | 3.11.3 | Configuration and save data |
+| SQLite | 3.45+ | Progression: unlocks, per-region results, checkpoints |
 | doctest | 2.4.12 | Unit testing |
 
 `scripts/fetch_deps.sh` builds all of them into `.deps/install` **without

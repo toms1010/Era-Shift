@@ -205,6 +205,12 @@ private:
 
     /// True when a save file exists, which is what enables CONTINUE.
     bool m_hasSave = false;
+    /// Whether any progression exists, which is what gates LEVEL SELECT.
+    bool m_hasProgress = false;
+    /// The saved run's region name, for the CONTINUE caption.
+    std::string m_continueName;
+    /// "3 of 10 regions open", for the LEVEL SELECT caption.
+    std::string m_progressDetail;
 };
 
 } // namespace EraShift::Game

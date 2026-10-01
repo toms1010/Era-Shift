@@ -59,6 +59,25 @@ class ResultState final : public Core::IGameState {
 public:
     ResultState(Core::GameState id, Game::Outcome outcome, const Game::RunStats& stats);
 
+    /// Restarts the current region from a checkpoint instead of from the spawn.
+    ///
+    /// Set before the state is pushed. A defeat with no checkpoint offers only
+    /// RETRY REGION, because offering RETRY CHECKPOINT and having it silently do
+    /// the same thing as a full restart is a lie in the menu.
+    void setRetryFromCheckpoint(bool enabled) noexcept { m_retryCheckpoint = enabled; }
+    /// The level to load, so the results screen can name it. Empty is fine.
+    void setLevelName(std::string name) { m_levelName = std::move(name); }
+    /// The level's *id*, which is what the database is keyed on. The display name
+    /// is not: a region can be renamed without invalidating its progress.
+    void setLevelId(std::string id) { m_levelId = std::move(id); }
+    [[nodiscard]] const std::string& levelId() const noexcept { return m_levelId; }
+    [[nodiscard]] const std::string& levelName() const noexcept { return m_levelName; }
+    /// Records the completion before the menu is drawn, for a victory.
+    ///
+    /// Called by the caller rather than done here, because unlocking is a
+    /// database write and this state is otherwise read-only.
+    void markCompleted(bool completed) noexcept { m_recorded = completed; }
+
     void onEnter(StateContext& ctx) override;
     void update(StateContext& ctx, double fixedDelta) override;
     void render(StateContext& ctx, double alpha) override;
@@ -72,6 +91,10 @@ private:
     MenuStyles     m_styles;
     float          m_time = 0.0f;
     Graphics::UiScale m_viewportScale{1.0f};
+    bool  m_retryCheckpoint = false;
+    bool  m_recorded = false;
+    std::string m_levelName;
+    std::string m_levelId;
 };
 
 /// The credits screen. Reached from the main menu.

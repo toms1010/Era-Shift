@@ -31,6 +31,11 @@ enum class EntityKind : std::uint8_t {
     Enemy,
     Pickup,
     Seal,
+    /// A volume that records a checkpoint when the player walks through it.
+    ///
+    /// Appended rather than inserted: `nameToKind` maps these by name in the
+    /// level file, and any code that persists an ordinal keeps working.
+    Checkpoint,
 };
 
 /// Kinds of collectable.
@@ -47,14 +52,20 @@ struct PlacedEntity {
     Era         sealEra = Era::Past;
     std::string label;
     EraMask     existsIn = kEraMaskAll;
-    int  x = 0;
-    int  y = 0;
+int   x = 0;
+    int   y = 0;
 };
 
 /// A complete level.
 struct Level {
     std::string id;
     std::string name;
+    /// Position in the designed progression, 1-based. Zero means unstated.
+    ///
+    /// Read from the file's `order` field. Sorting by this rather than by filename
+    /// is what keeps `Awakening` first and `Convergence` last instead of the two
+    /// ends swapping with the alphabet.
+    int order = 0;
     /// One row of characters per era, Past first. Empty when built in code.
     std::vector<std::string> pastRows;
     std::vector<std::string> presentRows;
@@ -78,6 +89,29 @@ struct Level {
 
     /// The first placed entity of a given kind, or nullptr.
     [[nodiscard]] const PlacedEntity* find(EntityKind kind) const noexcept;
+
+    /// True when `(tileX, tileY)` is inside a checkpoint volume.
+    ///
+    /// Checkpoints are placed as entities rather than baked into the tile grid,
+    /// because a trigger is a gameplay fact and a character in the grid is a
+    /// geometry fact. Putting them in the same place would mean the loader had to
+    /// guess which `#` was a wall and which was a checkpoint.
+    [[nodiscard]] bool checkpointHere(int tileX, int tileY) const;
+
+    /// How far from a checkpoint's tile the player may be and still trigger it,
+    /// in tiles.
+    ///
+    /// Named so a caller answering "which volume am I in?" uses the same number as
+    /// the trigger does. Duplicating the constant is how a caller and the trigger
+    /// disagree, and a checkpoint then fires twice — or never.
+    static constexpr int kCheckpointReach = 2;
+
+    /// Position in the designed progression, 1-based. Zero means unstated.
+    ///
+    /// A named accessor rather than reading `order` at the call sites, because
+    /// "zero means this file does not participate in the progression" is a rule
+    /// worth stating once.
+    [[nodiscard]] bool hasProgressionOrder() const noexcept { return order > 0; }
 };
 
 /// Decodes one row of tile characters into a row of tiles.
@@ -108,17 +142,27 @@ struct LevelEntry {
     std::string id;
     /// The level's display name, falling back to the id.
     std::string name;
+    /// Position in the designed progression, 1-based.
+    ///
+    /// Read from the file's `order` field. Filename order would shuffle the
+    /// regions alphabetically, which is not the order they are meant to be
+    /// played in. `0` means "unstated", which sorts last.
+    int order = 0;
     /// Path relative to the directory that was listed.
     std::filesystem::path file;
 };
 
-/// Lists the levels in a directory, sorted by name.
+/// Lists the levels in a directory, in designed progression order.
 ///
 /// Every `*.json` in `directory` is a candidate. A file that does not parse is
 /// **skipped rather than reported**, because a level select must not be
 /// unopenable on account of one bad file — the level that is merely missing is
 /// the one the player notices. `brokenOut`, when non-null, collects the paths
 /// that were skipped so a caller that wants to log them can.
+///
+/// Sorted by the file's `order` field, then by filename. An unordered file sorts
+/// after the ordered ones rather than among them, so a region that predates the
+/// field still appears — at the end, which is where a legacy region belongs.
 ///
 /// The directory itself missing is not an error: the result is simply empty,
 /// which is what a shipped game with no `data/` directory should show.

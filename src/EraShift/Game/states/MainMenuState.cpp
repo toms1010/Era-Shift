@@ -393,19 +393,58 @@ void MainMenuState::buildMenu(StateContext& ctx)
 {
     // CONTINUE is only offered when there is something to continue. Enabling it
     // unconditionally and failing on activation is worse than not offering it.
+    m_continueName.clear();
     if (ctx.config != nullptr) {
         const Core::SaveManager manager(ctx.config->saveDirectory(), *ctx.log);
         m_hasSave = manager.hasSave();
+        if (m_hasSave) {
+            Core::SaveGame save;
+            if (manager.load(save) && !save.levelName.empty()) {
+                m_continueName = save.levelName;
+            }
+        }
     } else {
         m_hasSave = false;
     }
 
+    // LEVEL SELECT is offered only once something has been completed. Before that
+    // there is exactly one unlocked region, so the screen would be a list of nine
+    // locks — which is a worse first impression than not offering it.
+    m_hasProgress = false;
+    if (ctx.progress != nullptr) {
+        const Core::Progress progress = ctx.progress->loadProgress();
+        m_hasProgress = progress.highestLevel > 1 || progress.tutorialComplete;
+        if (m_hasProgress) {
+            const auto levels = listLevels(ctx.levelDirectory.empty()
+                                               ? std::filesystem::path{"data/levels"}
+                                               : ctx.levelDirectory);
+            const int unlocked = std::clamp(progress.highestLevel, 1,
+                                            static_cast<int>(std::max<std::size_t>(
+                                                levels.size(), 1)));
+            m_progressDetail = std::to_string(unlocked) + " of " +
+                               std::to_string(levels.size()) + " regions open";
+        }
+    }
+    if (!m_hasProgress) {
+        m_progressDetail = "finish level 1 to unlock more";
+    }
+
+    // CONTINUE says where it will resume *to*, not just that it can. "resume where
+    // you left off" on a game with ten regions is a question the player has to
+    // answer by pressing the key and looking.
+    std::string continueDetail = "no saved run";
+    if (m_hasSave) {
+        continueDetail = "resume " + (m_continueName.empty() ? std::string("your run")
+                                                             : m_continueName);
+    }
+
     m_menu.setItems({
-        {"NEW GAME", "choose a region",       true},
-        {"CONTINUE", m_hasSave ? "resume where you left off" : "no saved run", m_hasSave},
-        {"SETTINGS", "graphics and input",    true},
-        {"CREDITS",  "about Era Shift",        true},
-        {"QUIT",     "exit to desktop",        true},
+        {"NEW GAME",     "choose a region",                 true},
+        {"CONTINUE",     continueDetail,                     m_hasSave},
+        {"LEVEL SELECT", m_progressDetail,                   m_hasProgress},
+        {"SETTINGS",     "graphics, input and the tutorial", true},
+        {"CREDITS",      "about Era Shift",                   true},
+        {"QUIT",         "exit to desktop",                   true},
     });
 }
 
@@ -525,6 +564,16 @@ void MainMenuState::activateSelection(StateContext& ctx)
         auto state = std::make_shared<PlayingState>();
         state->applySave(save);
         ctx.states->switchTo(state);
+        return;
+    }
+
+    if (item->label == "LEVEL SELECT") {
+        // A player with no progression reaches this only if a save file says they
+        // have some, so the guard is a real check rather than belt-and-braces.
+        if (ctx.progress == nullptr || !m_hasProgress) {
+            return;
+        }
+        ctx.states->push(std::make_shared<LevelSelectState>());
         return;
     }
 

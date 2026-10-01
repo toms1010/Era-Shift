@@ -1,5 +1,6 @@
 #include "EraShift/Game/states/ResultState.hpp"
 
+#include "EraShift/Core/ProgressDatabase.hpp"
 #include "EraShift/Game/Level.hpp"
 #include "EraShift/Game/states/MainMenuState.hpp"
 #include "EraShift/Game/states/PausedState.hpp"
@@ -102,11 +103,32 @@ void ResultState::onEnter(StateContext& ctx)
 
 void ResultState::buildMenu(StateContext& ctx)
 {
-    m_menu.setItems({
-        {"PLAY AGAIN", "restart from the beginning", true},
-        {"MAIN MENU",  "back to the title screen",    true},
-        {"QUIT",       "exit to desktop",             true},
-    });
+    const bool won = m_outcome == Game::Outcome::Victory;
+
+    // A defeat offers the checkpoint first when there is one, because that is
+    // what the player wants nine times out of ten. It is offered *only* when a
+    // checkpoint exists — the caller checks — so the row never appears and then
+    // quietly restart the whole region.
+    if (won) {
+        m_menu.setItems({
+            {"PLAY AGAIN", "run the region again",       true},
+            {"MAIN MENU",  "back to the title screen",    true},
+            {"QUIT",       "exit to desktop",             true},
+        });
+    } else if (m_retryCheckpoint) {
+        m_menu.setItems({
+            {"RETRY CHECKPOINT", "return to the last one",  true},
+            {"RESTART REGION",   "start from the beginning", true},
+            {"MAIN MENU",        "back to the title screen", true},
+            {"QUIT",             "exit to desktop",           true},
+        });
+    } else {
+        m_menu.setItems({
+            {"RESTART REGION", "start from the beginning", true},
+            {"MAIN MENU",      "back to the title screen", true},
+            {"QUIT",           "exit to desktop",           true},
+        });
+    }
     static_cast<void>(ctx);
 }
 
@@ -159,7 +181,20 @@ void ResultState::update(StateContext& ctx, double fixedDelta)
     if (item == nullptr) {
         return;
     }
-    if (item->label == "PLAY AGAIN") {
+    if (item->label == "RETRY CHECKPOINT") {
+        auto retry = std::make_shared<PlayingState>();
+        // Reads the checkpoint itself rather than being handed one, so the retry
+        // and the last save of a checkpoint cannot disagree. A missing checkpoint
+        // falls back to a plain restart, because "retry from a checkpoint that is
+        // not there" has no meaning a player could act on.
+        const bool restored =
+            ctx.progress != nullptr && retry->applyCheckpoint(ctx.progress->readCheckpoint(levelId()));
+        if (restored) {
+            LevelSelectState::clearChosenLevel();
+        }
+        ctx.states->reset(std::move(retry));
+    } else if (item->label == "RESTART REGION" || item->label == "PLAY AGAIN") {
+        LevelSelectState::clearChosenLevel();
         ctx.states->reset(std::make_shared<PlayingState>());
     } else if (item->label == "MAIN MENU") {
         ctx.states->popToRoot();
@@ -332,14 +367,69 @@ void LevelSelectState::rebuild(StateContext& ctx)
         ctx.log->warn("Game", "skipping unreadable level '{}'", path.string());
     }
 
+    // Unlocked set, read once. Everything the level select shows is a function of
+    // this plus the directory listing — never of the row order — so a level
+    // cannot become selectable by being moved.
+    Core::Progress progress;
+    if (ctx.progress != nullptr) {
+        progress = ctx.progress->loadProgress();
+    }
+    const int highest = std::max(1, progress.highestLevel);
+
+    std::vector<Core::LevelRecord> completed;
+    for (const Core::LevelRecord& record : progress.levels) {
+        if (record.completed) {
+            completed.push_back(record);
+        }
+    }
+    const auto completedTime = [&completed](const std::string& id) -> const Core::LevelRecord* {
+        const auto found = std::find_if(
+            completed.begin(), completed.end(),
+            [&id](const Core::LevelRecord& r) { return r.levelId == id; });
+        return found != completed.end() ? &*found : nullptr;
+    };
+
     std::vector<MenuItem> items;
     items.reserve(m_levels.size() + 1);
-    for (const Game::LevelEntry& level : m_levels) {
-        items.emplace_back(level.name, "begin here", level.id);
+    for (std::size_t i = 0; i < m_levels.size(); ++i) {
+        const Game::LevelEntry& level = m_levels[i];
+
+        // Position in the progression is 1-based; a region with no `order` sorts
+        // last and is never locked, because it cannot be "beaten" to reach.
+        const int position = static_cast<int>(i) + 1;
+        const bool ordered = level.order > 0;
+        // A region is playable if the player has reached its position, or if the
+                              // database has an explicit unlock for it (which is how level 1 is
+                              // reachable before anything is completed).
+                              const bool unlocked = !ordered || position <= highest;
+        const Core::LevelRecord* record = completedTime(level.id);
+
+        std::string detail;
+        if (!unlocked) {
+            detail = "locked";
+        } else if (record != nullptr) {
+            // Best time and score, when there is one to report.
+            detail = "complete  -  " + formatTime(record->bestTime) + "  -  " +
+                     std::to_string(record->bestScore);
+        } else {
+            detail = "begin here";
+        }
+
+        items.emplace_back(level.name, detail, level.id, unlocked);
     }
+
     // BACK is unconditional. A level select with no BACK is a trap, and an empty
     // directory is exactly the case where the player most needs a way out.
     items.emplace_back("BACK", "return to the title screen", "");
+
+    // The selection lands on the first unlocked region rather than row 0, so a
+    // player returning to a fresh build opens on something they can play.
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        if (items[i].enabled && items[i].label != "BACK") {
+            m_menu.select(i);
+            break;
+        }
+    }
 
     m_menu.setItems(std::move(items));
     m_built = true;
@@ -398,6 +488,17 @@ void LevelSelectState::update(StateContext& ctx, double fixedDelta)
     // The item's *value* is the level id, so the row and the entry it stands for
     // cannot drift apart: the menu is generated from the list, never matched
     // back to it by index or by re-reading the label.
+    // Re-checked here, not trusted from the row. The row was built when the state
+    // was entered; the player could have reset their progress from Settings in
+    // between only by leaving this screen — but a stale `enabled` flag that starts
+    // a locked region is exactly the kind of bug that reads as "the lock is broken".
+    if (!item->enabled) {
+        if (ctx.log != nullptr) {
+            ctx.log->info("Game", "'{}' is locked", item->label);
+        }
+        return;
+    }
+
     const std::string id = item->value;
     const auto found = std::find_if(m_levels.begin(), m_levels.end(),
                                     [&id](const Game::LevelEntry& e) { return e.id == id; });
@@ -408,6 +509,16 @@ void LevelSelectState::update(StateContext& ctx, double fixedDelta)
 
     g_chosenLevel = found->file;
     ctx.log->info("Game", "region selected: {}", found->name);
+
+    // Starting a region is a progression event, so the "current level" pointer
+    // moves here rather than when the player leaves it. A player who picks level 7
+    // and quits should come back to level 7, not to whatever they finished last.
+    if (ctx.progress != nullptr) {
+        Core::Progress progress = ctx.progress->loadProgress();
+        progress.currentLevelId = found->id;
+        ctx.progress->saveProgress(progress);
+    }
+
     ctx.states->push(std::make_shared<PlayingState>());
 }
 

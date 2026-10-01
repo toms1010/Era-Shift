@@ -48,7 +48,7 @@ public:
 
 private:
     /// Which page of options is showing.
-    enum class Page { General, Graphics, Controls };
+    enum class Page { General, Graphics, Game, Controls };
 
     /// What the controls page is waiting for. Idle otherwise.
     enum class Rebind {
@@ -82,6 +82,12 @@ private:
     [[nodiscard]] const char* pageTitle() const noexcept;
     /// The hint line for the current page. Shares `pageTitle`'s reason.
     [[nodiscard]] const char* pageFooter() const noexcept;
+    /// Locks every region again and forgets the tutorial's completion.
+    ///
+    /// A separate method rather than an `adjust` branch because it is destructive
+    /// and must not be reachable by holding a key: left/right steps a value, this
+    /// wipes progress.
+    void resetProgress(StateContext& ctx);
 
     MenuList   m_menu;
     MenuStyles m_styles;
@@ -96,6 +102,16 @@ private:
     int   m_vsync       = 1;
     int   m_showFps     = 0;
     int   m_uiScale      = 100;
+    /// Whether the first-run tutorial is shown. Recorded in the progression
+    /// database, so it survives a New Game the way a settings.json value would not.
+    int   m_tutorialEnabled = 1;
+
+    /// True while the destructive reset is waiting for a second confirmation.
+    ///
+    /// Reset rather than a dialog, because a modal for one yes/no question is
+    /// more machinery than the question deserves — and this way the confirmation
+    /// is the row itself, so a player cannot confirm a dialog they did not read.
+    bool  m_confirmReset = false;
 
     Rebind m_rebind = Rebind::None;
     Input::Action m_rebindTarget = Input::Action::Count;

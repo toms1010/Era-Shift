@@ -64,6 +64,9 @@ layer are in `Core` instead, and the reason is the same in all three cases:
 | `ParticleSystem` | `Graphics/ParticleSystem.cpp` | A fixed pool with velocity integration. Draws nothing. |
 | `AnimationController` | `Game/Animation.cpp` | Clip sampling and blending. Poses, not pixels. |
 | Clip selection | `Game/Animation.cpp` | `playerClipFor` / `enemyClipFor`: which clip the simulation's state calls for. Pure logic over `Player` and `Enemy`, so it lives here rather than in the state that draws them. |
+| `Tutorial` | `Game/Tutorial.cpp` | Which lesson is showing and whether the action satisfied it. No SDL, so the whole tutorial is testable without a display. |
+| `DialoguePanel` | `Game/Dialogue.hpp` | A struct of strings and a `open()` predicate. The drawing is a free function beside it, because a panel is a rectangle and some text. |
+| `ProgressDatabase` | `Core/ProgressDatabase.cpp` | SQLite-backed progression. In `Core` because it is persistence, not presentation, and because its failure paths are worth testing without a window. |
 
 `PlayingState` is the counter-example that proves the rule matters: it holds a
 renderer, an input device and a level, so nothing in it can be asserted on
@@ -108,6 +111,38 @@ is precisely how the Phase 1 segfault happened — see
 exception is the signal-handler flag, which is process-global because a process
 has exactly one set of signal dispositions, and which is only ever assigned
 from a handler.
+
+**One documented exception to that rule**, added with the level select:
+`LevelSelectState::chosenLevel()` is a function-local static holding the region
+the player picked. It has to be, because the `PlayingState` built on the far side
+of the transition needs the choice and the `LevelSelectState` is destroyed by that
+transition — so the value cannot live on the object being destroyed. It is
+consumed by the next `PlayingState::syncLevel` and cleared immediately, which is
+what stops it surviving into a later NEW GAME. It is the only static in the
+project that is not a sink or a handle.
+
+---
+
+## 3a. Persistence
+
+Two stores, deliberately, because they answer different questions.
+
+| | `SaveManager` | `ProgressDatabase` |
+| --- | --- | --- |
+| Holds | one continue slot, exact run state | ten regions of unlocks, results, checkpoints |
+| Format | one JSON file | SQLite, four tables |
+| Written | on quit, on level change | on a checkpoint, a completion, a region choice |
+| Read by | `CONTINUE` | the level select, RETRY CHECKPOINT, Settings |
+
+`continue.json` cannot express "region 7 completed in 4:12 with 3 seals, so region
+8 is now unlocked" alongside the live run state, and bolting those fields onto it
+would make every new one a change to the format that older builds would
+misread. The database is versioned for the same reason, and refuses to write over
+a schema from a newer build rather than downgrading it.
+
+Neither is cloud-backed, and neither is required: with no writable config
+directory, `context().progress` is null and the game plays normally with unlocks
+and checkpoints simply not recorded.
 
 ---
 

@@ -19,6 +19,7 @@ add_library(erashift_core STATIC
     EraShift/Core/SignalHandler.cpp
     EraShift/Core/DemoDriver.cpp
     EraShift/Core/SaveGame.cpp
+    EraShift/Core/ProgressDatabase.cpp
     EraShift/Graphics/Math.cpp
     EraShift/Graphics/Color.cpp
 
@@ -34,6 +35,8 @@ add_library(erashift_core STATIC
     # Presentation that is still pure arithmetic. Lives here for the same reason
     # the simulation does: it is fully testable headlessly.
     EraShift/Game/Animation.cpp
+    EraShift/Game/Tutorial.cpp
+    EraShift/Game/Dialogue.cpp
     EraShift/Graphics/ParticleSystem.cpp
 )
 
@@ -51,6 +54,7 @@ target_link_libraries(erashift_core
         erashift::options
     PRIVATE
         erashift::json
+        SQLite::SQLite3
 )
 
 add_library(erashift_engine STATIC

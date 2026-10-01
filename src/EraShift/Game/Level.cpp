@@ -68,6 +68,7 @@ bool nameToKind(std::string_view name, EntityKind& out) noexcept
     if (name == "enemy")  { out = EntityKind::Enemy;       return true; }
     if (name == "pickup") { out = EntityKind::Pickup;      return true; }
     if (name == "seal")   { out = EntityKind::Seal;        return true; }
+    if (name == "checkpoint") { out = EntityKind::Checkpoint; return true; }
     return false;
 }
 
@@ -194,6 +195,10 @@ bool loadLevelFromJson(std::string_view json, Level& out, std::string& errorOut)
     Level level;
     level.id   = document.value("id", std::string{"unknown"});
     level.name = document.value("name", level.id);
+    // Clamped at 1 so a file claiming order 0 or -5 is treated as "unstated"
+    // rather than sorting before level 1.
+    const int order = document.value("order", 0);
+    level.order = order > 0 ? order : 0;
 
     const auto readRows = [&](const char* key, std::vector<std::string>& target) -> bool {
         if (!document.contains(key)) {
@@ -301,9 +306,6 @@ std::vector<LevelEntry> listLevels(const std::filesystem::path& directory,
         return entries;
     }
 
-    // Sorted so the list order does not depend on the filesystem's. An
-    // unsorted directory listing is the kind of thing that looks fine until a
-    // player gets a different order on a different machine.
     std::vector<std::filesystem::path> files;
     for (const auto& item : std::filesystem::directory_iterator(directory, ec)) {
         if (ec) {
@@ -314,6 +316,9 @@ std::vector<LevelEntry> listLevels(const std::filesystem::path& directory,
         }
         files.push_back(item.path());
     }
+    // Sorted so the list order does not depend on the filesystem's. An unsorted
+    // directory listing looks fine until a player gets a different order on a
+    // different machine.
     std::sort(files.begin(), files.end());
 
     for (const auto& file : files) {
@@ -328,14 +333,51 @@ std::vector<LevelEntry> listLevels(const std::filesystem::path& directory,
             continue;
         }
         LevelEntry entry;
-        entry.file = file.filename();
-        entry.id   = file.stem().string();
+        entry.file  = file.filename();
+        entry.id    = file.stem().string();
         // The file's own `name` wins, because that is what the author wrote for
         // players. The stem is only the fallback for a file that omits it.
-        entry.name = level.name.empty() ? entry.id : level.name;
+        entry.name  = level.name.empty() ? entry.id : level.name;
+        entry.order = level.order;
         entries.push_back(std::move(entry));
     }
+
+    // By designed progression, not filename. A region with no `order` field goes
+    // last rather than interleaved, so a hand-authored region that predates the
+    // field still appears without displacing the ones that declare a position.
+    std::stable_sort(entries.begin(), entries.end(),
+                     [](const LevelEntry& a, const LevelEntry& b) {
+                         const bool aOrdered = a.order > 0;
+                         const bool bOrdered = b.order > 0;
+                         if (aOrdered != bOrdered) {
+                             return aOrdered;
+                         }
+                         if (!aOrdered) {
+                             return false;   // keep filename order among the rest
+                         }
+                         return a.order < b.order;
+                     });
     return entries;
+}
+
+bool Level::checkpointHere(int tileX, int tileY) const
+{
+    // Only entities of kind Checkpoint count, so a level cannot accidentally arm a
+    // checkpoint by placing something else in the volume.
+    for (const PlacedEntity& entity : entities) {
+        if (entity.kind != EntityKind::Checkpoint) {
+            continue;
+        }
+        // A generous radius, measured in tiles. The trigger should be crossed by
+        // walking through it, not by standing on one exact tile. The constant is
+        // named on Level so a caller identifying the same volume cannot disagree
+        // with this test.
+        if (std::abs(entity.x - tileX) <= Level::kCheckpointReach &&
+            std::abs(entity.y - tileY) <= Level::kCheckpointReach) {
+            return true;
+        }
+    }
+    return false;
 }
 
 Level builtInLevel()

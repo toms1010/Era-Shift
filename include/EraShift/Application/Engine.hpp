@@ -16,6 +16,7 @@
 #include "EraShift/Core/GameState.hpp"
 #include "EraShift/Core/Log.hpp"
 #include "EraShift/Core/SignalHandler.hpp"
+#include "EraShift/Core/ProgressDatabase.hpp"
 #include "EraShift/Core/Time.hpp"
 #include "EraShift/Application/EventBus.hpp"
 #include "EraShift/Application/StateContext.hpp"
@@ -129,6 +130,17 @@ public:
     [[nodiscard]] bool isDebugBuild() const noexcept { return m_debugBuild; }
     [[nodiscard]] Core::ConfigManager& config() noexcept;
 
+    /// Progression store: unlocks, per-level results, checkpoints.
+    ///
+    /// Always a valid object. `available()` on it is false when SQLite could not
+    /// be opened, in which case every write is a no-op and every read returns a
+    /// default. The game runs either way.
+    [[nodiscard]] Core::ProgressDatabase& progress() noexcept { return m_progress; }
+    /// Convenience passthroughs, so the states do not each null-check and log.
+    [[nodiscard]] bool progressionAvailable() const noexcept { return m_progress.available(); }
+    [[nodiscard]] Core::Progress loadProgress();
+    bool saveProgress(const Core::Progress& progress);
+
 private:
     void pumpEvents(double frameDelta);
     void update(double fixedDelta);
@@ -159,6 +171,10 @@ private:
     Debug::PerformanceStats     m_stats;
     Debug::DebugOverlay         m_overlay;
     std::shared_ptr<Core::MemoryLogSink> m_memoryLog;
+    /// Opened during `initialise`. Declared after the logger because its
+    /// constructor logs, and before the context because `rebuildContext` hands it
+    /// out.
+    Core::ProgressDatabase m_progress;
     StateContext      m_context;
 
     std::string m_projectRoot;

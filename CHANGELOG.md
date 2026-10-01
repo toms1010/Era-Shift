@@ -8,6 +8,103 @@ All notable changes to Era Shift are recorded here. The format follows
 
 ## [Unreleased]
 
+> This release has two independent stories. The audio subsystem was **removed**
+> earlier in the same cycle, which is why the *Removed* section below is unusually
+> long and why the test count drops. What was *added* is the ten-region
+> progression, a local SQLite progression store, checkpoints, a first-run
+> tutorial and a dialogue panel. The older *Fixed* entries in this release
+> describe audio work that no longer ships and are kept as a record of what that
+> subsystem was.
+
+### Added
+
+**A ten-region progression.** `data/levels/` now holds eleven regions: ten in a
+designed order plus `ancient_forest`, which predates the ordering. Each region
+introduces a different idea rather than being the same corridor made longer:
+
+| # | Region | Idea |
+| --- | --- | --- |
+| 1 | Awakening | Tutorial. One mechanic at a time, three crossings. |
+| 2 | Ancient Bridge | Three crossings in a fixed order. |
+| 3 | Fallen Span | Era-specific hazards: safe ground in exactly one era. |
+| 4 | Drowned Road | A causeway half-built in the Past, half-standing in the Present. |
+| 5 | Crystal Vault | Vertical: three stacked shelves, each gated on an era. |
+| 6 | Split Meadow | Six alternating gates; chrono cost exceeds what is on the floor. |
+| 7 | Hollow Citadel | Combat. Nine enemies, one open courtyard, no hazards. |
+| 8 | Sunken Lattice | A grid of five crossing-rows, cycling eras. |
+| 9 | Paradox Ward | Six single-tile gates: a shift every few steps. |
+| 10 | Convergence | Every earlier pattern at once, and a long way home. |
+
+Regions carry an `order` field, and `listLevels` sorts by it rather than by
+filename — alphabetical order would have presented Ancient Bridge before
+Awakening. A region with no `order` sorts last instead of interleaving, so a
+hand-authored region that predates the field still appears.
+
+**`tools/validate_levels.py`.** A playability checker for every region: era layers
+agreeing in shape, one spawn, one seal per era, a gate in all three eras, and a
+per-era flood fill from the spawn proving each gate and each seal is reachable.
+All eleven pass. It also found a real defect — a Sentinel in `ancient_forest`
+embedded in a one-way platform at 162,22, untouchable and therefore unhittable.
+
+**A progression database** (`Core::ProgressDatabase`, SQLite, entirely local).
+Four tables: `meta` for the schema version, `game_progress`, `level_progress` and
+`checkpoints`. A separate store rather than more fields on `continue.json`, because
+one slot cannot express "level 7 completed at 4:12" alongside "level 8 unlocked".
+
+Every failure path is handled rather than assumed: a database that cannot be
+opened leaves a usable object with every call a no-op; a corrupt file is refused
+with a reason; a schema from a newer build is closed rather than written over,
+which is how an older binary destroys a newer database. `resetAll` clears the
+player's data and leaves the schema usable.
+
+Best time and score keep the *better* of the two values seen, and an incomplete
+attempt cannot un-complete a finished level.
+
+**Checkpoints.** Placed as level entities rather than baked into the tile grid,
+because a trigger is a gameplay fact and a character in the grid is a geometry
+fact. `World::restoreCheckpoint` rebuilds everything from the placement list and
+then rewinds the player — progress through the level, not a rewind of a
+half-finished fight. It clamps the position to the map and pushes the player out
+of geometry, so a checkpoint cannot make a level unwinnable.
+
+A defeat now offers **RETRY CHECKPOINT**, but only when one exists for that
+region. Offering the row and having it quietly restart the whole region would be a
+lie in the menu.
+
+**A first-run tutorial** (`Game::Tutorial`, `Game/Tutorial.cpp`). Nine lessons in
+order, one at a time, each dismissed by *performing* the action rather than by
+pressing a key to dismiss it. Only the lesson currently showing can advance, so a
+player mashing space during the movement lesson skips nothing. Seeded from the
+database, so a player who has finished it is never shown it again, and toggled
+from Settings → Game.
+
+**A dialogue panel** (`Game/Dialogue.hpp`, `Game/Dialogue.cpp`). Speaker, message,
+optional title and hint, with the message wrapped and line-limited to the space
+actually available in the frame — so a long message is ellipsised rather than
+drawn over the world. `show()` clears every field, which a test caught: without
+it, a title or hint survived into the next line, which is precisely the stale
+content the type exists to prevent.
+
+**Level select with locks, and a Game page in Settings.** The select reads
+unlocks from the database, refuses a locked row on activation rather than trusting
+a stale flag, shows best time and score for completed regions, and lands the
+selection on the first unlocked one. Settings → Game holds the tutorial toggle and
+a two-press **RESET PROGRESS**; a single stray press cannot wipe ten regions.
+
+### Fixed
+
+**Rows were drawn where clicks were not expected** (`ResultState`). The results
+screen laid its panel out twice, differently: `update` measured it against the
+full viewport, `render` against a strip below the stats grid. The rows were drawn
+low on the screen and hit-tested high on it, so clicking PLAY AGAIN could select
+MAIN MENU. Both now measure through one `optionsArea()` helper.
+
+**The pause and settings menus ignored the mouse** (`PausedState`). Both drew a
+hover highlight for the pointer and then did nothing with it — `hitTest` was never
+called. Clicking a settings row or a pause-menu entry did nothing at all. Both now
+select and activate on click, and `SettingsState` measures its panel through
+`pageTitle()`/`pageFooter()` so the hit-test and the drawing cannot drift apart.
+
 ### Removed
 
 **The entire audio subsystem has been removed.** This is a deliberate removal of

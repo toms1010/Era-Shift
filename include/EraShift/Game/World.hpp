@@ -206,6 +206,26 @@ public:
     [[nodiscard]] int sealMask() const noexcept;
     /// Restores which seals were taken, from a saved bitmask.
     void applySeals(int mask);
+
+    /// Restarts the level and then rewinds the player to a checkpoint.
+    ///
+    /// The distinction from `restart()` is the whole point of a checkpoint:
+    /// enemies and pickups are rebuilt from the placement list, but the player
+    /// resumes where they were, with the seals they had already taken. Restarting
+    /// from the spawn would make a checkpoint identical to retrying the region.
+    ///
+    /// The position is pushed out of any solid tile it happens to land in, so a
+    /// checkpoint written while the player was mid-air or inside geometry comes
+    /// back somewhere survivable rather than stuck.
+    void restoreCheckpoint(const Vec2& position, Era era, float health, float chrono, int sealMask);
+
+    /// Where a checkpoint should be written for this level, and whether one is
+    /// warranted.
+    ///
+    /// A checkpoint is taken on reaching a trigger volume, never on a timer: a
+    /// timed checkpoint writes during a fight, and a save written mid-combat is
+    /// a save of a half-finished swing.
+    [[nodiscard]] bool checkpointHere(int tileX, int tileY) const noexcept;
     /// Restores the run counters. Takes plain values rather than the save
     /// struct so the gameplay layer never has to know the save format.
     void applyRunStats(double elapsed, int shifts, int kills, float paradox);

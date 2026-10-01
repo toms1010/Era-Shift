@@ -1,6 +1,7 @@
 #include "EraShift/Game/states/PlayingState.hpp"
 
 #include "EraShift/Core/Config.hpp"
+#include "EraShift/Core/ProgressDatabase.hpp"
 #include "EraShift/Game/EraTheme.hpp"
 
 #include "EraShift/Application/EventBus.hpp"
@@ -221,7 +222,34 @@ void PlayingState::syncLevel(StateContext& ctx)
     }
 
     m_world.load(m_level);
+
+    // A pending checkpoint is applied after the load, never instead of it: the
+    // restore rebuilds the world, so it needs the level already in place. The
+    // request is consumed either way, so a RETRY REGION after a RETRY CHECKPOINT
+    // really does start from the spawn.
+    if (m_hasPendingCheckpoint) {
+        m_world.restoreCheckpoint(
+            Vec2{static_cast<float>(m_pendingCheckpoint.tileX) * Game::TileMap::kTileSize,
+                 static_cast<float>(m_pendingCheckpoint.tileY) * Game::TileMap::kTileSize},
+            static_cast<Game::Era>(m_pendingCheckpoint.era), m_pendingCheckpoint.health,
+            m_pendingCheckpoint.chrono, m_pendingCheckpoint.sealMask);
+        m_world.applyRunStats(m_pendingCheckpoint.elapsed, m_pendingCheckpoint.shifts,
+                              m_pendingCheckpoint.kills, 0.0f);
+        m_pendingCheckpoint = Core::Checkpoint{};
+        m_hasPendingCheckpoint = false;
+    }
+
     m_ready = true;
+}
+
+bool PlayingState::applyCheckpoint(const Core::Checkpoint& checkpoint)
+{
+    if (!checkpoint.valid) {
+        return false;
+    }
+    m_pendingCheckpoint   = checkpoint;
+    m_hasPendingCheckpoint = true;
+    return true;
 }
 
 void PlayingState::onEnter(StateContext& ctx)
@@ -239,6 +267,42 @@ void PlayingState::onEnter(StateContext& ctx)
     m_feedback.reset();
     m_enemyAnims.clear();
     m_playerAnim.reset();
+    m_lastCheckpointVolume = {-1, -1};
+
+    // The tutorial is seeded from the progression database rather than always
+    // starting fresh: a player who has finished it must never be shown it again,
+    // and a player who turned it off must never be shown it at all. Both are
+    // recorded states, not a session flag, which is why they are read from here.
+    {
+        bool enabled  = true;
+        bool complete = false;
+        if (ctx.progress != nullptr) {
+            const Core::Progress progress = ctx.progress->loadProgress();
+            enabled  = progress.tutorialEnabled;
+            complete = progress.tutorialComplete;
+        } else {
+            // No database: teach it. Showing the tutorial is the lower-risk
+            // failure — a returning player sees hints they do not need, rather
+            // than a first-time player being given none.
+            complete = false;
+        }
+        m_tutorial.restore(enabled, complete);
+        m_lesson     = m_tutorial.lesson();
+        m_tutorialAge = 0.0f;
+    }
+
+    // Cleared per run, not per region: dialogue is state, and a line from the
+    // previous attempt must not still be on screen when this one starts.
+    m_dialogue.clear();
+    m_dialogueAge = 0.0f;
+
+    // A region's own opening line, when it declares one. Placed entities carry a
+    // `label`, and a seal's label reads as something the world would say, so the
+    // first seal of a region introduces it rather than appearing silently.
+    if (const Game::PlacedEntity* spawn = m_level.find(Game::EntityKind::PlayerSpawn);
+        spawn != nullptr && !spawn->label.empty()) {
+        say("ERA SHIFT", "You wake in the " + m_level.name + ".", 4.5f);
+    }
 
     // `graphics.maxParticles` is a real budget, applied here rather than left as
     // a decoration. A slider that looks live and does nothing is worse than no
@@ -400,6 +464,222 @@ void PlayingState::syncPrompt()
     }
 }
 
+void PlayingState::transitionToResult(StateContext& ctx)
+{
+    const bool won = m_world.outcome() == Game::Outcome::Victory;
+
+    auto results = std::make_shared<ResultState>(Core::GameState::GameOver, m_world.outcome(),
+                                                 m_world.stats());
+    results->setLevelName(m_level.name);
+    results->setLevelId(m_level.id);
+
+    if (won) {
+        // A victory is a progression event, so it is recorded before the results
+        // screen appears rather than when the player leaves it: closing the window
+        // on the results screen would otherwise lose the completion entirely.
+        results->markCompleted(true);
+        if (ctx.progress != nullptr) {
+            const std::filesystem::path directory =
+                ctx.levelDirectory.empty() ? std::filesystem::path{"data/levels"}
+                                           : ctx.levelDirectory;
+            const std::vector<LevelEntry> levels = listLevels(directory);
+
+            // The region finished, which *defines* its position in the
+            // progression. Looking it up in the list rather than counting rows in
+            // the database means a region added to `data/` later still unlocks
+            // its successor correctly.
+            int position = 0;
+            for (std::size_t i = 0; i < levels.size(); ++i) {
+                if (levels[i].id == m_level.id) {
+                    position = static_cast<int>(i);
+                    break;
+                }
+            }
+
+            if (ctx.progress->recordLevelResult(m_level.id, m_level.name, true,
+                                                m_world.stats().elapsed,
+                                                m_world.stats().score(),
+                                                m_world.sealsTaken())) {
+                // Unlocking the *next* region is what makes this a sequence
+                // rather than ten independent levels.
+                if (position + 1 < static_cast<int>(levels.size())) {
+                    const LevelEntry& next = levels[static_cast<std::size_t>(position) + 1];
+                    ctx.progress->unlockLevel(next.id, position + 2);
+                }
+            }
+
+            Core::Progress updated = ctx.progress->loadProgress();
+            updated.currentLevelId = m_level.id;
+            updated.highestLevel = std::max(
+                updated.highestLevel,
+                std::min(position + 2, static_cast<int>(levels.size())));
+            updated.tutorialComplete = updated.tutorialComplete || m_tutorial.complete();
+            updated.totalPlayTime += m_world.stats().elapsed;
+            ctx.progress->saveProgress(updated);
+
+            if (ctx.log != nullptr) {
+                ctx.log->info("Game", "recorded '{}' complete", m_level.name);
+            }
+        }
+    } else {
+        // A defeat may offer a checkpoint retry, but only if one exists for this
+        // level. Offering the option and having it quietly restart the whole region
+        // would be a lie in the menu.
+        results->setRetryFromCheckpoint(
+            ctx.progress != nullptr && ctx.progress->readCheckpoint(m_level.id).valid);
+    }
+
+    ctx.states->push(std::move(results));
+}
+
+void PlayingState::syncTutorial(StateContext& ctx, const Game::PlayerInput& input,
+                                const Game::WorldCommands& commands)
+{
+    static_cast<void>(ctx);
+
+    if (!m_tutorial.active()) {
+        return;
+    }
+
+    // Each lesson names the action that satisfies it. Only the lesson currently
+    // being taught can advance, so pressing space during the movement lesson does
+    // not skip ahead — `Tutorial::perform` ignores a mismatched action.
+    const Game::TutorialStep current = m_tutorial.step();
+
+    bool matched = false;
+    switch (current) {
+        case Game::TutorialStep::Move:
+            // Any real horizontal input counts. Deliberately not "moved N tiles":
+            // a lesson that waits for a distance teaches nothing the player can
+            // feel, and a player who wiggles the stick should not be held at it.
+            matched = input.moveAxis > 0.1f || input.moveAxis < -0.1f;
+            break;
+
+        case Game::TutorialStep::Jump:
+            matched = input.jumpPressed;
+            break;
+
+        case Game::TutorialStep::Shift:
+            matched = commands.shiftPressed;
+            break;
+
+        case Game::TutorialStep::Attack:
+            matched = input.attackPressed;
+            break;
+
+        case Game::TutorialStep::Dash:
+            matched = input.dashPressed;
+            break;
+
+        case Game::TutorialStep::Interact:
+            matched = commands.interactPressed;
+            break;
+
+        case Game::TutorialStep::Enemy:
+        case Game::TutorialStep::Seal:
+        case Game::TutorialStep::Gate:
+            // Not key-driven. These are taught by arriving, and the caller tells
+            // the tutorial so by calling `skip` at the right moment.
+            return;
+
+        default:
+            return;
+    }
+
+    if (matched && m_tutorial.perform(current)) {
+        m_lesson     = m_tutorial.lesson();
+        m_tutorialAge = 0.0f;
+        if (ctx.log != nullptr) {
+            ctx.log->debug("Game", "tutorial: {}", m_tutorial.step() == Game::TutorialStep::Complete
+                                             ? std::string("complete")
+                                             : std::string(m_lesson.title));
+        }
+    }
+}
+
+void PlayingState::say(std::string speaker, std::string message, float seconds)
+{
+    // Replaced wholesale. The panel keeps a title and a hint from the previous
+    // line otherwise, which is how a character's name survives into the next
+    // conversation.
+    m_dialogue.clear();
+    m_dialogue.show(std::move(speaker), std::move(message), seconds);
+    m_dialogueAge = 0.0f;
+}
+
+void PlayingState::updateDialogue(float dt)
+{
+    if (!m_dialogue.open()) {
+        return;
+    }
+    m_dialogueAge += dt;
+    // Zero or negative means "until something clears it", which is how a line
+    // that must be read rather than glanced at is expressed.
+    if (m_dialogue.duration > 0.0f && m_dialogueAge >= m_dialogue.duration) {
+        m_dialogue.clear();
+    }
+}
+
+void PlayingState::syncCheckpoint(const StateContext& ctx)
+{
+    if (ctx.progress == nullptr || !m_ready) {
+        return;
+    }
+
+    const Vec2 centre = m_world.player().body().center();
+    const int tileX   = static_cast<int>(centre.x / Game::TileMap::kTileSize);
+    const int tileY   = static_cast<int>(centre.y / Game::TileMap::kTileSize);
+
+    if (!m_world.checkpointHere(tileX, tileY)) {
+        return;
+    }
+
+    // Once per *volume*, not once per tile. The trigger is a radius, and a player
+    // walking through one crosses four or five tiles — keying on the tile wrote a
+    // row five times over a second of walking, which is a database write per
+    // 200ms in the middle of ordinary movement.
+    //
+    // The volume is identified by its centre, not by the player: `checkpointHere`
+    // answers "is there one here", so the identity has to come from the level.
+    int volumeX = -1;
+    int volumeY = -1;
+    for (const Game::PlacedEntity& entity : m_level.entities) {
+        if (entity.kind != Game::EntityKind::Checkpoint) {
+            continue;
+        }
+        if (std::abs(entity.x - tileX) <= Game::Level::kCheckpointReach &&
+            std::abs(entity.y - tileY) <= Game::Level::kCheckpointReach) {
+            volumeX = entity.x;
+            volumeY = entity.y;
+            break;
+        }
+    }
+    if (volumeX < 0) {
+        return;
+    }
+    if (m_lastCheckpointVolume == std::make_pair(volumeX, volumeY)) {
+        return;
+    }
+    m_lastCheckpointVolume = {volumeX, volumeY};
+
+    Core::Checkpoint checkpoint;
+    checkpoint.levelId  = m_level.id;
+    checkpoint.tileX    = tileX;
+    checkpoint.tileY    = tileY;
+    checkpoint.era      = static_cast<int>(m_world.era());
+    checkpoint.health   = m_world.player().health();
+    checkpoint.chrono   = m_world.player().chrono();
+    checkpoint.sealMask = m_world.sealMask();
+    checkpoint.elapsed  = m_world.stats().elapsed;
+    checkpoint.shifts   = m_world.stats().shifts;
+    checkpoint.kills    = m_world.stats().kills;
+    checkpoint.valid    = true;
+
+    if (ctx.progress->writeCheckpoint(checkpoint) && ctx.log != nullptr) {
+        ctx.log->info("Game", "checkpoint at {},{} ({})", tileX, tileY, m_level.name);
+    }
+}
+
 void PlayingState::update(StateContext& ctx, double fixedDelta)
 {
     const float dt = static_cast<float>(fixedDelta);
@@ -432,6 +712,18 @@ void PlayingState::update(StateContext& ctx, double fixedDelta)
     // leaves the player permanently see-through and never showing a walk cycle.
     const bool shiftHeld = ctx.input->isDown(Action::ShiftEra);
 
+    // --- tutorial & checkpoints ---------------------------------------------
+    // Before the simulation, so a lesson is satisfied by the press that caused
+    // this step rather than the one after it.
+    syncTutorial(ctx, input, commands);
+
+    // The lesson panel's fade-in runs on the presentation clock, not the
+    // simulation's, so a player standing in hit-stop does not see the prompt
+    // freeze half-transparent.
+    if (m_tutorial.active()) {
+        m_tutorialAge += dt;
+    }
+
     // --- outcomes -----------------------------------------------------------
     if (m_world.outcome() != Game::Outcome::Running) {
         // The world keeps rendering behind the results screen, so hold it for a
@@ -452,9 +744,7 @@ void PlayingState::update(StateContext& ctx, double fixedDelta)
         const bool confirmed = ctx.input->wasPressed(Action::Interact) ||
                                ctx.input->wasPressed(Action::Jump);
         if (confirmed || m_outcomeDelay <= 0.0f) {
-            ctx.states->push(std::make_shared<ResultState>(Core::GameState::GameOver,
-                                                           m_world.outcome(),
-                                                           m_world.stats()));
+            transitionToResult(ctx);
         }
         return;
     }
@@ -507,6 +797,8 @@ void PlayingState::update(StateContext& ctx, double fixedDelta)
     camera.update(fixedDelta);
 
     syncPrompt();
+    syncCheckpoint(ctx);
+    updateDialogue(dt);
 
     // --- state transitions --------------------------------------------------
     if (ctx.input->wasPressed(Action::Pause)) {
@@ -1351,6 +1643,12 @@ void PlayingState::drawHud(const StateContext& ctx, const Rect& area) const
                         m_interactPrompt, prompt);
     }
 
+    drawTutorialPanel(ctx, area);
+
+    // The dialogue sits above the tutorial panel: a line being spoken is the more
+    // urgent of the two, and the tutorial is a hint the player can re-see.
+    drawDialoguePanel(ctx, m_dialogue, m_currentPlayer, area.h, currentUiScale(ctx));
+
     renderer.setBlendMode(BlendMode::None);
 
     if (!text.ready()) {
@@ -1360,6 +1658,69 @@ void PlayingState::drawHud(const StateContext& ctx, const Rect& area) const
         BitmapFont::drawCentered(renderer, area.center().x, area.bottom() - scale.px(30.0f),
                                  m_world.objectiveText(), Palette::TextPrimary, fallback);
     }
+}
+
+void PlayingState::drawTutorialPanel(const StateContext& ctx, const Rect& area) const
+{
+    if (!m_tutorial.active() || m_lesson.title == nullptr || m_lesson.title[0] == '\0') {
+        return;
+    }
+    if (ctx.renderer == nullptr || ctx.text == nullptr) {
+        return;
+    }
+
+    Renderer2D& renderer = *ctx.renderer;
+    Graphics::TextRenderer& text = *ctx.text;
+    const UiScale scale = currentUiScale(ctx);
+
+    // Fades in over its first third of a second. A panel that appears at full
+    // opacity on a single frame reads as a pop-up the game threw at the player;
+    // one that is already 40% faded reads as arriving.
+    const float fade = Graphics::clampValue(m_tutorialAge / 0.30f, 0.0f, 1.0f);
+
+    // Top-left, below the toasts, so it never covers the player or the objective.
+    const float panelW = std::min(scale.px(300.0f), area.w - scale.px(24.0f));
+    const float panelH = scale.px(62.0f);
+    const Rect panel{area.x + scale.px(12.0f), area.y + scale.px(12.0f), panelW, panelH};
+
+    const auto faded = [fade](Color colour) {
+        return colour.withAlpha(static_cast<std::uint8_t>(
+            static_cast<float>(colour.a) * (0.4f + 0.6f * fade)));
+    };
+
+    renderer.setBlendMode(BlendMode::Alpha);
+    renderer.drawRect(panel, faded(Palette::PanelFill));
+    renderer.drawRectOutline(panel, faded(Palette::PanelBorder), 1.0f);
+
+    TextStyle title = m_labelStyle;
+    title.color     = faded(Palette::Accent);
+    title.bold      = true;
+    text.drawInRect(renderer,
+                    Rect{panel.x + scale.px(10.0f), panel.y + scale.px(6.0f),
+                         panel.w - scale.px(20.0f), scale.px(16.0f)},
+                    m_lesson.title, title);
+
+    // Wrapped and clipped to two lines, so a long instruction cannot spill out of
+    // the panel and over the world.
+    TextStyle body = m_labelStyle;
+    body.color     = faded(Palette::TextPrimary);
+    body.wrap      = true;
+    body.maxLines  = 2;
+    text.drawInRect(renderer,
+                    Rect{panel.x + scale.px(10.0f), panel.y + scale.px(24.0f),
+                         panel.w - scale.px(20.0f), scale.px(28.0f)},
+                    m_lesson.body, body);
+
+    if (m_lesson.key != nullptr && m_lesson.key[0] != '\0') {
+        TextStyle key = m_labelStyle;
+        key.color     = faded(Palette::TextDim);
+        key.align     = TextAlign::Right;
+        text.drawInRect(renderer,
+                        Rect{panel.x, panel.bottom() - scale.px(15.0f), panel.w - scale.px(10.0f),
+                             scale.px(12.0f)},
+                        m_lesson.key, key);
+    }
+    renderer.setBlendMode(BlendMode::None);
 }
 
 void PlayingState::drawToasts(const StateContext& ctx, const Rect& area) const

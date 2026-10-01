@@ -28,6 +28,7 @@ class ConfigManager;
 class SystemClock;
 class GameLoop;
 class StateMachine;
+class ProgressDatabase;
 }
 namespace Input {
 class InputManager;
@@ -58,6 +59,12 @@ struct StateContext {
     Application::EventBus*     events    = nullptr;
     Core::SystemClock*         clock     = nullptr;
     Core::ConfigManager*       config    = nullptr;
+    /// Progression: unlocks, per-level results, checkpoints, tutorial completion.
+    ///
+    /// Optional. Null when SQLite could not be opened, which every caller treats
+    /// as "no progression to record" rather than as an error — a player with no
+    /// database still plays the game, they just do not get unlocks.
+    Core::ProgressDatabase*   progress  = nullptr;
     Graphics::Window*          window    = nullptr;
     Graphics::TextRenderer*    text      = nullptr;
 
