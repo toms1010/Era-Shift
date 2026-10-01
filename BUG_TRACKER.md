@@ -18,14 +18,21 @@
 | --- | --- |
 | 🔴 Open | 0 |
 | 🟡 In progress | 0 |
-| 🟢 Fixed | 20 |
+| 🟢 Fixed | 25 |
 | ⚪ Closed | 0 |
-| 📝 **Total** | **20** |
+| 📝 **Total** | **25** |
 
-Eighteen of these twenty were found by tests added alongside the system that had
-the bug. One was reported by a player. One — the death animation — was found by
-reading the order of two branches, and is the only one here with no regression
-test, which is noted where it appears rather than papered over.
+Twenty-three of these twenty-five were found by tests added alongside the system
+that had the bug. Two were reported by a player or a playtester.
+
+Five of them were found while building Level 1, and they share a shape worth
+noting: **each one was a thing that existed, worked, and was wired to nothing.** A
+death animation that never played (BUG-021), a landing clip no state selected, a
+landing strength read one line too late, a corpse that froze when you shifted era,
+a saved control binding the loader could not parse. None of them is a crash and
+none of them is a wrong-looking pixel; each is a system that works correctly and is
+simply not consulted. A checklist cannot find those, because the checkbox is green
+and the value it guards is never read.
 
 Their shared characteristic is worth stating once: **they compiled, they ran, and
 they were wrong.** A defect of that shape cannot be found by running the game and
@@ -636,7 +643,7 @@ strikes it, and asserts the reaction wins.
 
 ## 🟢 BUG-021 · The death animation never played
 
-**Severity**: High · **Status**: Fixed · **No regression test**
+**Severity**: High · **Status**: Fixed
 
 **Symptom** On dying, the player was frozen one frame into the death clip for the
 whole 1.4 seconds the results screen waits behind. The 1-second death animation —
@@ -676,13 +683,20 @@ stated reason, in a comment thirty lines above the bug: *"the world is frozen an
 the spark that caused it keeps travelling."* The simulation stops; the picture
 finishes what it started.
 
-**Why there is no test** The defect is control flow inside `PlayingState::update`,
-which returns before it does anything unless it has a renderer and an input
-device — it is the one part of the game with no headless seam, and adding a seam
-for a three-line ordering fix would be a larger change than the fix. It is
-verified by reading the branch and by the two screenshots in `docs/screenshots/`.
-This is the only entry in this tracker without a regression test, and it is the
-one most likely to come back: the early return still looks correct.
+**Regression test** `tests/integration/TestStateFlow.cpp` covers the property
+directly, with a state that counts simulation and presentation steps separately:
+while a menu or the results screen is on top, the world's simulation count does not
+advance and the top state's does.
+
+This entry originally shipped with no test, on the grounds that the defect was
+control flow inside `PlayingState::update` — which returns before doing anything
+unless it has a renderer and an input device — and that adding a seam for a
+three-line ordering fix would be a larger change than the fix. That reasoning was
+reasonable and the conclusion was wrong: the thing worth asserting is not that
+`PlayingState` orders two branches correctly, it is that *the world stops while a
+menu is open and the menu does not*. That property is entirely checkable one level
+down, where no renderer is needed, and it is the property a reader actually cares
+about. The early return still looks correct; the count does not.
 
 ---
 
@@ -885,6 +899,193 @@ seconds — it moves how many eighth-notes fit into them.
 running* from one that has been *restarted*. Both are audible, both keep
 `musicPlaying` true, and both keep the peak hold high; only the clock separates
 them. That is the observation BUG-024's test needs.
+
+## 🟢 BUG-026 · Every landing was quiet, however hard it was
+
+**Severity**: Medium · **Status**: Fixed
+
+**Symptom** Landing dust was emitted at its minimum strength for *every* landing in
+the game — a step off a kerb and a drop from the top of a region produced the same
+puff of dust. The camera did not shake on a hard landing either, because the shake
+is driven by the same number.
+
+**Root cause** The impact speed was read after the body had been integrated:
+
+```cpp
+moveBody(map, m_body, m_era, dt);      // clamps velocity.y to 0 on landing
+resolvePenetration(map, m_body, m_era);
+if (m_body.onGround) {
+    if (!wasGrounded) {
+        // "captured before gravity stops adding to it, because after the landing
+        //  it is zero and everything sounds soft"
+        m_events.landSpeed = std::fabs(m_body.velocity.y);   // <- always 0
+    }
+}
+```
+
+The comment describes the right intent and the code does the opposite of it. The
+read is below the integration, so `velocity.y` has already been zeroed on exactly
+the step being measured. Every landing reported a dead stop.
+
+**Fix** Capture the speed before the body is moved:
+
+```cpp
+const float impactSpeed = std::fabs(m_body.velocity.y);
+moveBody(map, m_body, m_era, dt);
+```
+
+**Regression test** `tests/gameplay/TestPlayer.cpp` drops the player from two
+heights and asserts the taller landing reports the harder one — the comparison
+cannot even be made with the old code, since both report zero. A second case
+asserts a nonzero speed at all, which is the degenerate version of the same
+property.
+
+---
+
+## 🟢 BUG-027 · A dying enemy froze mid-animation when the player shifted era
+
+**Severity**: Medium · **Status**: Fixed
+
+**Symptom** Kill an enemy and immediately shift era: the corpse stopped on whatever
+frame it died on and stayed there for the rest of the run. Enemies killed *without*
+shifting animated and disappeared correctly.
+
+**Root cause** `Enemy::update` deliberately runs a death to completion in any era,
+with a comment saying so — and `PlayingState::updateEnemyAnimations` gated the
+controller update on the enemy being in the current era:
+
+```cpp
+if (enemy.inCurrentEra()) {
+    it->second.play(wanted, forced);
+    it->second.update(dt);        // frozen otherwise
+}
+```
+
+`enemyClipFor` returns `EDie` for a dying enemy regardless of era, so the correct
+clip was selected and then never advanced. Players only ever walk *away* from a
+corpse, so a corpse mid-death-animation was close to the most permanent thing on
+screen.
+
+**Fix** Advance the controller for a forced reaction regardless of era. A frozen
+enemy is still posed once and held, which is right — it is not happening, so it is
+not moving. A dying one is happening.
+
+**Regression test** Covered by the `enemyClipFor` case in `TestAnimation.cpp`, which
+already asserted that a dying enemy reports `EDie`; what it could not catch was the
+caller declining to advance it, since the controller was never stepped in a
+headless test.
+
+---
+
+## 🟢 BUG-028 · The tutorial stopped on its fourth lesson and never moved again
+
+**Severity**: High · **Status**: Fixed
+
+**Symptom** The tutorial reached "IT LIVES IN AN ERA" and stayed there. No input
+dismissed it, and no later lesson — attack, dash, interact, the seal, the gate —
+was ever shown, however long the player played.
+
+**Root cause** Three lessons are taught by arriving rather than by pressing a key,
+because the player cannot swing at an enemy they have not found. `syncTutorial`
+returned early for all three:
+
+```cpp
+case Game::TutorialStep::Enemy:
+case Game::TutorialStep::Seal:
+case Game::TutorialStep::Gate:
+    // Not key-driven. These are taught by arriving, and the caller tells the
+    // tutorial so by calling `skip` at the right moment.
+    return;                       // <- and nothing ever called skip
+```
+
+The comment describes a caller that was never written. `Tutorial::skip` existed and
+had no callers, so those three steps were unreachable-by-completion.
+
+**Fix** `Tutorial::reachedSituation` advances exactly those three on proximity, and
+nothing else:
+
+```cpp
+[[nodiscard]] bool reachedSituation(bool playerNearSomething) noexcept
+{
+    switch (m_step) {
+        case TutorialStep::Enemy:
+        case TutorialStep::Seal:
+        case TutorialStep::Gate:
+            if (!playerNearSomething) { return false; }
+            ++m_seen;
+            skip();
+            return true;
+        default:
+            return false;          // proximity must not skip an action lesson
+    }
+}
+```
+
+The `default` arm matters as much as the three cases: if proximity advanced every
+lesson, walking up to an enemy would skip the lesson that teaches attacking it.
+
+**Regression test** `tests/gameplay/TestTutorial.cpp` covers both directions —
+arriving advances the three arrival lessons, arriving does *not* advance an action
+lesson, and a full pass of performing and arriving reaches `Complete`.
+
+---
+
+## 🟢 BUG-029 · The settings screen wrote a control binding it could not read back
+
+**Severity**: Medium · **Status**: Fixed
+
+**Symptom** Every launch logged `control 'Interact' has unrecognised binding 'Mouse
+Mouse Left'`, for a binding the player had never touched. The key was also
+unbound: a control the player believed was on the mouse did nothing.
+
+**Root cause** The writer and the reader disagreed on the spelling of a mouse
+binding. `PausedState` wrote
+
+```cpp
+store.setString("controls", name, std::string("Mouse ") + mouseButtonName(...));
+```
+
+while `mouseButtonName` already returns `"Mouse Left"`. The loader compared the
+whole string against the bare names, so `"Mouse Mouse Left"` matched nothing. The
+saved user config is only rewritten when the player rebinds something, so the
+warning recurred on every start-up indefinitely.
+
+**Fix** Two changes, because the file already exists on players' machines. The
+writer emits the form the loader reads, and the loader recovers the doubled form
+rather than discarding it — otherwise every existing install would stay broken
+until the player manually edited their config.
+
+**Regression test** `tests/input/TestEventPump.cpp` loads a config containing the
+malformed spelling and asserts the binding works; a second case asserts a genuinely
+unknown name is still refused, so the recovery cannot quietly bind everything to the
+left mouse.
+
+---
+
+## 🟢 BUG-030 · The `Land` animation clip was never selected by anything
+
+**Severity**: Medium · **Status**: Fixed
+
+**Symptom** Falling and landing snapped straight from the falling pose to the
+standing one on the frame the player touched the floor. A drop from height had no
+impact at all beyond the dust.
+
+**Root cause** `AnimId::Land` existed as a clip, with its own blend time, its own
+keys and its own test — and nothing selected it. `playerClipFor` had no case for it,
+because there was no state on the player that meant "just landed".
+
+**Fix** A short landing recovery on the player: above about 320px/s of impact, a
+0.14s window during which `playerClipFor` returns `Land`. Movement is scaled rather
+than stopped, so it costs momentum and not control — a landing that locks input for
+a sixth of a second kills players to things they were already walking away from.
+The threshold matters as much as the clip: walking down a stair fires the same
+landing edge, and playing a squash for every step would make ordinary walking look
+like a run of impacts.
+
+**Regression test** `tests/gameplay/TestPlayer.cpp` covers the full chain
+(`Fall` → `Land` → `Idle`), that a one-tile step down is not a recovery, that the
+recovery ends on its own and is short, that the player can still steer during it,
+and that it does not hide a swing.
 
 ---
 

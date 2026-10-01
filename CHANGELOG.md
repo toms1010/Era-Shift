@@ -13,11 +13,12 @@ All notable changes to Era Shift are recorded here. The format follows
 > long. What was *added* is the ten-region progression, a local SQLite progression
 > store, checkpoints, a first-run tutorial and a dialogue panel, and then a pass
 > over the UI itself: staged settings, scrolling menus, a results screen that
-> names its region, and an animated tutorial prompt. The older *Fixed* entries in
-> this release describe audio work that no longer ships and are kept as a record
-> of what that subsystem was.
+> names its region, and an animated tutorial prompt — and then Level 1 itself was
+> rebuilt as a ten-section vertical slice with a finish gate the player can see
+> coming. The older *Fixed* entries in this release describe audio work that no
+> longer ships and are kept as a record of what that subsystem was.
 >
-> 407 test cases across four binaries, all headless.
+> 452 test cases across four binaries, all headless.
 
 ### Added
 
@@ -133,6 +134,92 @@ The prompt's lifecycle lives in `Tutorial` as pure arithmetic (`lessonOpacity`,
 `lessonVisible`) rather than as booleans inside `PlayingState`, because the
 interesting failures are off-by-one-frame ones and a screenshot taken at the wrong
 moment shows nothing wrong at all.
+
+**Level 1 rebuilt as a ten-section vertical slice.** `awakening.json` was a
+120x24 corridor with three crossings; it is now 200x32 with ten sections, a
+vertical range eight rows taller than the regions after it, and a beginning, middle
+and ending. The shape is the point: the player is walking *somewhere*, and the same
+space is visible from two heights, which is what makes "one world, three states"
+believable rather than a rule that is only ever stated.
+
+    1  spawn and movement      an open room; nothing can hurt you here
+    2  jumping                 a pit and a staircase of ledges
+    3  the era shift           a wide chasm crossed only in the Past
+    4  the first enemy         one Sentinel, room to retreat
+    5  combat and the dash     an arena, and a gap a dash makes crossable
+    6  the checkpoint          an alcove below the main route
+    7  multi-era traversal     a climb whose buttresses change per era
+    8  the seal                the objective, in a chamber
+    9  the final challenge     the shift as a weapon, not a key
+   10  the finish gate         the Ancient Gate, and the level ends
+
+**Regions state their own finish requirement** (`finish.requires_seals` in the
+level JSON). Level 1 places one seal and asks for one; every other region places
+three and asks for all three. Before, the gate always asked for every seal placed,
+so a tutorial with one seal and a gate asking for three was a level that could not
+be finished — and expressing it any other way would have meant placing three seals
+and ignoring two.
+
+The requirement is resolved once at load, so the HUD, the prompt, the gate and the
+tests all read one number. Completion needs *both* halves: at the gate, and with the
+objective. Reaching the gate without it does nothing, and having it without reaching
+the gate does nothing.
+
+**A finish gate you can see coming.** A floating era-coloured marker over a
+plinth, pulsing faster and brighter as the player closes on it, dimmed while the
+gate is still sealed. It was previously a single tile in the grid with nothing drawn
+on it at all — a trigger the player had to happen across.
+
+**The tutorial stopped stalling on its fourth lesson.** `Enemy`, `Seal` and `Gate`
+are taught by arriving rather than by pressing a key — the player cannot swing at
+an enemy they have not found — but nothing ever advanced them. The tutorial stopped
+dead on "IT LIVES IN AN ERA", which no input could dismiss, and no later lesson was
+ever shown. `Tutorial::reachedSituation` advances those three on proximity and
+nothing else, so walking up to an enemy cannot skip the lesson that teaches
+attacking it.
+
+**Defeats darken the frame, and are quicker to retry.** The screen fades to 72% as a
+death settles, so the results screen arrives out of a darker picture rather than out
+of the same picture the player died in. A defeat waits 0.9s before that screen and a
+victory 1.4s — a death has nothing to watch and the player wants to press RETRY.
+Any confirm key skips the wait either way.
+
+**A landing animation.** `AnimId::Land` existed as a clip, with its own blend time
+and its own test, and nothing selected it: a fall went straight from Fall to Walk,
+so a hard landing read as the character snapping upright on the frame it touched the
+floor. A short landing recovery — movement scaled, never stopped — gives the clip
+something to show, and only fires above about 320px/s so walking down a stair does
+not squash.
+
+**Checkpoints and pickups say what they are.** A dormant checkpoint is a dim
+outline; the one the player has written glows and pulses. A collectable lifts,
+spreads and flashes on pickup rather than simply vanishing — a collectable that
+disappears is not obviously collected, and the player is spending a resource whose
+cost they cannot see until the bar moves.
+
+### Fixed
+
+**Every landing was quiet, however hard it was** (`Player::landSpeed`). The impact
+speed was read *after* `moveBody` had already clamped the vertical velocity to zero
+on the landing step. Every landing in the game therefore reported as a dead stop,
+and the landing dust was emitted at its weakest possible strength — from the
+gentlest step off a kerb to a drop off the top of a region. Now captured before
+integration, and `lastLandSpeed()` exposes it for testing.
+
+**A dying enemy froze mid-animation when the player shifted.** `Enemy::update`
+already ran a death to completion in any era, and the comment said so — but
+`updateEnemyAnimations` only advanced the controller for enemies in the *current*
+era, so a corpse killed in the Present stopped on whatever frame it died on and
+stayed there. Players only ever walk away from a corpse, so it was the most
+permanent thing on screen.
+
+**The settings screen wrote a control binding it could not read back**
+(`Mouse Mouse Left`). The writer prepended `"Mouse "` to a name that already had it,
+and the loader compared the whole string, so nothing matched. The saved file is
+never rewritten unless the player rebinds, so this warned on every launch forever —
+and worse, dropped the binding, leaving a control the player believed was on the
+mouse simply unbound. The writer now writes the form the loader reads, and the
+loader recovers the doubled form rather than discarding it.
 
 ### Fixed
 

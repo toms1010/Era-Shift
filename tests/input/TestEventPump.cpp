@@ -17,11 +17,16 @@
 // these tests construct `SDL_Event` values directly and never initialise SDL.
 
 #include "EraShift/Application/EventBus.hpp"
+#include "EraShift/Core/Config.hpp"
+#include "EraShift/Core/Log.hpp"
 #include "EraShift/Input/InputManager.hpp"
 
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <string>
 #include <vector>
 
 #include <doctest/doctest.h>
@@ -347,4 +352,131 @@ TEST_CASE("F12 reaches the screenshot action, and no dead key is bound to anythi
     pump.pump(up, 1);
     CHECK_FALSE(input.isDown(Input::Action::Screenshot));
     input.endFrame();
+}
+
+
+// ---------------------------------------------------------------------------
+// Recovering a malformed saved binding
+//
+// The settings screen used to write "Mouse Mouse Left" for a mouse binding: it
+// prepended "Mouse " to a name that already had it, and the loader compared the
+// whole string, so nothing matched. The saved file is never rewritten unless the
+// player rebinds, so every launch logged a warning about a binding the player had
+// never touched - and worse, that key was dropped, so a control the player believed
+// was on the mouse simply was not.
+//
+// Driven through the public `bindingOf` accessor, so the test checks the same thing
+// the gameplay code checks.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using Core::ConfigStore;
+using Core::Logger;
+using Core::LogLevel;
+
+/// Whether `action` is bound to the given mouse button, in either slot.
+[[nodiscard]] bool boundToMouse(const Input::InputManager& input, Input::Action action,
+                                Input::MouseButton button)
+{
+    const Input::ActionBinding& binding = input.bindingOf(action);
+    const auto is = [&](const Input::InputBinding& b) {
+        return b.type == Input::InputBinding::Type::MouseButton && b.button == button;
+    };
+    return is(binding.primary) || is(binding.secondary);
+}
+
+/// Whether `action` is bound to the given key, in either slot.
+[[nodiscard]] bool boundToKey(const Input::InputManager& input, Input::Action action,
+                              Input::Key key)
+{
+    const Input::ActionBinding& binding = input.bindingOf(action);
+    const auto is = [&](const Input::InputBinding& b) {
+        return b.type == Input::InputBinding::Type::Key && b.key == key;
+    };
+    return is(binding.primary) || is(binding.secondary);
+}
+
+/// Writes a controls document to a temporary file and loads it.
+///
+/// The file rather than a hand-built store, so the test goes through the same
+/// parse-and-load path the engine does.
+ConfigStore controlsStore(const std::filesystem::path& dir, const std::string& json)
+{
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream out(dir / "controls.json");
+        out << json;
+    }
+    Logger log;
+    log.setMinLevel(LogLevel::Off);
+    ConfigStore store;
+    store.loadFile(dir / "controls.json", log);
+    return store;
+}
+
+/// A per-process temporary directory, so parallel runs do not collide.
+std::filesystem::path scratchDir(const char* name)
+{
+    return std::filesystem::temp_directory_path() /
+           (std::string("erashift-bind-") + name + "-" + std::to_string(::getpid()));
+}
+
+} // namespace
+
+TEST_CASE("a doubled mouse prefix is recovered rather than dropped")
+{
+    const auto dir = scratchDir("doubled");
+    const ConfigStore store = controlsStore(
+        dir, R"({"controls": {"Interact": "Mouse Mouse Left", "Jump": "Space"}})");
+
+    Logger log;
+    log.setMinLevel(LogLevel::Off);
+    Input::InputManager input;
+    input.loadBindings(store, log);
+
+    // The recovered binding works, which is the part that matters: before, the
+    // player's Interact key was silently unbound.
+    CHECK(boundToMouse(input, Input::Action::Interact, Input::MouseButton::Left));
+    // And the untouched key in the same file still loads, so the recovery did not
+    // abandon the rest of the document.
+    CHECK(boundToKey(input, Input::Action::Jump, Input::Key::Space));
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("a genuinely unknown binding is still refused")
+{
+    // The recovery must not turn "unrecognised" into "bind it to the left mouse
+    // anyway". An unknown name is a different fault from a doubled prefix, and
+    // silently binding it would hide a real configuration error.
+    const auto dir = scratchDir("unknown");
+    const ConfigStore store = controlsStore(
+        dir, R"({"controls": {"Interact": "Mouse Flank", "Jump": "Space"}})");
+
+    Logger log;
+    log.setMinLevel(LogLevel::Off);
+    Input::InputManager input;
+    input.loadBindings(store, log);
+
+    CHECK_FALSE(boundToMouse(input, Input::Action::Interact, Input::MouseButton::Left));
+    CHECK(boundToKey(input, Input::Action::Jump, Input::Key::Space));
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("a plain mouse binding reads back as itself")
+{
+    const auto dir = scratchDir("plain");
+    const ConfigStore store =
+        controlsStore(dir, R"({"controls": {"Attack": "Mouse Left"}})");
+
+    Logger log;
+    log.setMinLevel(LogLevel::Off);
+    Input::InputManager input;
+    input.loadBindings(store, log);
+
+    CHECK(boundToMouse(input, Input::Action::Attack, Input::MouseButton::Left));
+
+    std::filesystem::remove_all(dir);
 }

@@ -96,6 +96,24 @@ std::string_view mouseButtonName(MouseButton button) noexcept
     return index < kMouseNames.size() ? kMouseNames[index] : std::string_view{"Unknown"};
 }
 
+/// Drops a leading "Mouse " from a binding name, if it has one.
+///
+/// A no-op on a name that does not start with it, so the caller can use "did this
+/// change anything?" as the test for whether the malformed form is present.
+[[nodiscard]] constexpr std::string_view stripMousePrefix(std::string_view name) noexcept
+{
+    constexpr std::string_view kPrefix = "Mouse ";
+    if (name.size() <= kPrefix.size()) {
+        return name;
+    }
+    for (std::size_t i = 0; i < kPrefix.size(); ++i) {
+        if (name[i] != kPrefix[i]) {
+            return name;
+        }
+    }
+    return name.substr(kPrefix.size());
+}
+
 Key parseKey(std::string_view name) noexcept
 {
     const std::string needle = normalise(name);
@@ -252,6 +270,25 @@ std::size_t InputManager::loadBindings(const Core::ConfigStore& config, Core::Lo
         } else if (const MouseButton asButton = parseMouseButton(raw);
                    asButton != MouseButton::Count) {
             binding = InputBinding{InputBinding::Type::MouseButton, Key::Unknown, asButton};
+        } else if (const std::string_view stripped = stripMousePrefix(raw);
+                   stripped != raw) {
+            // A doubled "Mouse Mouse Left" in a saved config. The settings screen
+            // used to write that: it prepended "Mouse " to a name that already had
+            // it, and `parseMouseButton` compared the whole string, so nothing
+            // matched. The file is never rewritten unless the player rebinds, so
+            // the warning about this fired on every launch, forever, for a binding
+            // the player had never touched.
+            //
+            // Read it rather than discarding it: the player's Interact key was
+            // being silently dropped, which is worse than the log line.
+            const MouseButton recovered = parseMouseButton(stripped);
+            if (recovered == MouseButton::Count) {
+                log.warn("Input", "control '{}' has unrecognised binding '{}'", name, raw);
+                continue;
+            }
+            log.warn("Input", "control '{}' had a malformed binding '{}'; read as '{}'",
+                     name, raw, stripped);
+            binding = InputBinding{InputBinding::Type::MouseButton, Key::Unknown, recovered};
         } else {
             log.warn("Input", "control '{}' has unrecognised binding '{}'", name, raw);
             continue;

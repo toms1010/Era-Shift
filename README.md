@@ -112,12 +112,28 @@ and prints a clean shutdown, so it works as a smoke test in CI.
 ctest --preset debug --output-on-failure
 ```
 
-407 cases across four binaries. All headless, no display required.
+452 cases across four binaries. All headless, no display required.
 
 ### Validate the regions
 
 ```bash
 python3 tools/validate_levels.py
+```
+
+Then check the map is *traversable*, which the walk-based validator cannot tell
+you — it flood-fills four-way movement, so a shelf six rows up reads as reachable
+even though no jump gets there:
+
+```bash
+g++ -std=c++20 -I include tools/measure_jumps.cpp -o /tmp/measure_jumps \
+    -Lbuild/src -lerashift_core
+/tmp/measure_jumps data/levels/awakening.json
+```
+
+It measures the player's real jump and dash envelope from the shipped tuning
+rather than assuming one, then reports anything needed that is out of reach. Its
+one blind spot is documented in the file: a jump that lands lower than it started,
+which is how Level 1's seal chamber is entered.
 ```
 
 Checks every file in `data/levels/` for playability, not just loadability: era
@@ -190,6 +206,18 @@ moved.
 running. It takes two presses, and it marks the tutorial *complete* rather than
 merely switching the toggle off — switching the toggle off would bring the lessons
 straight back on the next region.
+
+### Regions carry a finish requirement
+
+A region's JSON states how many seals its gate needs, rather than the gate always
+asking for every seal in the level. Level 1 places one seal and asks for one; the
+other regions place three and ask for all three. `World::requiredSeals()` resolves
+it once at load, so every caller sees the same number the simulation uses.
+
+The two halves of the finish rule are separate and both matter: reaching the gate
+without the objective does nothing, and having the objective without reaching the
+gate does nothing. Either alone completes the level by accident — walking past an
+open gate, or standing in the gate with the seals still out there.
 
 ---
 
@@ -595,14 +623,14 @@ The four binaries, and what each is for:
 
 | Binary | Cases | Covers |
 | --- | --- | --- |
-| `erashift_tests_unit` | 165 | Maths, logging, config, timing, the game loop, the state machine, the fonts, line breaking, menus, staged settings, and the options each screen offers |
-| `erashift_tests_integration` | 10 | The documented state flow, config round trips and migrations |
-| `erashift_tests_gameplay` | 222 | The whole simulation, plus the animation controller, the particle pool, the tutorial and its prompt lifecycle, every region, and the progression database |
+| `erashift_tests_unit` | 165 | Maths, logging, config, timing, the game loop, the state machine, the fonts, line breaking, menus (including scrolling), staged settings, and the option sets the pause and results screens offer |
+| `erashift_tests_integration` | 15 | The documented state flow, config round trips and migrations, and what stops when a menu is open |
+| `erashift_tests_gameplay` | 259 | The whole simulation, plus the animation controller, the particle pool, the tutorial and its prompt lifecycle, every region, the finish line and its objective gate, and the progression database |
 
 Line breaking has its own tests because it is where "text stays inside the panel"
 is actually enforced: `wrapLines` takes its measurement as a callback, so the
 rules are testable without a window, a renderer or a loaded font.
-| `erashift_tests_platform` | 10 | The SDL boundary: the event pump |
+| `erashift_tests_platform` | 13 | The SDL boundary: the event pump, and recovering a malformed saved control binding |
 
 `gameplay` links **only** `erashift_core` and no SDL whatsoever. That is the rule
 that proves the whole simulation is testable on a machine with no display, and it

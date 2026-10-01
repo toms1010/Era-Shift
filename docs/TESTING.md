@@ -15,9 +15,9 @@ suite runs in a container, over SSH, and in CI.
 | Binary | Tests | Contents |
 | --- | --- | --- |
 | `erashift_tests_unit` | 165 cases | Maths, logging, config, timing, game loop, state machine, fonts, line breaking, menus (including scrolling), staged settings, and the option sets the pause and results screens offer |
-| `erashift_tests_integration` | 10 cases | Full state flow, config round trips and migrations |
-| `erashift_tests_platform` | 10 cases | The SDL boundary: the event pump |
-| `erashift_tests_gameplay` | 222 cases | The whole simulation — eras, tile collision, physics, the player, enemies, the world, level data, saves — **and the two presentation systems that are pure arithmetic (animation, particles), plus the tutorial and the prompt's enter/leave lifecycle, every region, and the progression database** |
+| `erashift_tests_integration` | 15 cases | Full state flow, config round trips and migrations, and what stops (and what keeps running) when a menu is open |
+| `erashift_tests_platform` | 13 cases | The SDL boundary: the event pump, and recovering a malformed saved control binding |
+| `erashift_tests_gameplay` | 259 cases | The whole simulation — eras, tile collision, physics, the player, enemies, the world, level data, saves — **and the two presentation systems that are pure arithmetic (animation, particles), plus the tutorial and the prompt's enter/leave lifecycle, every region, the finish line and its objective gate, and the progression database** |
 
 ```bash
 ./build/debug/erashift_tests_unit --success              # verbose
