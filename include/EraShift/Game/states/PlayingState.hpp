@@ -106,6 +106,12 @@ private:
     /// The tutorial lesson panel, top-left. Draws nothing when the tutorial is
     /// inactive, so the caller does not need to check.
     void drawTutorialPanel(const StateContext& ctx, const Rect& area) const;
+    /// How many pixels at the bottom of the viewport `drawHud` claims.
+    ///
+    /// Exposed so the dialogue panel can be told what is already there instead of
+    /// guessing. When this and the panel's own idea of the bottom disagreed, the
+    /// frame landed on top of the hint row and the objective line.
+    [[nodiscard]] static float hudBottomReserved(Graphics::UiScale scale) noexcept;
 
     [[nodiscard]] UiScale currentUiScale(const StateContext& ctx) const;
 

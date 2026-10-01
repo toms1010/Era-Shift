@@ -112,7 +112,7 @@ and prints a clean shutdown, so it works as a smoke test in CI.
 ctest --preset debug --output-on-failure
 ```
 
-323 cases across four binaries. All headless, no display required.
+348 cases across four binaries. All headless, no display required.
 
 ### Validate the regions
 
@@ -581,9 +581,13 @@ The four binaries, and what each is for:
 
 | Binary | Cases | Covers |
 | --- | --- | --- |
-| `erashift_tests_unit` | 94 | Maths, logging, config, timing, the game loop, the state machine, the font |
+| `erashift_tests_unit` | 119 | Maths, logging, config, timing, the game loop, the state machine, the fonts, line breaking, menus |
 | `erashift_tests_integration` | 10 | The documented state flow, config round trips and migrations |
 | `erashift_tests_gameplay` | 209 | The whole simulation, plus the animation controller, the particle pool, the tutorial, every region, and the progression database |
+
+Line breaking has its own tests because it is where "text stays inside the panel"
+is actually enforced: `wrapLines` takes its measurement as a callback, so the
+rules are testable without a window, a renderer or a loaded font.
 | `erashift_tests_platform` | 10 | The SDL boundary: the event pump |
 
 `gameplay` links **only** `erashift_core` and no SDL whatsoever. That is the rule

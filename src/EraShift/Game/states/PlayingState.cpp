@@ -1405,6 +1405,19 @@ void PlayingState::drawPlayer(const StateContext& ctx, const Vec2& interpolated)
     renderer.setBlendMode(BlendMode::None);
 }
 
+float PlayingState::hudBottomReserved(Graphics::UiScale scale) noexcept
+{
+    // The tallest thing `drawHud` puts in the bottom stack is the interaction
+    // prompt, which sits `kPromptLift` above the hint row. Measured from the same
+    // numbers `drawHud` uses rather than restated, so the two cannot drift — a
+    // dialog panel drawn over the objective line is invisible until somebody
+    // reports it.
+    constexpr float kPad        = 18.0f;
+    constexpr float kHintHeight = 18.0f;
+    constexpr float kPromptLift = 46.0f;
+    return scale.px(kPad * 0.5f + kHintHeight + kPromptLift);
+}
+
 void PlayingState::drawHud(const StateContext& ctx, const Rect& area) const
 {
     Renderer2D& renderer = *ctx.renderer;
@@ -1647,7 +1660,8 @@ void PlayingState::drawHud(const StateContext& ctx, const Rect& area) const
 
     // The dialogue sits above the tutorial panel: a line being spoken is the more
     // urgent of the two, and the tutorial is a hint the player can re-see.
-    drawDialoguePanel(ctx, m_dialogue, m_currentPlayer, area.h, currentUiScale(ctx));
+    drawDialoguePanel(ctx, m_dialogue, m_currentPlayer, area.h, currentUiScale(ctx),
+                       hudBottomReserved(currentUiScale(ctx)));
 
     renderer.setBlendMode(BlendMode::None);
 

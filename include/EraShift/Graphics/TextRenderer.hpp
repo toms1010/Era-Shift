@@ -118,6 +118,29 @@ struct TextStyle {
     bool      bold      = false;
 };
 
+/// Measures a candidate line, in pixels. Returns 0 for anything unmeasurable.
+using WidthProbe = float (*)(const std::string&, void* user);
+
+/// Line breaking, with the measurement supplied by the caller.
+///
+/// Separated from `TextRenderer::wrapText` so it can be tested without a window, a
+/// renderer or a loaded TTF face — which is the only reason the wrapping rules have
+/// any tests at all. A real `TextRenderer` passes a probe bound to its font; a test
+/// passes one that counts characters.
+///
+/// `widthOf` is called repeatedly and must be pure for a given input.
+///
+/// Guarantees, which `TextRenderer::wrapText` inherits:
+///
+/// * every returned line's width is `<= maxWidth`, except a line holding a single
+///   character that is itself wider;
+/// * explicit newlines are honoured, producing a line break per newline;
+/// * with `maxLines > 0`, the result has at most that many lines and the last is
+///   truncated with an ellipsis when there was more to say.
+[[nodiscard]] std::vector<std::string> wrapLines(std::string_view text, bool wrap, int maxLines,
+                                                  float maxWidth, WidthProbe widthOf,
+                                                  void* user);
+
 /// Renders and caches TTF text.
 class TextRenderer {
 public:
@@ -156,11 +179,22 @@ public:
     void drawInRect(Renderer2D& renderer, const Rect& area, std::string_view text,
                     const TextStyle& style);
 
-    /// Splits `text` into lines that fit `maxWidth`, honouring the style's
+/// Splits `text` into lines that fit `maxWidth`, honouring the style's
     /// wrap setting. Exposed for tests and for laying out a paragraph before it
     /// is drawn.
+    ///
+    /// **Every returned line fits `maxWidth`**, with one exception: a single
+    /// character that is itself wider than the line, which cannot be made to fit
+    /// and is emitted alone. That guarantee is the point — a caller drawing into
+    /// a rect has no way to detect an overflow, so wrapping is where "text stays
+    /// inside the panel" has to be enforced.
+    ///
+    /// `wrapText` is the member that supplies a probe bound to the loaded face, and
+    /// is what game code should call. This free function exists so the rules can be
+    /// tested without a window, a renderer or a loaded TTF face — which is the only
+    /// reason the wrapping rules have any tests at all.
     [[nodiscard]] std::vector<std::string> wrapText(std::string_view text,
-                                                    const TextStyle& style, float maxWidth) const;
+                                                     const TextStyle& style, float maxWidth) const;
 
     // --- cache --------------------------------------------------------------
 
@@ -211,6 +245,8 @@ private:
     [[nodiscard]] CachedText rasterise(const std::string& text, const TextStyle& style);
 
     [[nodiscard]] const Font* resolveFont(const TextStyle& style) const;
+
+
 
     ResourceManager* m_resources = nullptr;
     Core::Logger*    m_log       = nullptr;

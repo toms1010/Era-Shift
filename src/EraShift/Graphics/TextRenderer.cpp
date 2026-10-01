@@ -28,7 +28,28 @@ bool isVisible(Color color) noexcept
     return color.a > 0;
 }
 
+/// Splits on newlines, keeping empty paragraphs so a blank line survives as one.
+///
+/// `std::getline` alone drops a trailing empty field, so "a\n\n" would come back as
+/// one line instead of two and a deliberate blank line in a paragraph would vanish.
+std::vector<std::string> splitLines(std::string_view text)
+{
+    std::vector<std::string> paragraphs;
+    std::string current;
+    for (const char c : text) {
+        if (c == '\n') {
+            paragraphs.push_back(current);
+            current.clear();
+        } else {
+            current.push_back(c);
+        }
+    }
+    paragraphs.push_back(current);
+    return paragraphs;
+}
+
 } // namespace
+
 
 TextRenderer::TextRenderer(ResourceManager& resources, Core::Logger& log)
     : m_resources(&resources), m_log(&log)
@@ -229,16 +250,21 @@ void TextRenderer::drawAligned(Renderer2D& renderer, const Vec2& position, std::
     draw(renderer, Vec2{x, position.y}, text, style);
 }
 
-std::vector<std::string> TextRenderer::wrapText(std::string_view text, const TextStyle& style,
-                                                float maxWidth) const
+std::vector<std::string> wrapLines(std::string_view text, bool wrap, int maxLines, float maxWidth,
+                                   WidthProbe widthOf, void* user)
 {
     std::vector<std::string> lines;
-
-    if (text.empty()) {
+    if (text.empty() || widthOf == nullptr) {
         return lines;
     }
-    if (!style.wrap || maxWidth <= 0.0f) {
-        // Still honour explicit newlines so a caller can build a block.
+
+    const auto width = [widthOf, user](const std::string& line) {
+        return widthOf(line, user);
+    };
+
+    if (!wrap || maxWidth <= 0.0f) {
+        // Explicit newlines are still honoured, so a caller can build a block
+        // without enabling wrapping.
         std::string current;
         for (const char c : text) {
             if (c == '\n') {
@@ -252,49 +278,101 @@ std::vector<std::string> TextRenderer::wrapText(std::string_view text, const Tex
         return lines;
     }
 
-    std::string current;
-    std::istringstream stream{std::string(text)};
-    std::string word;
+    // A token with no spaces in it — a path, a URL, a long number — is broken
+    // rather than allowed to overflow. Character-based because there is nothing
+    // else to do with it: breaking mid-word is ugly, and text crossing a panel
+    // border is worse, because the caller cannot see it, cannot select it, and
+    // cannot tell what it said.
+    const auto breakToken = [&](const std::string& token, std::vector<std::string>& out) {
+        std::string piece;
+        for (const char c : token) {
+            piece.push_back(c);
+            // Tested on the piece *including* the new character, cut after
+            // popping it: the previous piece was then the longest that fit.
+            if (width(piece) > maxWidth && piece.size() > 1) {
+                piece.pop_back();
+                out.push_back(piece);
+                piece.assign(1, c);
+            }
+        }
+        if (!piece.empty()) {
+            out.push_back(piece);
+        }
+    };
 
-    while (std::getline(stream, word, '\n')) {
-        if (word.empty()) {
+    std::string current;
+    for (const std::string& paragraph : splitLines(text)) {
+        if (paragraph.empty()) {
+            // A blank line is a line. Flush whatever is pending so the blank lands
+            // after it rather than replacing it.
             lines.push_back(current);
             current.clear();
             continue;
         }
 
-        std::istringstream words(word);
+        std::istringstream words(paragraph);
         std::string token;
         while (words >> token) {
+            if (width(token) > maxWidth) {
+                if (!current.empty()) {
+                    lines.push_back(current);
+                    current.clear();
+                }
+                breakToken(token, lines);
+                continue;
+            }
+
             const std::string candidate = current.empty() ? token : current + " " + token;
-            if (measure(candidate, style).x <= maxWidth || current.empty()) {
+            if (width(candidate) <= maxWidth || current.empty()) {
                 current = candidate;
             } else {
                 lines.push_back(current);
                 current = token;
             }
         }
-        lines.push_back(current);
+
+        // Only flush a *populated* line. Pushing unconditionally appended an empty
+        // line after every paragraph whose last word had been broken out already,
+        // which put a phantom line under the block and made the count one too high
+        // for every caller computing a height from it.
+        if (!current.empty()) {
+            lines.push_back(current);
+        }
         current.clear();
     }
 
-    if (!current.empty()) {
-        lines.push_back(current);
-    }
-
-    if (style.maxLines > 0 && static_cast<int>(lines.size()) > style.maxLines) {
-        lines.resize(static_cast<std::size_t>(style.maxLines));
+    if (maxLines > 0 && static_cast<int>(lines.size()) > maxLines) {
+        lines.resize(static_cast<std::size_t>(maxLines));
         if (!lines.empty()) {
-            // Cut the last visible line short so the block cannot overflow.
+            // Trim the last visible line so the ellipsis itself fits. Without the
+            // check, adding "..." to a line that exactly filled the width is how a
+            // truncated line becomes the one line that overflows.
             std::string& last = lines.back();
-            while (measure(last + "...", style).x > maxWidth && !last.empty()) {
+            const std::string ellipsis = "...";
+            while (!last.empty() && width(last + ellipsis) > maxWidth) {
                 last.pop_back();
             }
-            last += "...";
+            last += ellipsis;
         }
     }
 
     return lines;
+}
+
+std::vector<std::string> TextRenderer::wrapText(std::string_view text, const TextStyle& style,
+                                                float maxWidth) const
+{
+    struct Probe {
+        const TextRenderer* renderer;
+        TextStyle style;
+    } probe{this, style};
+
+    return wrapLines(text, style.wrap, style.maxLines, maxWidth,
+                     [](const std::string& line, void* user) -> float {
+                         const auto* p = static_cast<Probe*>(user);
+                         return p->renderer->measure(line, p->style).x;
+                     },
+                     &probe);
 }
 
 void TextRenderer::drawInRect(Renderer2D& renderer, const Rect& area, std::string_view text,

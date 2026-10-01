@@ -93,6 +93,37 @@ a two-press **RESET PROGRESS**; a single stray press cannot wipe ten regions.
 
 ### Fixed
 
+**A word wider than its panel overflowed the panel** (`TextRenderer::wrapText`).
+The wrap loop accepted any token whole whenever the line was still empty:
+
+```cpp
+if (measure(candidate, style).x <= maxWidth || current.empty()) { ... }
+```
+
+That escape hatch exists so a first word is not measured against nothing, but it
+also means a token with no spaces in it — a path, a URL, a long number — was emitted
+undivided. A 36-character string against a 10-character budget produced one
+36-character line, drawn past the edge of whatever panel contained it, with no way
+for the caller to detect the overflow. Reachable in-game through the dialogue panel,
+which wraps to its inner width.
+
+Long tokens are now broken. The cut is tested on the piece *including* the new
+character and applied after popping it, so every emitted line fits by construction.
+
+**Every wrapped paragraph gained a phantom empty line.** The flush at the end of
+each paragraph was unconditional, so a paragraph whose last word had already been
+broken out pushed a trailing empty line as well. Callers computing a block height
+from the line count were one line too tall, and `maxLines` was being spent on a
+line containing nothing.
+
+**The dialogue panel drew on top of the HUD.** The panel was positioned from the
+bottom of the viewport while the hint row, objective line and interaction prompt all
+live there — so the frame landed over the objective the player was reading. The
+panel now takes the height the caller has already claimed
+(`drawDialoguePanel(..., bottomReserved)`) and shortens rather than overlapping when
+there is not enough room; `PlayingState::hudBottomReserved` measures the HUD stack
+from the same constants `drawHud` uses, so the two cannot drift.
+
 **Rows were drawn where clicks were not expected** (`ResultState`). The results
 screen laid its panel out twice, differently: `update` measured it against the
 full viewport, `render` against a strip below the stats grid. The rows were drawn

@@ -31,7 +31,7 @@ constexpr float kPadding = 14.0f;
 
 void drawDialoguePanel(const StateContext& ctx, const DialoguePanel& panel,
                        Graphics::Vec2 playerCentre, float viewHeight,
-                       Graphics::UiScale scale)
+                       Graphics::UiScale scale, float bottomReserved)
 {
     if (!panel.open() || ctx.renderer == nullptr || ctx.text == nullptr) {
         return;
@@ -45,12 +45,19 @@ void drawDialoguePanel(const StateContext& ctx, const DialoguePanel& panel,
     const float panelH = std::min(scale.px(150.0f), viewHeight * kPanelHeightFraction);
     const float pad = scale.px(kPadding);
 
-    // Bottom-centred, clamped so it can never leave the viewport. A panel that
-    // scrolls off the bottom of the screen is a panel the player cannot read.
+    // Clamped so it can never leave the viewport. A panel that scrolls off the
+    // bottom of the screen is a panel the player cannot read.
     const float x = std::clamp(playerCentre.x - panelW * 0.5f, scale.px(8.0f),
                                std::max(scale.px(8.0f), viewW - panelW - scale.px(8.0f)));
-    const float y = viewHeight - panelH - scale.px(16.0f);
-    const Rect frame{x, y, panelW, panelH};
+
+    // Sits above whatever the caller has already claimed, and shortens rather than
+    // overlapping when there is not enough room. A frame drawn on top of the HUD is
+    // worse than a shallow frame.
+    const float margin = scale.px(10.0f);
+    const float ceiling = std::max(margin * 2.0f, viewHeight - bottomReserved - margin);
+    const float height  = std::clamp(std::min(panelH, ceiling - margin), margin,
+                                      std::max(margin, ceiling - margin));
+    const Rect frame{x, ceiling - height, panelW, height};
 
     renderer.setCameraEnabled(false);
     renderer.setBlendMode(BlendMode::Alpha);

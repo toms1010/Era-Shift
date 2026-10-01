@@ -71,14 +71,20 @@ struct DialoguePanel {
     }
 };
 
-/// Draws the panel, bottom-centred, wrapping the message to the frame.
+/// Draws the panel, centred horizontally on `playerCentre`, wrapping the message
+/// to the frame.
 ///
 /// Draws nothing when the panel is closed, so a caller can invoke it every frame
 /// without asking first. Text is clipped to the frame: a long message wraps to
 /// more lines and is cut with an ellipsis rather than spilling over the world
 /// behind it, which is the failure this exists to prevent.
+///
+/// `bottomReserved` is how many pixels at the bottom of the viewport are already
+/// taken. The HUD's hint row, objective line and interaction prompt all live there,
+/// and a panel drawn over them is a panel the player cannot read — so the caller
+/// states what it has claimed rather than this guessing.
 void drawDialoguePanel(const StateContext& ctx, const DialoguePanel& panel,
                        Graphics::Vec2 playerCentre, float viewHeight,
-                       Graphics::UiScale scale);
+                       Graphics::UiScale scale, float bottomReserved);
 
 } // namespace EraShift::Game

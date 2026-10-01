@@ -69,6 +69,36 @@ out-of-range characters fall back to a visible box; advances are proportional
 regression test for a rasteriser that once drew `E`, `I` and `A` as solid
 blocks.
 
+### `TestTextWrap` — line breaking
+
+`wrapLines` takes its measurement as a callback so these tests run without a
+window, a renderer or a loaded TTF face. That is not a convenience: the alternative
+is asserting wrapping only through a real `TextRenderer`, which means the rules
+have no tests at all — which is how a word wider than its panel survived, since it
+only misbehaves against a real font's metrics.
+
+- **A word wider than the line is broken, not overflowed.** The bug: a token wider
+  than the width was accepted whole whenever the line was empty, so a 36-character
+  string was emitted as one line against a 10-character budget — drawn past the
+  edge of whatever panel held it, with no way for the caller to notice.
+- **No line ever exceeds the width**, asserted over a spread of inputs and widths
+  rather than one case, and with a second probe whose characters are 4 units wide so
+  the fix cannot be specific to one-character-per-unit arithmetic.
+- An over-long word after a short one starts its own line.
+- **Exactly the width still fits** — an off-by-one here is invisible until a panel
+  is exactly sized.
+- The ellipsis itself fits, so truncating a full-width line does not produce the one
+  line that overflows. A very narrow width still leaves something on the line
+  rather than emptying it.
+- Newlines, blank lines and leading/trailing newlines all survive as line breaks.
+- A null probe yields nothing rather than a crash: the no-font path is real, since
+  a missing TTF face falls back to the bitmap font everywhere else.
+- A zero or negative width disables wrapping instead of looping forever.
+- **`maxLines` only ever removes lines that exist.** It does not ellipsise a line
+  that already fit, which would tell the player text was cut when nothing was.
+- Wrapping is deterministic, because the panel layout re-wraps every frame and a
+  non-deterministic break would make the text jitter.
+
 ### `TestStateFlow` — the documented flow
 `MainMenu → Playing → Paused → Playing → GameOver → MainMenu` with every enter
 matched by an exit, plus a pause storm and a nested-menu unwind in the correct
